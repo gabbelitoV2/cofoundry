@@ -1,8 +1,0 @@
-#cloud-config
-users:
-  - name: debian
-    groups: sudo
-    sudo: ALL=(ALL) NOPASSWD:ALL
-    shell: /bin/bash
-    ssh_authorized_keys:
-      - __PACKER_SSH_PUBLIC_KEY__

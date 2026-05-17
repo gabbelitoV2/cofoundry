@@ -39,6 +39,21 @@ variable "proxmox_bridge" {
   default = "vmbr0"
 }
 
+variable "build_ip" {
+  type    = string
+  default = ""
+}
+
+variable "build_gw" {
+  type    = string
+  default = ""
+}
+
+variable "build_dns" {
+  type    = string
+  default = "1.1.1.1"
+}
+
 variable "iso_cache_dir" {
   type    = string
   default = "/var/lib/cofoundry/iso-cache"
@@ -69,43 +84,20 @@ source "proxmox-iso" "debian-13" {
   bios    = "seabios"
   machine = "q35"
   os      = "l26"
-
   cpu_type = "host"
   cores    = 2
   sockets  = 1
   memory   = 2048
-
   qemu_agent              = true
   cloud_init              = true
   cloud_init_storage_pool = var.proxmox_storage_pool
   scsi_controller         = "virtio-scsi-pci"
 
   disks {
-    disk_size    = "4G"
+    disk_size    = "5G"
     format       = "qcow2"
     storage_pool = var.proxmox_storage_pool
     type         = "virtio"
-    disk_image   = true
-    io_thread    = true
-  }
-
-  boot_iso {
-    type             = "ide"
-    iso_url          = "https://cloud.debian.org/images/cloud/trixie/latest/debian-13-genericcloud-amd64.qcow2"
-    iso_checksum     = "file:https://cloud.debian.org/images/cloud/trixie/latest/SHA256SUMS"
-    iso_storage_pool = var.proxmox_iso_storage_pool
-    iso_target_path  = "${var.iso_cache_dir}/debian-13-genericcloud-amd64.qcow2"
-    unmount          = true
-  }
-
-  additional_iso_files {
-    device   = "ide2"
-    unmount  = true
-    cd_files = [
-      "${path.root}/${local.recipe_name}/cloud-init/meta-data",
-      "${path.root}/${local.recipe_name}/cloud-init/user-data",
-    ]
-    cd_label = "cidata"
   }
 
   network_adapters {
@@ -113,15 +105,46 @@ source "proxmox-iso" "debian-13" {
     model  = "virtio"
   }
 
-  boot_wait    = "5s"
-  boot_command = []
+  boot_iso {
+    type             = "ide"
+    iso_url          = "https://cdimage.debian.org/cdimage/release/13.5.0/amd64/iso-cd/debian-13.5.0-amd64-netinst.iso"
+    iso_checksum     = "sha256:95838884f5ea6c82421dfe6baaa5a639dbbe6756c1e380f9fe7a7cb0c1949d2a"
+    iso_storage_pool = var.proxmox_iso_storage_pool
+    iso_target_path  = "${var.iso_cache_dir}/debian-13.5.0-amd64-netinst.iso"
+    unmount          = true
+  }
+
+  http_directory = "${path.root}/${local.recipe_name}/http"
+
+  boot_wait = "10s"
+  boot_command = [
+    "<esc><wait>",
+    "install auto=true priority=critical <wait>",
+    "netcfg/disable_autoconfig=true <wait>",
+    "netcfg/get_ipaddress=${var.build_ip} <wait>",
+    "netcfg/get_netmask=255.255.255.0 <wait>",
+    "netcfg/get_gateway=${var.build_gw} <wait>",
+    "netcfg/get_nameservers=${var.build_dns} <wait>",
+    "netcfg/confirm_static=true <wait>",
+    " preseed/url=http://{{ .HTTPIP }}:{{ .HTTPPort }}/preseed.cfg <wait>",
+    "debian-installer=en_US.UTF-8 <wait>",
+    "locale=en_US.UTF-8 <wait>",
+    "kbd-chooser/method=us <wait>",
+    "keyboard-configuration/xkb-keymap=us <wait>",
+    "fb=false <wait>",
+    "debconf/frontend=noninteractive <wait>",
+    "console-setup/ask_detect=false <wait>",
+    "console-keymaps-at/keymap=us <wait>",
+    "grub-installer/bootdev=/dev/vda <wait>",
+    "<enter><wait>",
+  ]
 
   communicator           = "ssh"
-  ssh_username           = "debian"
+  ssh_username           = "packer"
   ssh_private_key_file   = var.packer_ssh_private_key_file
   ssh_handshake_attempts = 10
   ssh_pty                = true
-  ssh_timeout            = "15m"
+  ssh_timeout            = "35m"
 }
 
 build {
@@ -129,19 +152,18 @@ build {
 
   provisioner "shell" {
     inline = [
-      "sudo cloud-init status --wait || true",
+      "if command -v cloud-init >/dev/null 2>&1; then sudo cloud-init status --wait || true; fi",
+      "sudo apt-get -y update",
+      "sudo apt-get -y upgrade",
+      "sudo rm -f /etc/ssh/ssh_host_*",
+      "sudo truncate -s 0 /etc/machine-id",
       "sudo apt-get -y autoremove --purge",
       "sudo apt-get -y clean",
+      "sudo apt-get -y autoclean",
+      "sudo cloud-init clean",
+      "sudo rm -f /etc/cloud/cloud.cfg.d/subiquity-disable-cloudinit-networking.cfg",
+      "sudo sync",
     ]
-  }
-
-  provisioner "file" {
-    source      = "${path.root}/_shared/cloud-init-cleanup.sh"
-    destination = "/tmp/cloud-init-cleanup.sh"
-  }
-
-  provisioner "shell" {
-    inline = ["sudo bash /tmp/cloud-init-cleanup.sh"]
   }
 
   provisioner "file" {
@@ -150,7 +172,11 @@ build {
   }
 
   provisioner "shell" {
-    inline = ["sudo cp /tmp/99-pve.cfg /etc/cloud/cloud.cfg.d/99-pve.cfg"]
+    inline = [
+      "sudo cp /tmp/99-pve.cfg /etc/cloud/cloud.cfg.d/99-pve.cfg",
+      "sudo userdel --remove --force packer || true",
+      "sudo sync",
+    ]
   }
 
   post-processor "shell-local" {

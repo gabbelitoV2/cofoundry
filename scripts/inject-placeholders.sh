@@ -19,9 +19,17 @@ VARS_FILE="${RUNNER_TEMP}/packer-vars-${RECIPE}.pkrvars.hcl"
 
 RECIPE_DIR="builds/${RECIPE}"
 
-# ── Linux: ephemeral SSH keypair ────────────────────────────────────────────
+# ── Detect installer files and generate ephemeral SSH keypair ────────────────
 PRESEED="${RECIPE_DIR}/http/preseed.cfg"
-if [ -f "$PRESEED" ]; then
+USER_DATA="${RECIPE_DIR}/http/user-data"
+KS="${RECIPE_DIR}/http/ks.cfg"
+
+NEEDS_KEY=0
+[ -f "$PRESEED" ] && NEEDS_KEY=1
+[ -f "$USER_DATA" ] && NEEDS_KEY=1
+[ -f "$KS" ] && NEEDS_KEY=1
+
+if [ "$NEEDS_KEY" = "1" ]; then
   KEY_FILE="${RUNNER_TEMP}/packer_key_${RECIPE}"
   rm -f "$KEY_FILE" "${KEY_FILE}.pub"
   ssh-keygen -t ed25519 -N "" -C "packer-${RECIPE}-${GITHUB_RUN_ID:-local}" \
@@ -29,31 +37,18 @@ if [ -f "$PRESEED" ]; then
   chmod 600 "$KEY_FILE"
   PUB_KEY="$(cat "${KEY_FILE}.pub")"
 
-  # Replace placeholder OR any previously injected key (handles re-runs without git clean)
-  PRESEED_WORK="${RUNNER_TEMP}/preseed-${RECIPE}.cfg"
-  sed -E "s|__PACKER_SSH_PUBLIC_KEY__|${PUB_KEY}|g; \
-          s|ssh-ed25519 AAAA[^ ]+ packer-${RECIPE}-[^ '\"]*|${PUB_KEY}|g" \
-    "$PRESEED" >"$PRESEED_WORK"
-  cp "$PRESEED_WORK" "$PRESEED"
-
-  printf 'packer_ssh_private_key_file = "%s"\n' "$KEY_FILE" >>"$VARS_FILE"
-fi
-
-# ── Linux cloud images: ephemeral SSH keypair ──────────────────────────────
-USER_DATA="${RECIPE_DIR}/cloud-init/user-data"
-if [ -f "$USER_DATA" ]; then
-  KEY_FILE="${RUNNER_TEMP}/packer_key_${RECIPE}"
-  rm -f "$KEY_FILE" "${KEY_FILE}.pub"
-  ssh-keygen -t ed25519 -N "" -C "packer-${RECIPE}-${GITHUB_RUN_ID:-local}" \
-    -f "$KEY_FILE" >/dev/null
-  chmod 600 "$KEY_FILE"
-  PUB_KEY="$(cat "${KEY_FILE}.pub")"
-
-  USER_DATA_WORK="${RUNNER_TEMP}/user-data-${RECIPE}.cfg"
-  sed -E "s|__PACKER_SSH_PUBLIC_KEY__|${PUB_KEY}|g; \
-          s|ssh-ed25519 AAAA[^ ]+ packer-${RECIPE}-[^ '\"]*|${PUB_KEY}|g" \
-    "$USER_DATA" >"$USER_DATA_WORK"
-  cp "$USER_DATA_WORK" "$USER_DATA"
+  for f in "$PRESEED" "$USER_DATA" "$KS"; do
+    [ -f "$f" ] || continue
+    WORK="${RUNNER_TEMP}/inject-work-$(basename "$f")-${RECIPE}"
+    sed -E \
+      "s|__PACKER_SSH_PUBLIC_KEY__|${PUB_KEY}|g; \
+       s|ssh-ed25519 AAAA[^ ]+ packer-${RECIPE}-[^ '\"]*|${PUB_KEY}|g; \
+       s|__PACKER_BUILD_IP__|${CF_BUILD_IP:-}|g; \
+       s|__PACKER_BUILD_GW__|${CF_BUILD_GW:-}|g; \
+       s|__PACKER_BUILD_DNS__|${CF_BUILD_DNS:-1.1.1.1}|g" \
+      "$f" >"$WORK"
+    cp "$WORK" "$f"
+  done
 
   printf 'packer_ssh_private_key_file = "%s"\n' "$KEY_FILE" >>"$VARS_FILE"
 fi
@@ -62,11 +57,9 @@ fi
 AUTOUNATTEND="${RECIPE_DIR}/autounattend.xml"
 if [ -f "$AUTOUNATTEND" ]; then
   WIN_PASSWORD="$(openssl rand -base64 24 | tr -d '/+=\n' | head -c 24)"
-
   AUTOUNATTEND_WORK="${RUNNER_TEMP}/autounattend-${RECIPE}.xml"
   sed "s|__PACKER_ADMIN_PASSWORD__|${WIN_PASSWORD}|g" "$AUTOUNATTEND" >"$AUTOUNATTEND_WORK"
   cp "$AUTOUNATTEND_WORK" "$AUTOUNATTEND"
-
   printf 'winrm_password = "%s"\n' "$WIN_PASSWORD" >>"$VARS_FILE"
 fi
 

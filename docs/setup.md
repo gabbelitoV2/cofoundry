@@ -93,21 +93,29 @@ systemctl restart dnsmasq
 
 The Debian installer needs a static IP to reach apt mirrors. The build VM gets `10.0.0.50` — a private address that only needs to be reachable from the node, not the internet.
 
-> If you completed §4, IP forwarding is already enabled. Skip the first block below.
+> If you completed §4, the vmbr1 MASQUERADE rule already covers `10.0.0.0/24` (which includes `10.0.0.50`) and IP forwarding is already enabled. Skip everything below and just set the env vars.
 
-**Enable IP forwarding (skip if §4 was done):**
+**Enable IP forwarding:**
 
 ```sh
 echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
 sysctl -p
 ```
 
-**Add a NAT rule and persist it:**
+**Persist the NAT rule via the network interfaces file:**
+
+Create `/etc/network/interfaces.d/masquerade-build.conf`:
+
+```
+iface vmbr0 inet manual
+    post-up   iptables -t nat -A POSTROUTING -s 10.0.0.50 -j MASQUERADE
+    post-down iptables -t nat -D POSTROUTING -s 10.0.0.50 -j MASQUERADE
+```
+
+Apply for the current session without rebooting:
 
 ```sh
 iptables -t nat -A POSTROUTING -s 10.0.0.50 -j MASQUERADE
-apt-get install -y iptables-persistent
-netfilter-persistent save
 ```
 
 **Find your node's vmbr0 IP** — you'll need it as the gateway:

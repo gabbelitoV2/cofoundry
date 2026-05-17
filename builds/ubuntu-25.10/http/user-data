@@ -1,0 +1,43 @@
+#cloud-config
+autoinstall:
+  version: 1
+  locale: en_US.UTF-8
+  keyboard:
+    layout: us
+  network:
+    version: 2
+    ethernets:
+      id0:
+        match:
+          name: "en*"
+        addresses:
+          - __PACKER_BUILD_IP__/24
+        routes:
+          - to: default
+            via: __PACKER_BUILD_GW__
+        nameservers:
+          addresses:
+            - __PACKER_BUILD_DNS__
+  ssh:
+    install-server: true
+    allow-pw: false
+    disable_root: true
+    authorized-keys:
+      - __PACKER_SSH_PUBLIC_KEY__
+  packages:
+    - qemu-guest-agent
+  storage:
+    layout:
+      name: lvm
+    swap:
+      size: 0
+  user-data:
+    package_upgrade: false
+    users:
+      - name: packer
+        groups: [adm, sudo]
+        lock-passwd: true
+        sudo: ALL=(ALL) NOPASSWD:ALL
+        shell: /bin/bash
+        ssh_authorized_keys:
+          - __PACKER_SSH_PUBLIC_KEY__

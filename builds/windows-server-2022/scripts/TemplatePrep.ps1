@@ -41,7 +41,7 @@ Start-Process -FilePath $virtioInstaller -ArgumentList "/quiet", "/norestart" -W
 Write-Step "install Cloudbase-Init"
 $cloudbaseMsi = Find-FileOnMedia "CloudbaseInitSetup_x64.msi"
 if (-not $cloudbaseMsi) {
-  # Not on media — download from GitHub releases
+  # Not on media - download from GitHub releases
   $cloudbaseMsi = "$env:TEMP\CloudbaseInitSetup_x64.msi"
   $msiUrl = "https://github.com/cloudbase/cloudbase-init/releases/latest/download/CloudbaseInitSetup_x64.msi"
   Write-Step "downloading Cloudbase-Init MSI from $msiUrl"
@@ -76,52 +76,62 @@ Set-Service -Name QEMU-GA -StartupType Automatic -ErrorAction SilentlyContinue
 
 Write-Step "install Windows Updates"
 $WUFlag = "C:\Windows\Temp\tb-wu-done.flag"
-$SelfCopy = "C:\Windows\Temp\TemplatePrep.ps1"
-$TaskName = "TBContinueSetup"
+$WURebootFlag = "C:\Windows\Temp\tb-wu-reboot.flag"
+$WUScript = "C:\Windows\Temp\tb-wu.ps1"
+$WUTaskName = "TBWindowsUpdate"
 
 if (-not (Test-Path $WUFlag)) {
-  $scriptPath = $MyInvocation.MyCommand.Path
-  if ($scriptPath -ne $SelfCopy) {
-    Copy-Item -Path $scriptPath -Destination $SelfCopy -Force
-  }
+  # WinRM runs with a restricted network token that cannot access the Windows
+  # Update COM API. Run a SYSTEM scheduled task with RunLevel Highest instead.
+  @'
+$ErrorActionPreference = "SilentlyContinue"
+Remove-Item "C:\Windows\Temp\tb-wu-reboot.flag" -Force -ErrorAction SilentlyContinue
+$session = New-Object -ComObject Microsoft.Update.Session
+$searcher = $session.CreateUpdateSearcher()
+$found = $searcher.Search("IsInstalled=0 and Type='Software' and IsHidden=0")
+if ($found.Updates.Count -eq 0) {
+  Set-Content "C:\Windows\Temp\tb-wu-done.flag" "done"
+  exit
+}
+$dl = $session.CreateUpdateDownloader()
+$dl.Updates = $found.Updates
+$dl.Download()
+$inst = $session.CreateUpdateInstaller()
+$inst.Updates = $found.Updates
+$result = $inst.Install()
+if ($result.RebootRequired) {
+  Set-Content "C:\Windows\Temp\tb-wu-reboot.flag" "reboot"
+} else {
+  Set-Content "C:\Windows\Temp\tb-wu-done.flag" "done"
+}
+'@ | Set-Content $WUScript -Encoding UTF8
 
   $action = New-ScheduledTaskAction -Execute "powershell.exe" `
-    -Argument "-ExecutionPolicy Bypass -NonInteractive -File `"$SelfCopy`""
-  $trigger = New-ScheduledTaskTrigger -AtLogon
-  $principal = New-ScheduledTaskPrincipal -UserId "Administrator" -RunLevel Highest
-  Register-ScheduledTask -TaskName $TaskName -Action $action `
-    -Trigger $trigger -Principal $principal -Force | Out-Null
+    -Argument "-ExecutionPolicy Bypass -NonInteractive -File `"$WUScript`""
+  $principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
+  $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Hours 3)
+  Register-ScheduledTask -TaskName $WUTaskName -Action $action `
+    -Principal $principal -Settings $settings -Force | Out-Null
+  Start-ScheduledTask -TaskName $WUTaskName
 
-  $session = New-Object -ComObject Microsoft.Update.Session
-  $searcher = $session.CreateUpdateSearcher()
-  $found = $searcher.Search("IsInstalled=0 and Type='Software' and IsHidden=0")
-
-  if ($found.Updates.Count -gt 0) {
-    Write-Step "downloading $($found.Updates.Count) update(s)"
-    try {
-      $dl = $session.CreateUpdateDownloader()
-      $dl.Updates = $found.Updates
-      $dl.Download()
-
-      Write-Step "installing $($found.Updates.Count) update(s)"
-      $inst = $session.CreateUpdateInstaller()
-      $inst.Updates = $found.Updates
-      $result = $inst.Install()
-
-      if ($result.RebootRequired) {
-        Write-Step "reboot required - restarting"
-        Restart-Computer -Force
-        exit
-      }
-    } catch [System.UnauthorizedAccessException] {
-      Write-Step "Windows Update skipped (insufficient token elevation via WinRM)"
-    }
-  } else {
-    Write-Step "no pending updates"
+  Write-Step "waiting for Windows Update to complete (SYSTEM task)..."
+  $deadline = [DateTime]::Now.AddHours(2)
+  while (-not (Test-Path $WUFlag) -and -not (Test-Path $WURebootFlag) -and [DateTime]::Now -lt $deadline) {
+    Start-Sleep 30
   }
 
-  New-Item -Path $WUFlag -ItemType File -Force | Out-Null
-  Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
+  Unregister-ScheduledTask -TaskName $WUTaskName -Confirm:$false -ErrorAction SilentlyContinue
+
+  if (Test-Path $WURebootFlag) {
+    Write-Step "updates installed, reboot required - rebooting"
+    Restart-Computer -Force
+    Start-Sleep 60
+    exit
+  }
+
+  if (-not (Test-Path $WUFlag)) {
+    Write-Step "Windows Update timed out after 2h - continuing anyway"
+  }
 }
 
 Write-Step "cleanup component store and logs"

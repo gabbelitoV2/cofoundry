@@ -23,10 +23,17 @@ export async function runBuild(env: Env, recipe: RecipeInfo): Promise<void> {
     const hasPreseed = await fileExists(
         `${REPO_ROOT}builds/${recipe.name}/http/preseed.cfg`
     )
+    const hasAutoinstall = await fileExists(
+        `${REPO_ROOT}builds/${recipe.name}/http/user-data`
+    )
+    const hasKickstart = await fileExists(
+        `${REPO_ROOT}builds/${recipe.name}/http/ks.cfg`
+    )
+    const needsStaticIp = hasPreseed || hasAutoinstall || hasKickstart
 
-    if (hasPreseed && !env.CF_BUILD_IP) {
+    if (needsStaticIp && !env.CF_BUILD_IP) {
         throw new Error(
-            `CF_BUILD_IP is required for preseed-based builds.\n` +
+            `CF_BUILD_IP is required for ISO installer builds.\n` +
                 `Add CF_BUILD_IP=<free-ip-on-vmbr0> CF_BUILD_GW=<gateway> to .env and retry.`
         )
     }
@@ -66,10 +73,15 @@ export async function runBuild(env: Env, recipe: RecipeInfo): Promise<void> {
     }
 
     log.step(`inject placeholders for ${recipe.name}`)
+    const injectEnv = [
+        `CF_BUILD_IP=${shellQuote(env.CF_BUILD_IP ?? '')}`,
+        `CF_BUILD_GW=${shellQuote(env.CF_BUILD_GW ?? '')}`,
+        `CF_BUILD_DNS=${shellQuote(env.CF_BUILD_DNS)}`,
+    ].join(' ')
     const varsFile = (
         await captureRemote(
             env.SSH_TARGET,
-            `cd ${REMOTE_DIR} && bash scripts/inject-placeholders.sh ${recipe.name}`
+            `cd ${REMOTE_DIR} && ${injectEnv} bash scripts/inject-placeholders.sh ${recipe.name}`
         )
     ).trim()
 
@@ -85,7 +97,7 @@ export async function runBuild(env: Env, recipe: RecipeInfo): Promise<void> {
         '-force',
         '-var-file',
         varsFile,
-        ...buildPackerVars(env, recipe, hasPreseed),
+        ...buildPackerVars(env, recipe, needsStaticIp),
         recipeHcl,
     ]
     const remoteEnv = buildRemoteEnv(env)
@@ -107,7 +119,7 @@ export async function runBuild(env: Env, recipe: RecipeInfo): Promise<void> {
 function buildPackerVars(
     env: Env,
     recipe: RecipeInfo,
-    hasPreseed: boolean
+    needsStaticIp: boolean
 ): string[] {
     const apiUrl = `https://${env.PVE_HOST}:${env.PVE_PORT}/api2/json`
     const vars = [
@@ -126,7 +138,7 @@ function buildPackerVars(
         '-var',
         `proxmox_bridge=${recipe.name.startsWith('windows-') ? env.CF_WIN_BRIDGE : env.CF_BRIDGE}`,
     ]
-    if (hasPreseed) {
+    if (needsStaticIp) {
         vars.push(
             '-var',
             `build_ip=${env.CF_BUILD_IP ?? ''}`,

@@ -39,6 +39,21 @@ variable "proxmox_bridge" {
   default = "vmbr0"
 }
 
+variable "build_ip" {
+  type    = string
+  default = ""
+}
+
+variable "build_gw" {
+  type    = string
+  default = ""
+}
+
+variable "build_dns" {
+  type    = string
+  default = "1.1.1.1"
+}
+
 variable "iso_cache_dir" {
   type    = string
   default = "/var/lib/cofoundry/iso-cache"
@@ -69,12 +84,10 @@ source "proxmox-iso" "rocky-linux-8" {
   bios    = "seabios"
   machine = "q35"
   os      = "l26"
-
   cpu_type = "host"
   cores    = 2
   sockets  = 1
   memory   = 2048
-
   qemu_agent              = true
   cloud_init              = true
   cloud_init_storage_pool = var.proxmox_storage_pool
@@ -85,27 +98,6 @@ source "proxmox-iso" "rocky-linux-8" {
     format       = "qcow2"
     storage_pool = var.proxmox_storage_pool
     type         = "virtio"
-    disk_image   = true
-    io_thread    = true
-  }
-
-  boot_iso {
-    type             = "ide"
-    iso_url          = "https://dl.rockylinux.org/pub/rocky/8/images/x86_64/Rocky-8-GenericCloud-Base.latest.x86_64.qcow2"
-    iso_checksum     = "file:https://dl.rockylinux.org/pub/rocky/8/images/x86_64/CHECKSUM"
-    iso_storage_pool = var.proxmox_iso_storage_pool
-    iso_target_path  = "${var.iso_cache_dir}/Rocky-8-GenericCloud-Base.latest.x86_64.qcow2"
-    unmount          = true
-  }
-
-  additional_iso_files {
-    device   = "ide2"
-    unmount  = true
-    cd_files = [
-      "${path.root}/${local.recipe_name}/cloud-init/meta-data",
-      "${path.root}/${local.recipe_name}/cloud-init/user-data",
-    ]
-    cd_label = "cidata"
   }
 
   network_adapters {
@@ -113,15 +105,28 @@ source "proxmox-iso" "rocky-linux-8" {
     model  = "virtio"
   }
 
-  boot_wait    = "5s"
-  boot_command = []
+  boot_iso {
+    type             = "ide"
+    iso_url          = "https://download.rockylinux.org/pub/rocky/8/isos/x86_64/Rocky-8.10-x86_64-minimal.iso"
+    iso_checksum     = "sha256:2c735d3b0de921bd671a0e2d08461e3593ac84f64cdaef32e3ed56ba01f74f4b"
+    iso_storage_pool = var.proxmox_iso_storage_pool
+    iso_target_path  = "${var.iso_cache_dir}/Rocky-8.10-x86_64-minimal.iso"
+    unmount          = true
+  }
+
+  http_directory = "${path.root}/${local.recipe_name}/http"
+
+  boot_wait = "10s"
+  boot_command = [
+    "<tab> inst.text inst.ks=http://{{ .HTTPIP }}:{{ .HTTPPort }}/ks.cfg ip=${var.build_ip}::${var.build_gw}:255.255.255.0:${local.recipe_name}:ens18:none nameserver=${var.build_dns} inst.waitfornet=10<enter><wait>",
+  ]
 
   communicator           = "ssh"
-  ssh_username           = "rocky"
+  ssh_username           = "packer"
   ssh_private_key_file   = var.packer_ssh_private_key_file
-  ssh_handshake_attempts = 10
+  ssh_handshake_attempts = 12
   ssh_pty                = true
-  ssh_timeout            = "15m"
+  ssh_timeout            = "35m"
 }
 
 build {
@@ -129,7 +134,9 @@ build {
 
   provisioner "shell" {
     inline = [
-      "sudo cloud-init status --wait || true",
+      "sudo timeout 180 cloud-init status --wait || true",
+      "sudo dnf -y update",
+      "sudo dnf -y autoremove",
       "sudo dnf -y clean all",
     ]
   }
@@ -149,7 +156,11 @@ build {
   }
 
   provisioner "shell" {
-    inline = ["sudo cp /tmp/99-pve.cfg /etc/cloud/cloud.cfg.d/99-pve.cfg"]
+    inline = [
+      "sudo install -m 0644 /tmp/99-pve.cfg /etc/cloud/cloud.cfg.d/99-pve.cfg",
+      "sudo userdel --remove --force packer || true",
+      "sudo sync",
+    ]
   }
 
   post-processor "shell-local" {

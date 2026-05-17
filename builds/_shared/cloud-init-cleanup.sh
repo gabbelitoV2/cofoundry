@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Run inside the build VM right before shutdown. Strips identity so every clone
+# of the resulting template gets fresh keys, machine-id, and cloud-init state.
+set -euxo pipefail
+
+cloud-init clean --logs || true
+rm -f /etc/machine-id
+touch /etc/machine-id
+rm -f /var/lib/dbus/machine-id
+ln -s /etc/machine-id /var/lib/dbus/machine-id
+rm -f /etc/ssh/ssh_host_*
+truncate -s 0 /var/log/wtmp /var/log/btmp /var/log/lastlog || true
+find /var/log -type f -exec truncate -s 0 {} + || true
+history -c || true
+sync
+fstrim -av || true

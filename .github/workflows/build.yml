@@ -1,0 +1,77 @@
+name: Build template
+
+# Called by check-upstream.yml for auto-triggered builds, or run manually.
+on:
+  workflow_call:
+    inputs:
+      recipe:
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      recipe:
+        required: true
+        type: string
+        description: "Recipe name (e.g. debian-12)"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+
+      - run: bun install --frozen-lockfile
+
+      - name: Setup Packer
+        uses: hashicorp/setup-packer@main
+        with:
+          version: latest
+
+      # ── Tailscale ──────────────────────────────────────────────────────────
+      - name: Connect to Tailscale
+        uses: tailscale/github-action@v2
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
+
+      # ── SSH key (for vzdump post-processor → PVE node) ────────────────────
+      - name: Set up SSH key
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          echo "StrictHostKeyChecking=no" >> ~/.ssh/config
+
+      # ── Build template ─────────────────────────────────────────────────────
+      # inject-placeholders.sh generates an ephemeral SSH key (Linux) or
+      # WinRM password (Windows), patches recipe files, and writes a vars file.
+      # packer init + packer build are invoked by tb build.
+      - name: Build template
+        run: bun run tb build ${{ inputs.recipe }}
+        env:
+          PVE_HOST: ${{ secrets.PVE_HOST }}
+          PVE_PORT: ${{ secrets.PVE_PORT }}
+          PVE_NODE: ${{ secrets.PVE_NODE }}
+          PVE_TOKEN_ID: ${{ secrets.PVE_TOKEN_ID }}
+          PVE_TOKEN_SECRET: ${{ secrets.PVE_TOKEN_SECRET }}
+          SSH_TARGET: ${{ secrets.SSH_TARGET }}
+          PVE_DUMP_DIR: ${{ secrets.PVE_DUMP_DIR }}
+          TB_STORAGE: ${{ secrets.TB_STORAGE }}
+          TB_ISO_STORAGE: ${{ secrets.TB_ISO_STORAGE }}
+          TB_BRIDGE: ${{ secrets.TB_BRIDGE }}
+          TB_UPLOAD_CMD: ${{ secrets.TB_UPLOAD_CMD }}
+          TB_PUBLIC_URL_TMPL: ${{ secrets.TB_PUBLIC_URL_TMPL }}
+
+      # ── Publish manifest ───────────────────────────────────────────────────
+      - name: Publish manifest
+        run: bun run tb publish
+
+      # ── Upload artifact ────────────────────────────────────────────────────
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.recipe }}
+          path: out/
+          retention-days: 30

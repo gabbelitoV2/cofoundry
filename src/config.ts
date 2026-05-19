@@ -2,6 +2,7 @@ import { readdir, readFile } from 'node:fs/promises'
 import { basename, join } from 'node:path'
 
 const DEFAULT_BUILDS_DIR = new URL('../builds/', import.meta.url).pathname
+const ISO_CACHE_DIR = '/var/lib/cofoundry/iso-cache'
 
 export interface RecipeInfo {
     name: string
@@ -16,18 +17,36 @@ export interface RecipeInfo {
     isoTargetPath?: string
 }
 
-export async function listRecipes(buildsDir: string = DEFAULT_BUILDS_DIR): Promise<RecipeInfo[]> {
-    const entries = await readdir(buildsDir)
-    const recipes: RecipeInfo[] = []
-    for (const entry of entries) {
-        if (!entry.endsWith('.pkr.hcl')) continue
-        const name = basename(entry, '.pkr.hcl')
-        recipes.push(await loadRecipe(name, buildsDir))
-    }
-    return recipes.sort((a, b) => a.name.localeCompare(b.name))
+const parseMeta = (raw: string, key: string): string | undefined => {
+    const m = raw.match(new RegExp(`^#\\s*${key}\\s*:\\s*(.+)$`, 'm'))
+    return m?.[1]?.trim()
 }
 
-export async function loadRecipe(name: string, buildsDir: string = DEFAULT_BUILDS_DIR): Promise<RecipeInfo> {
+const parseMetaInt = (raw: string, key: string): number | undefined => {
+    const v = parseMeta(raw, key)
+    if (!v) return undefined
+    const n = parseInt(v, 10)
+    return Number.isFinite(n) ? n : undefined
+}
+
+const parseIsoUrl = (raw: string): string | undefined => {
+    const m = raw.match(/iso_url\s*=\s*"([^"]+)"/)
+    return m?.[1]
+}
+
+const parseIsoTargetPath = (raw: string): string | undefined => {
+    // Only parse the first iso_target_path (the boot ISO, not additional ISOs like VirtIO).
+    const m = raw.match(
+        /iso_target_path\s*=\s*"\$\{var\.iso_cache_dir\}\/([^"]+)"/
+    )
+    if (!m) return undefined
+    return `${ISO_CACHE_DIR}/${m[1]}`
+}
+
+export const loadRecipe = async (
+    name: string,
+    buildsDir: string = DEFAULT_BUILDS_DIR
+): Promise<RecipeInfo> => {
     const path = join(buildsDir, `${name}.pkr.hcl`)
     const raw = await readFile(path, 'utf8')
     return {
@@ -40,28 +59,15 @@ export async function loadRecipe(name: string, buildsDir: string = DEFAULT_BUILD
     }
 }
 
-function parseMeta(raw: string, key: string): string | undefined {
-    const m = raw.match(new RegExp(`^#\\s*${key}\\s*:\\s*(.+)$`, 'm'))
-    return m?.[1]?.trim()
-}
-
-function parseMetaInt(raw: string, key: string): number | undefined {
-    const v = parseMeta(raw, key)
-    if (!v) return undefined
-    const n = parseInt(v, 10)
-    return Number.isFinite(n) ? n : undefined
-}
-
-function parseIsoUrl(raw: string): string | undefined {
-    const m = raw.match(/iso_url\s*=\s*"([^"]+)"/)
-    return m?.[1]
-}
-
-const ISO_CACHE_DIR = '/var/lib/cofoundry/iso-cache'
-
-function parseIsoTargetPath(raw: string): string | undefined {
-    // Only parse the first iso_target_path (the boot ISO, not additional ISOs like VirtIO).
-    const m = raw.match(/iso_target_path\s*=\s*"\$\{var\.iso_cache_dir\}\/([^"]+)"/)
-    if (!m) return undefined
-    return `${ISO_CACHE_DIR}/${m[1]}`
+export const listRecipes = async (
+    buildsDir: string = DEFAULT_BUILDS_DIR
+): Promise<RecipeInfo[]> => {
+    const entries = await readdir(buildsDir)
+    const recipes: RecipeInfo[] = []
+    for (const entry of entries) {
+        if (!entry.endsWith('.pkr.hcl')) continue
+        const name = basename(entry, '.pkr.hcl')
+        recipes.push(await loadRecipe(name, buildsDir))
+    }
+    return recipes.sort((a, b) => a.name.localeCompare(b.name))
 }

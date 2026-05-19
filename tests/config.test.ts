@@ -18,7 +18,9 @@ describe('loadRecipe', () => {
         expect(r.display).toBe('Recipe With ISO')
         expect(r.buildVmid).toBe(9101)
         expect(r.isoUrl).toBe('https://example.com/foo-1.2.3-amd64.iso')
-        expect(r.isoTargetPath).toBe('/var/lib/cofoundry/iso-cache/foo-1.2.3-amd64.iso')
+        expect(r.isoTargetPath).toBe(
+            '/var/lib/cofoundry/iso-cache/foo-1.2.3-amd64.iso'
+        )
     })
 
     test('only captures the first iso_target_path (boot ISO, not additional)', async () => {

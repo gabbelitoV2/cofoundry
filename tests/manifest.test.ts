@@ -27,7 +27,9 @@ describe('buildManifest', () => {
 
         const manifest = JSON.parse(await readFile(path, 'utf8'))
         expect(typeof manifest.generated_at).toBe('string')
-        expect(() => new Date(manifest.generated_at).toISOString()).not.toThrow()
+        expect(() =>
+            new Date(manifest.generated_at).toISOString()
+        ).not.toThrow()
 
         expect(manifest.templates.map((t: any) => t.name)).toEqual([
             'almalinux-9',
@@ -37,8 +39,12 @@ describe('buildManifest', () => {
 
     test('preserves sidecar fields verbatim', async () => {
         await buildManifest(outDir)
-        const manifest = JSON.parse(await readFile(join(outDir, 'images.json'), 'utf8'))
-        const debian = manifest.templates.find((t: any) => t.name === 'debian-12')
+        const manifest = JSON.parse(
+            await readFile(join(outDir, 'images.json'), 'utf8')
+        )
+        const debian = manifest.templates.find(
+            (t: any) => t.name === 'debian-12'
+        )
         expect(debian).toMatchObject({
             display: 'Debian 12 (Bookworm)',
             sha256: 'aaaa1111bbbb2222cccc3333dddd4444eeee5555ffff6666aaaa7777bbbb8888',
@@ -51,13 +57,16 @@ describe('buildManifest', () => {
     test('does not include a pre-existing images.json as a template', async () => {
         await buildManifest(outDir) // creates images.json
         await buildManifest(outDir) // second pass should ignore it
-        const manifest = JSON.parse(await readFile(join(outDir, 'images.json'), 'utf8'))
+        const manifest = JSON.parse(
+            await readFile(join(outDir, 'images.json'), 'utf8')
+        )
         expect(manifest.templates).toHaveLength(2)
-        expect(manifest.templates.find((t: any) => t.name === 'images')).toBeUndefined()
+        expect(
+            manifest.templates.find((t: any) => t.name === 'images')
+        ).toBeUndefined()
     })
 
     afterEach(async () => {
         await rm(outDir, { recursive: true, force: true })
     })
 })
-

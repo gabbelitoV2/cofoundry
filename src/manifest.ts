@@ -1,5 +1,6 @@
 import { readdir, readFile, writeFile } from 'node:fs/promises'
 import { basename, join } from 'node:path'
+import byteSize from 'byte-size'
 import { log } from './log.ts'
 
 interface Sidecar {
@@ -16,7 +17,7 @@ interface Sidecar {
  * images.json. Schema is intentionally minimal so downstream `downloader` can
  * grow it later without breaking older builds.
  */
-export async function buildManifest(outDir: string): Promise<string> {
+export const buildManifest = async (outDir: string): Promise<string> => {
     const entries = await readdir(outDir)
     const sidecars: Sidecar[] = []
     for (const entry of entries) {
@@ -26,7 +27,7 @@ export async function buildManifest(outDir: string): Promise<string> {
         const parsed = JSON.parse(raw) as Sidecar
         sidecars.push(parsed)
         log.info(
-            `  + ${basename(entry, '.json')}  ${parsed.sha256.slice(0, 12)}…  ${humanSize(parsed.size)}`
+            `  + ${basename(entry, '.json')}  ${parsed.sha256.slice(0, 12)}…  ${byteSize(parsed.size)}`
         )
     }
     sidecars.sort((a, b) => a.name.localeCompare(b.name))
@@ -39,15 +40,4 @@ export async function buildManifest(outDir: string): Promise<string> {
     await writeFile(outPath, JSON.stringify(manifest, null, 2) + '\n')
     log.ok(`wrote ${outPath} (${sidecars.length} templates)`)
     return outPath
-}
-
-function humanSize(n: number): string {
-    const units = ['B', 'KB', 'MB', 'GB']
-    let i = 0
-    let v = n
-    while (v >= 1024 && i < units.length - 1) {
-        v /= 1024
-        i++
-    }
-    return `${v.toFixed(1)} ${units[i]}`
 }

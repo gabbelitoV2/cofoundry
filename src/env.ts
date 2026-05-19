@@ -12,10 +12,7 @@ const EnvSchema = z.object({
 
     CF_OUT_DIR: z.string().default('./out'),
     CF_SKIP_SYNC_BACK: z
-        .preprocess(
-            v => v === '1' || v === 'true' || v === true,
-            z.boolean()
-        )
+        .preprocess(v => v === '1' || v === 'true' || v === true, z.boolean())
         .default(false),
     CF_BRIDGE: z.string().default('vmbr0'),
     CF_WIN_BRIDGE: z.string().default('vmbr1'),
@@ -35,6 +32,4 @@ const EnvSchema = z.object({
 
 export type Env = z.infer<typeof EnvSchema>
 
-export function loadEnv(): Env {
-    return EnvSchema.parse(process.env)
-}
+export const loadEnv = (): Env => EnvSchema.parse(process.env)

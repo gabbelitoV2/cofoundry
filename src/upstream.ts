@@ -18,7 +18,7 @@ export interface CheckResult {
     error?: string
 }
 
-export async function loadChecksums(): Promise<ChecksumStore> {
+export const loadChecksums = async (): Promise<ChecksumStore> => {
     try {
         return JSON.parse(
             await readFile(CHECKSUMS_FILE, 'utf8')
@@ -28,11 +28,11 @@ export async function loadChecksums(): Promise<ChecksumStore> {
     }
 }
 
-export async function saveChecksums(store: ChecksumStore): Promise<void> {
+export const saveChecksums = async (store: ChecksumStore): Promise<void> => {
     await writeFile(CHECKSUMS_FILE, JSON.stringify(store, null, 2) + '\n')
 }
 
-async function fetchState(url: string): Promise<UpstreamState> {
+const fetchState = async (url: string): Promise<UpstreamState> => {
     const res = await fetch(url, { method: 'HEAD' })
     if (!res.ok) throw new Error(`HEAD ${url} → HTTP ${res.status}`)
     return {
@@ -42,10 +42,10 @@ async function fetchState(url: string): Promise<UpstreamState> {
     }
 }
 
-export function hasChanged(
+export const hasChanged = (
     stored: UpstreamState | undefined,
     current: UpstreamState
-): boolean {
+): boolean => {
     if (!stored) return true
     if (current.etag && stored.etag) return current.etag !== stored.etag
     return (
@@ -54,9 +54,9 @@ export function hasChanged(
     )
 }
 
-export async function checkRecipes(
+export const checkRecipes = async (
     recipes: RecipeInfo[]
-): Promise<{ results: CheckResult[]; store: ChecksumStore }> {
+): Promise<{ results: CheckResult[]; store: ChecksumStore }> => {
     const store = await loadChecksums()
     const results: CheckResult[] = []
 

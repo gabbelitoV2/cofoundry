@@ -1,5 +1,13 @@
 # Agent Notes
 
+## Code style
+
+- Prefer arrow functions (`const foo = () => ...`) over `function` declarations across `src/` and `tests/`.
+- Shared helpers live in `src/util.ts`. Don't re-declare `shellQuote` (or similar) inside individual modules — import it.
+- Logging goes through `src/log.ts`. All levels write to stderr so stdout stays clean for JSON output (`cf check --json`, `cf publish`).
+- Run `bun run prettier --write src/ tests/` before committing.
+- Run `bun test` and `bun run typecheck` before opening a PR.
+
 ## Disk sizing
 
 Keep disks as small as possible. Templates are exported as vzdump `.vma.zst` artifacts — a larger provisioned disk means a larger sparse image even if most of it is empty, and larger transfers downstream.

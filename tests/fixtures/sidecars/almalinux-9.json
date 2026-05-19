@@ -1,8 +1,8 @@
 {
-  "name": "almalinux-9",
-  "display": "AlmaLinux 9",
-  "sha256": "9999aaaa8888bbbb7777cccc6666dddd5555eeee4444ffff3333000022221111",
-  "size": 2147483648,
-  "url": "https://example.com/almalinux-9.vma.zst",
-  "built_at": "2026-05-18T13:00:00Z"
+    "name": "almalinux-9",
+    "display": "AlmaLinux 9",
+    "sha256": "9999aaaa8888bbbb7777cccc6666dddd5555eeee4444ffff3333000022221111",
+    "size": 2147483648,
+    "url": "https://example.com/almalinux-9.vma.zst",
+    "built_at": "2026-05-18T13:00:00Z"
 }

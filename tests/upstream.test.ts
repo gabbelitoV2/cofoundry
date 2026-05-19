@@ -21,21 +21,41 @@ describe('hasChanged', () => {
     })
 
     test('matching etag means unchanged even if other headers drift', () => {
-        const stored = { etag: 'W/"same"', lastModified: 'A', contentLength: '1' }
-        const current = { etag: 'W/"same"', lastModified: 'B', contentLength: '2' }
+        const stored = {
+            etag: 'W/"same"',
+            lastModified: 'A',
+            contentLength: '1',
+        }
+        const current = {
+            etag: 'W/"same"',
+            lastModified: 'B',
+            contentLength: '2',
+        }
         expect(hasChanged(stored, current)).toBe(false)
     })
 
     test('without etag, falls back to lastModified + contentLength', () => {
-        const stored = { lastModified: 'Sat, 18 May 2026 00:00:00 GMT', contentLength: '100' }
+        const stored = {
+            lastModified: 'Sat, 18 May 2026 00:00:00 GMT',
+            contentLength: '100',
+        }
         expect(
-            hasChanged(stored, { lastModified: 'Sat, 18 May 2026 00:00:00 GMT', contentLength: '100' })
+            hasChanged(stored, {
+                lastModified: 'Sat, 18 May 2026 00:00:00 GMT',
+                contentLength: '100',
+            })
         ).toBe(false)
         expect(
-            hasChanged(stored, { lastModified: 'Sat, 18 May 2026 00:00:00 GMT', contentLength: '101' })
+            hasChanged(stored, {
+                lastModified: 'Sat, 18 May 2026 00:00:00 GMT',
+                contentLength: '101',
+            })
         ).toBe(true)
         expect(
-            hasChanged(stored, { lastModified: 'Sun, 19 May 2026 00:00:00 GMT', contentLength: '100' })
+            hasChanged(stored, {
+                lastModified: 'Sun, 19 May 2026 00:00:00 GMT',
+                contentLength: '100',
+            })
         ).toBe(true)
     })
 
@@ -92,7 +112,7 @@ describe('checkRecipes', () => {
     test('reports changed=true on first sighting and updates the store', async () => {
         globalThis.fetch = (async () =>
             new Response(null, {
-                headers: { etag: 'W/"v1"', 'content-length': '42' },
+                headers: { 'etag': 'W/"v1"', 'content-length': '42' },
             })) as typeof fetch
 
         const { results, store } = await checkRecipes([

@@ -42,7 +42,7 @@ async function fetchState(url: string): Promise<UpstreamState> {
     }
 }
 
-function hasChanged(
+export function hasChanged(
     stored: UpstreamState | undefined,
     current: UpstreamState
 ): boolean {

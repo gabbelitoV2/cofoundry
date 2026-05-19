@@ -24,6 +24,9 @@ jobs:
 
       - run: bun install --frozen-lockfile
 
+      - name: Run tests
+        run: bun test
+
       - name: Setup Packer
         uses: hashicorp/setup-packer@main
         with:

@@ -99,13 +99,22 @@ source "proxmox-iso" "almalinux-9" {
   qemu_agent              = true
   cloud_init              = true
   cloud_init_storage_pool = var.proxmox_storage_pool
-  scsi_controller         = "virtio-scsi-pci"
+  scsi_controller         = "virtio-scsi-single"
+
+  serials = ["socket"]
+
+  vga {
+    type = "serial0"
+  }
 
   disks {
     disk_size    = "10G"
     format       = "qcow2"
     storage_pool = var.proxmox_storage_pool
-    type         = "virtio"
+    type         = "scsi"
+    discard      = true
+    ssd          = true
+    io_thread    = true
   }
 
   network_adapters {

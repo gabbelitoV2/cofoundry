@@ -101,13 +101,22 @@ source "proxmox-iso" "debian-12" {
   qemu_agent              = true
   cloud_init              = true
   cloud_init_storage_pool = var.proxmox_storage_pool
-  scsi_controller         = "virtio-scsi-pci"
+  scsi_controller         = "virtio-scsi-single"
+
+  serials = ["socket"]
+
+  vga {
+    type = "serial0"
+  }
 
   disks {
     disk_size    = "5G"
     format       = "qcow2"
     storage_pool = var.proxmox_storage_pool
-    type         = "virtio"
+    type         = "scsi"
+    discard      = true
+    ssd          = true
+    io_thread    = true
   }
 
   network_adapters {
@@ -145,7 +154,7 @@ source "proxmox-iso" "debian-12" {
     "debconf/frontend=noninteractive <wait>",
     "console-setup/ask_detect=false <wait>",
     "console-keymaps-at/keymap=us <wait>",
-    "grub-installer/bootdev=/dev/vda <wait>",
+    "grub-installer/bootdev=/dev/sda <wait>",
     "<enter><wait>",
   ]
 

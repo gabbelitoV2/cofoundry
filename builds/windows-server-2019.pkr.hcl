@@ -93,12 +93,14 @@ source "proxmox-iso" "windows-server-2019" {
     disk_size    = "15G"
     format       = "qcow2"
     storage_pool = var.proxmox_storage_pool
-    type         = "sata"
+    type         = "scsi"
+    discard      = true
+    io_thread    = true
   }
 
   network_adapters {
     bridge      = var.proxmox_bridge
-    model       = "e1000"
+    model       = "virtio"
     mac_address = "02:50:4B:52:57:00"
   }
 

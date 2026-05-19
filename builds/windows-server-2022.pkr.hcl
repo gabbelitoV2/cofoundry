@@ -89,6 +89,8 @@ source "proxmox-iso" "windows-server-2022" {
     efi_type          = "4m"
   }
 
+  scsi_controller = "virtio-scsi-single"
+
   tpm_config {
     tpm_storage_pool = var.proxmox_storage_pool
     tpm_version      = "v2.0"
@@ -98,12 +100,14 @@ source "proxmox-iso" "windows-server-2022" {
     disk_size    = "15G"
     format       = "qcow2"
     storage_pool = var.proxmox_storage_pool
-    type         = "sata"
+    type         = "scsi"
+    discard      = true
+    io_thread    = true
   }
 
   network_adapters {
     bridge      = var.proxmox_bridge
-    model       = "e1000"
+    model       = "virtio"
     mac_address = "02:50:4B:52:57:00"
   }
 

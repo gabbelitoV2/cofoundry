@@ -31,6 +31,9 @@ autoinstall:
       name: lvm
     swap:
       size: 0
+  late-commands:
+    - curtin in-target -- bash -c "echo 'GRUB_CMDLINE_LINUX=\"console=tty0 console=ttyS0,115200\"' > /etc/default/grub.d/50-cofoundry.cfg"
+    - curtin in-target -- update-grub
   user-data:
     package_upgrade: false
     users:

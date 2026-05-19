@@ -64,7 +64,15 @@ source "proxmox-iso" "windows-server-2025" {
 
   vm_id                = local.build_vmid
   vm_name              = "packer-${local.recipe_name}"
-  template_description = "Windows Server 2025 Datacenter Core Packer Template -- ${formatdate("YYYY-MM-DD", timestamp())}"
+  template_description = <<-EOT
+    # Convoy Template
+
+    This template was created for use with **Convoy**.
+
+    Source repository: [ConvoyPanel/cofoundry](https://github.com/ConvoyPanel/cofoundry)
+
+    Created at: `${timestamp()}`
+  EOT
 
   bios    = "ovmf"
   machine = "q35"

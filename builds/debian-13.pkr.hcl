@@ -79,15 +79,23 @@ source "proxmox-iso" "debian-13" {
 
   vm_id                = local.build_vmid
   vm_name              = "packer-${local.recipe_name}"
-  template_description = "${local.recipe_display} Packer Template -- ${formatdate("YYYY-MM-DD", timestamp())}"
+  template_description = <<-EOT
+    # Convoy Template
 
-  bios    = "seabios"
-  machine = "q35"
-  os      = "l26"
-  cpu_type = "host"
-  cores    = 2
-  sockets  = 1
-  memory   = 2048
+    This template was created for use with **Convoy**.
+
+    Source repository: [ConvoyPanel/cofoundry](https://github.com/ConvoyPanel/cofoundry)
+
+    Created at: `${timestamp()}`
+  EOT
+
+  bios                    = "seabios"
+  machine                 = "q35"
+  os                      = "l26"
+  cpu_type                = "host"
+  cores                   = 2
+  sockets                 = 1
+  memory                  = 2048
   qemu_agent              = true
   cloud_init              = true
   cloud_init_storage_pool = var.proxmox_storage_pool

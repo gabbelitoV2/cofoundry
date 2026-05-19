@@ -8,6 +8,11 @@ const ISO_STORE_DIR = '/var/lib/vz/template/iso'
 const ISO_CACHE_DIR = '/var/lib/cofoundry/iso-cache'
 const DUMP_DIR = '/var/lib/vz/dump'
 
+export interface PruneOptions {
+    days: number
+    dryRun: boolean
+}
+
 const ssh = async (target: string, cmd: string): Promise<string> => {
     const { stdout } = await execa('ssh', [target, cmd], {
         stdin: 'inherit',
@@ -21,6 +26,27 @@ const lines = (s: string): string[] =>
         .split('\n')
         .map(l => l.trim())
         .filter(Boolean)
+
+const remove = async (
+    env: Env,
+    paths: string[],
+    dryRun: boolean
+): Promise<void> => {
+    if (dryRun) return
+    for (const f of paths) {
+        await ssh(env.SSH_TARGET, `rm -f ${shellQuote(f)}`)
+    }
+}
+
+const report = (label: string, paths: string[], dryRun: boolean): void => {
+    if (paths.length === 0) {
+        log.info(`${label}: none found`)
+        return
+    }
+    const verb = dryRun ? 'would remove' : 'removed'
+    log.ok(`${label}: ${verb} ${paths.length}`)
+    for (const f of paths) log.info(`  ${f}`)
+}
 
 export const runClean = async (env: Env): Promise<void> => {
     log.step(`removing ${REMOTE_WORK_DIR} on ${env.SSH_TARGET}`)
@@ -72,63 +98,101 @@ export const runClean = async (env: Env): Promise<void> => {
     log.ok('clean done')
 }
 
-export const runPrune = async (env: Env, days: number): Promise<void> => {
-    log.step('prune ephemeral Packer ISOs from Proxmox ISO storage')
+/**
+ * Folds the cleanup work that previously lived in a separate weekly cron
+ * (`docs/setup.md` § "Weekly cleanup cron") into the CLI so CI can call it
+ * after every build. With --dry-run, enumerates targets without deleting.
+ */
+export const runPrune = async (
+    env: Env,
+    { days, dryRun }: PruneOptions
+): Promise<void> => {
+    if (dryRun) log.warn('--dry-run: no files will be deleted')
+
+    // 1. Ephemeral Packer ISOs (any age).
+    log.step('ephemeral Packer ISOs in Proxmox ISO storage')
     const packerIsos = lines(
         await ssh(
             env.SSH_TARGET,
             `find ${ISO_STORE_DIR} -maxdepth 1 -name 'packer*.iso' 2>/dev/null || true`
         )
     )
+    await remove(env, packerIsos, dryRun)
+    report('ephemeral Packer ISOs', packerIsos, dryRun)
 
-    if (packerIsos.length === 0) {
-        log.info('no ephemeral Packer ISOs found')
-    } else {
-        for (const f of packerIsos) {
-            await ssh(env.SSH_TARGET, `rm -f ${shellQuote(f)}`)
-            log.info(`removed ${f}`)
-        }
-        log.ok(`removed ${packerIsos.length} ephemeral ISO(s)`)
-    }
-
-    log.step(`prune iso-cache files older than ${days} day(s)`)
+    // 2. iso-cache files older than --days.
+    log.step(`iso-cache files older than ${days} day(s)`)
     const oldIsos = lines(
         await ssh(
             env.SSH_TARGET,
             `find ${ISO_CACHE_DIR} -maxdepth 1 -name '*.iso' -mtime +${days} 2>/dev/null || true`
         )
     )
+    await remove(env, oldIsos, dryRun)
+    report('stale iso-cache entries', oldIsos, dryRun)
 
-    if (oldIsos.length === 0) {
-        log.info(`no iso-cache files older than ${days} days`)
-    } else {
-        for (const f of oldIsos) {
-            await ssh(env.SSH_TARGET, `rm -f ${shellQuote(f)}`)
-            log.info(`removed ${f}`)
-        }
-        log.ok(`removed ${oldIsos.length} stale ISO(s) from cache`)
-    }
+    // 3. Stale vzdump archives in the dump dir older than --days.
+    // Catches both build-VMID-prefixed dumps (91xx/92xx) and any vzdump-qemu-*
+    // that failed to move to the artifact dir.
+    log.step(`stale vzdump archives in ${DUMP_DIR} older than ${days} day(s)`)
+    const oldDumps = lines(
+        await ssh(
+            env.SSH_TARGET,
+            `find ${DUMP_DIR} -maxdepth 1 -name 'vzdump-qemu-*' -mtime +${days} 2>/dev/null || true`
+        )
+    )
+    await remove(env, oldDumps, dryRun)
+    report('stale vzdump archives', oldDumps, dryRun)
 
-    log.step('destroy orphaned build VMs (91xx / 92xx range)')
+    // 4. Orphaned build VMs (91xx/92xx, excluding templates).
+    log.step('orphaned build VMs (91xx / 92xx, excluding templates)')
     const orphans = lines(
         await ssh(
             env.SSH_TARGET,
-            `qm list 2>/dev/null | awk 'NR>1 && $1 ~ /^9[12][0-9][0-9]$/ {print $1}' || true`
+            // `qm list` reports the template flag in column 6.
+            `qm list 2>/dev/null | awk 'NR>1 && $1 ~ /^9[12][0-9][0-9]$/ && $6 != "1" {print $1}' || true`
         )
     )
 
     if (orphans.length === 0) {
-        log.info('no orphaned build VMs found')
+        log.info('orphaned build VMs: none found')
     } else {
+        const verb = dryRun ? 'would destroy' : 'destroying'
         for (const vmid of orphans) {
-            log.info(`destroying VM ${vmid}`)
-            await ssh(
-                env.SSH_TARGET,
-                `qm stop ${vmid} --skiplock 1 2>/dev/null || true; qm destroy ${vmid} --purge 1 --destroy-unreferenced-disks 1 2>/dev/null || true`
-            )
+            log.info(`${verb} VM ${vmid}`)
+            if (!dryRun) {
+                await ssh(
+                    env.SSH_TARGET,
+                    `qm stop ${vmid} --skiplock 1 2>/dev/null || true; qm destroy ${vmid} --purge 1 --destroy-unreferenced-disks 1 2>/dev/null || true`
+                )
+            }
         }
-        log.ok(`destroyed ${orphans.length} orphaned VM(s)`)
+        log.ok(
+            `orphaned VMs: ${verb.replace('would ', '').replace('ing', 'ed')} ${orphans.length}`
+        )
     }
 
-    log.ok('prune done')
+    // 5. Working dir (only if no other build appears to be using it).
+    log.step(`working dir ${REMOTE_WORK_DIR}`)
+    const workInUse = await ssh(
+        env.SSH_TARGET,
+        // pgrep for packer/rsync touching the dir; non-zero exit means none.
+        `lsof +D ${REMOTE_WORK_DIR} 2>/dev/null | tail -n +2 | head -1 | wc -l`
+    )
+    if (workInUse.trim() !== '0') {
+        log.info(`${REMOTE_WORK_DIR}: in use, skipping`)
+    } else {
+        if (dryRun) {
+            const sz = await ssh(
+                env.SSH_TARGET,
+                `du -sh ${REMOTE_WORK_DIR} 2>/dev/null | cut -f1 || echo "(absent)"`
+            )
+            log.info(`${REMOTE_WORK_DIR}: would remove (${sz})`)
+        } else {
+            await ssh(env.SSH_TARGET, `rm -rf ${REMOTE_WORK_DIR}`)
+            log.ok(`removed ${REMOTE_WORK_DIR}`)
+        }
+    }
+
+    log.ok(dryRun ? 'prune dry-run done' : 'prune done')
 }

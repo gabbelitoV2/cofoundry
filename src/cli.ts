@@ -3,7 +3,7 @@ import { Command } from 'commander'
 import { listRecipes, loadRecipe } from './config.ts'
 import { runBuild } from './build.ts'
 import { runClean, runPrune } from './prune.ts'
-import { checkRecipes, saveChecksums } from './upstream.ts'
+import { checkRecipes, SYNTHETIC_RECIPES, saveChecksums } from './upstream.ts'
 import { buildManifest } from './manifest.ts'
 import { loadEnv } from './env.ts'
 import { log } from './log.ts'
@@ -72,7 +72,15 @@ program
     .option('--json', 'Output changed recipe names as a JSON array (for CI)')
     .action(async (name: string | undefined, opts: { json?: boolean }) => {
         const recipes = name ? [await loadRecipe(name)] : await listRecipes()
-        const withUrl = recipes.filter(r => r.isoUrl)
+        const synthetic = SYNTHETIC_RECIPES.map(s => ({
+            name: s.name,
+            path: '<synthetic>',
+            display: s.name,
+            isoUrl: s.isoUrl,
+        }))
+        const withUrl = [...recipes, ...(name ? [] : synthetic)].filter(
+            r => r.isoUrl
+        )
         if (withUrl.length === 0) {
             log.warn('No recipes with an iso_url found in boot_iso block')
             if (opts.json) console.log('[]')
@@ -120,12 +128,16 @@ program
 program
     .command('prune')
     .description(
-        'Remove ephemeral Packer ISOs and stale iso-cache files from the Proxmox node'
+        'Reclaim space on the Proxmox node: ephemeral Packer ISOs, stale iso-cache and vzdump files, orphaned build VMs, and the working dir.'
     )
-    .option('--days <n>', 'Remove iso-cache files older than N days', '30')
-    .action(async (opts: { days: string }) => {
+    .option('--days <n>', 'Treat files older than N days as stale', '30')
+    .option('--dry-run', 'Enumerate targets without deleting', false)
+    .action(async (opts: { days: string; dryRun: boolean }) => {
         const env = loadEnv()
-        await runPrune(env, parseInt(opts.days, 10))
+        await runPrune(env, {
+            days: parseInt(opts.days, 10),
+            dryRun: Boolean(opts.dryRun),
+        })
     })
 
 program

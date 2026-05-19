@@ -5,6 +5,9 @@ declare module 'byte-size' {
         long: string
         toString(): string
     }
-    function byteSize(bytes: number, options?: Record<string, unknown>): ByteSize
+    function byteSize(
+        bytes: number,
+        options?: Record<string, unknown>
+    ): ByteSize
     export default byteSize
 }

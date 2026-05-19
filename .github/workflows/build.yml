@@ -51,9 +51,9 @@ jobs:
       # ── Build template ─────────────────────────────────────────────────────
       # inject-placeholders.sh generates an ephemeral SSH key (Linux) or
       # WinRM password (Windows), patches recipe files, and writes a vars file.
-      # packer init + packer build are invoked by tb build.
+      # packer init + packer build are invoked by `cf build`.
       - name: Build template
-        run: bun run tb build ${{ inputs.recipe }}
+        run: bun run cf build ${{ inputs.recipe }}
         env:
           PVE_HOST: ${{ secrets.PVE_HOST }}
           PVE_PORT: ${{ secrets.PVE_PORT }}
@@ -62,15 +62,28 @@ jobs:
           PVE_TOKEN_SECRET: ${{ secrets.PVE_TOKEN_SECRET }}
           SSH_TARGET: ${{ secrets.SSH_TARGET }}
           PVE_DUMP_DIR: ${{ secrets.PVE_DUMP_DIR }}
-          TB_STORAGE: ${{ secrets.TB_STORAGE }}
-          TB_ISO_STORAGE: ${{ secrets.TB_ISO_STORAGE }}
-          TB_BRIDGE: ${{ secrets.TB_BRIDGE }}
-          TB_UPLOAD_CMD: ${{ secrets.TB_UPLOAD_CMD }}
-          TB_PUBLIC_URL_TMPL: ${{ secrets.TB_PUBLIC_URL_TMPL }}
+          CF_STORAGE: ${{ secrets.CF_STORAGE }}
+          CF_ISO_STORAGE: ${{ secrets.CF_ISO_STORAGE }}
+          CF_BRIDGE: ${{ secrets.CF_BRIDGE }}
+          CF_UPLOAD_CMD: ${{ secrets.CF_UPLOAD_CMD }}
+          CF_PUBLIC_URL_TMPL: ${{ secrets.CF_PUBLIC_URL_TMPL }}
 
       # ── Publish manifest ───────────────────────────────────────────────────
       - name: Publish manifest
-        run: bun run tb publish
+        run: bun run cf publish
+
+      # ── Reclaim disk on the node ──────────────────────────────────────────
+      # Folds the old weekly cleanup cron into the build pipeline.
+      - name: Prune Proxmox node
+        if: always()
+        run: bun run cf prune --days 7
+        env:
+          SSH_TARGET: ${{ secrets.SSH_TARGET }}
+          PVE_HOST: ${{ secrets.PVE_HOST }}
+          PVE_PORT: ${{ secrets.PVE_PORT }}
+          PVE_NODE: ${{ secrets.PVE_NODE }}
+          PVE_TOKEN_ID: ${{ secrets.PVE_TOKEN_ID }}
+          PVE_TOKEN_SECRET: ${{ secrets.PVE_TOKEN_SECRET }}
 
       # ── Upload artifact ────────────────────────────────────────────────────
       - uses: actions/upload-artifact@v4

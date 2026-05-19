@@ -153,39 +153,18 @@ mount -o remount /tmp
 ### 7. Weekly cleanup cron
 
 Prevents ISOs, dump files, and orphaned VMs from accumulating over time.
-
-```sh
-cat > /usr/local/sbin/cofoundry-cleanup.sh << 'EOF'
-#!/bin/bash
-# Answerfiles CDs and hash-named ISOs uploaded by Packer
-find /var/lib/vz/template/iso -maxdepth 1 \
-  \( -name 'packer*.iso' -o -regextype posix-extended -regex '.*/[0-9a-f]{40}\.iso' \) \
-  -delete 2>/dev/null
-
-# Stale vzdump archives and logs for build VMIDs (91xx, 92xx)
-find /var/lib/vz/dump -maxdepth 1 \
-  \( -name 'vzdump-qemu-91??-*' -o -name 'vzdump-qemu-92??-*' \) \
-  -delete 2>/dev/null
-
-# ISO cache files older than 30 days
-find /var/lib/cofoundry/iso-cache -maxdepth 1 -name '*.iso' -mtime +30 -delete 2>/dev/null
-
-# Working directory
-rm -rf /tmp/cofoundry
-
-# Orphaned build VMs left by interrupted builds
-qm list 2>/dev/null \
-  | awk 'NR>1 && $1 ~ /^9[12][0-9][0-9]$/ {print $1}' \
-  | xargs -r -I{} sh -c 'qm stop {} --skiplock 1 2>/dev/null; qm destroy {} --purge 1 --destroy-unreferenced-disks 1 2>/dev/null'
-EOF
-chmod +x /usr/local/sbin/cofoundry-cleanup.sh
-```
-
-Add to root's crontab (`crontab -e`):
+Everything the old inline shell script did now lives in `cf prune`, so the
+cron is just one line. From a workstation that can reach the node:
 
 ```
-0 3 * * 0 /usr/local/sbin/cofoundry-cleanup.sh
+0 3 * * 0 cd /path/to/cofoundry && bun run cf prune --days 30
 ```
+
+Or on the node itself if you have the repo checked out there. CI also runs
+`cf prune --days 7` after every build, so the cron is only needed if you
+build locally.
+
+Run `cf prune --dry-run` first to see what would be removed.
 
 ---
 

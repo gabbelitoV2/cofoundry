@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
-import { hasChanged, checkRecipes } from '../src/upstream.ts'
+import { SYNTHETIC_RECIPES, checkRecipes, hasChanged } from '../src/upstream.ts'
 
 describe('hasChanged', () => {
     test('returns true when nothing is stored yet', () => {
@@ -67,6 +67,14 @@ describe('hasChanged', () => {
                 { etag: 'W/"x"', lastModified: 'A', contentLength: '1' }
             )
         ).toBe(false)
+    })
+})
+
+describe('SYNTHETIC_RECIPES', () => {
+    test('includes virtio-win with the stable-virtio URL', () => {
+        const virtio = SYNTHETIC_RECIPES.find(r => r.name === 'virtio-win')
+        expect(virtio).toBeDefined()
+        expect(virtio!.isoUrl).toContain('stable-virtio/virtio-win.iso')
     })
 })
 

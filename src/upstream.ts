@@ -12,6 +12,19 @@ interface UpstreamState {
 
 type ChecksumStore = Record<string, UpstreamState>
 
+/**
+ * Synthetic "recipes" tracked alongside the .pkr.hcl files: pinned third-party
+ * downloads whose drift should trigger a CI signal even though no recipe owns
+ * them directly. When the URL's headers change, maintainers should bump the
+ * pin in the recipes that consume it.
+ */
+export const SYNTHETIC_RECIPES: { name: string; isoUrl: string }[] = [
+    {
+        name: 'virtio-win',
+        isoUrl: 'https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/stable-virtio/virtio-win.iso',
+    },
+]
+
 export interface CheckResult {
     name: string
     changed: boolean

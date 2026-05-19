@@ -11,6 +11,12 @@ const EnvSchema = z.object({
     PVE_DUMP_DIR: z.string().default('/var/lib/vz/dump'),
 
     CF_OUT_DIR: z.string().default('./out'),
+    CF_SKIP_SYNC_BACK: z
+        .preprocess(
+            v => v === '1' || v === 'true' || v === true,
+            z.boolean()
+        )
+        .default(false),
     CF_BRIDGE: z.string().default('vmbr0'),
     CF_WIN_BRIDGE: z.string().default('vmbr1'),
     CF_STORAGE: z.string().default('local'),

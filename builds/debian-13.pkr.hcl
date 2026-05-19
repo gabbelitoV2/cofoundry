@@ -154,7 +154,7 @@ build {
     inline = [
       "if command -v cloud-init >/dev/null 2>&1; then sudo cloud-init status --wait || true; fi",
       "sudo apt-get -y update",
-      "sudo apt-get -y upgrade",
+      "sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get -y upgrade",
       "sudo rm -f /etc/ssh/ssh_host_*",
       "sudo truncate -s 0 /etc/machine-id",
       "sudo apt-get -y autoremove --purge",
@@ -174,9 +174,14 @@ build {
   provisioner "shell" {
     inline = [
       "sudo cp /tmp/99-pve.cfg /etc/cloud/cloud.cfg.d/99-pve.cfg",
-      "sudo userdel --remove --force packer || true",
       "sudo sync",
     ]
+  }
+
+  provisioner "shell" {
+    expect_disconnect = true
+    skip_clean        = true
+    inline            = ["sudo userdel --remove --force packer || true"]
   }
 
   post-processor "shell-local" {

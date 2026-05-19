@@ -116,9 +116,11 @@ source "proxmox-iso" "rocky-linux-8" {
 
   http_directory = "${path.root}/${local.recipe_name}/http"
 
-  boot_wait = "10s"
+  boot_wait = "15s"
   boot_command = [
-    "<tab> inst.text inst.ks=http://{{ .HTTPIP }}:{{ .HTTPPort }}/ks.cfg ip=${var.build_ip}::${var.build_gw}:255.255.255.0:${local.recipe_name}:ens18:none nameserver=${var.build_dns} inst.waitfornet=10<enter><wait>",
+    "<up><wait>",
+    "<tab><wait>",
+    " inst.text inst.ks=http://{{ .HTTPIP }}:{{ .HTTPPort }}/ks.cfg inst.ks.sendmac ip=dhcp rd.neednet=1 inst.waitfornet=30<enter><wait>",
   ]
 
   communicator           = "ssh"
@@ -158,9 +160,14 @@ build {
   provisioner "shell" {
     inline = [
       "sudo install -m 0644 /tmp/99-pve.cfg /etc/cloud/cloud.cfg.d/99-pve.cfg",
-      "sudo userdel --remove --force packer || true",
       "sudo sync",
     ]
+  }
+
+  provisioner "shell" {
+    expect_disconnect = true
+    skip_clean        = true
+    inline            = ["sudo userdel --remove --force packer || true"]
   }
 
   post-processor "shell-local" {

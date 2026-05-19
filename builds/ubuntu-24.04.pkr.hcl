@@ -140,7 +140,7 @@ build {
     inline = [
       "while [ ! -f /var/lib/cloud/instance/boot-finished ]; do echo 'Waiting for cloud-init...'; sleep 1; done",
       "sudo apt-get -y update",
-      "sudo apt-get -y upgrade",
+      "sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get -y upgrade",
       "sudo apt-get -y autoremove --purge",
       "sudo apt-get -y clean",
       "sudo rm -f /etc/netplan/00-installer-config.yaml",
@@ -165,9 +165,14 @@ build {
   provisioner "shell" {
     inline = [
       "sudo cp /tmp/99-pve.cfg /etc/cloud/cloud.cfg.d/99-pve.cfg",
-      "sudo userdel --remove --force packer || true",
       "sudo sync",
     ]
+  }
+
+  provisioner "shell" {
+    expect_disconnect = true
+    skip_clean        = true
+    inline            = ["sudo userdel --remove --force packer || true"]
   }
 
   post-processor "shell-local" {

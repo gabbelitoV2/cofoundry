@@ -6,8 +6,10 @@ set -euxo pipefail
 cloud-init clean --logs || true
 rm -f /etc/machine-id
 touch /etc/machine-id
-rm -f /var/lib/dbus/machine-id
-ln -s /etc/machine-id /var/lib/dbus/machine-id
+if [ -d /var/lib/dbus ]; then
+  rm -f /var/lib/dbus/machine-id
+  ln -s /etc/machine-id /var/lib/dbus/machine-id
+fi
 rm -f /etc/ssh/ssh_host_*
 truncate -s 0 /var/log/wtmp /var/log/btmp /var/log/lastlog || true
 find /var/log -type f -exec truncate -s 0 {} + || true

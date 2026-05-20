@@ -6,7 +6,7 @@ import { homedir } from 'os'
 import { existsSync } from 'fs'
 import pc from 'picocolors'
 
-const isTTY = !!process.stderr.isTTY
+const isTTY = process.stderr.isTTY
 
 // ── progress rendering ───────────────────────────────────────────────────────
 

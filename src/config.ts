@@ -36,7 +36,7 @@ const parseIsoUrl = (raw: string): string | undefined => {
 // Parse all variable default values from the HCL file.
 const parseVarDefaults = (raw: string): Record<string, string> => {
     const vars: Record<string, string> = {}
-    const blockRe = /variable\s+"([^"]+)"\s*\{([^}]+)\}/g
+    const blockRe = /variable\s+"([^"]+)"\s*\{([^}]+)}/g
     let m: RegExpExecArray | null
     while ((m = blockRe.exec(raw)) !== null) {
         const defMatch = m[2]!.match(/default\s*=\s*"([^"]*)"/)
@@ -47,7 +47,7 @@ const parseVarDefaults = (raw: string): Record<string, string> => {
 
 // Expand ${var.name} references using the parsed defaults.
 const resolveVarRefs = (value: string, vars: Record<string, string>): string =>
-    value.replace(/\$\{var\.([^}]+)\}/g, (orig, name: string) => vars[name] ?? orig)
+    value.replace(/\${var\.([^}]+)}/g, (orig, name: string) => vars[name] ?? orig)
 
 const parseIsoTargetPath = (raw: string): string | undefined => {
     // Only parse the first iso_target_path (the boot ISO, not additional ISOs like VirtIO).

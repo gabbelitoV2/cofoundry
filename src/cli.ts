@@ -1,12 +1,19 @@
 #!/usr/bin/env bun
 import { Command } from 'commander'
 import { listRecipes, loadRecipe } from './config.ts'
-import { runBuild } from './build.ts'
+import { runBuild, syncArtifactsBack } from './build.ts'
 import { runClean, runPrune } from './prune.ts'
 import { checkRecipes, SYNTHETIC_RECIPES, saveChecksums } from './upstream.ts'
 import { buildManifest } from './manifest.ts'
-import { loadEnv } from './env.ts'
+import { type Env, loadEnv } from './env.ts'
 import { log } from './log.ts'
+
+type BuildCommandOptions = {
+    skipSyncBack?: boolean
+}
+
+const shouldSyncBack = (env: Env, opts: BuildCommandOptions): boolean =>
+    !opts.skipSyncBack && !env.CF_SKIP_SYNC_BACK
 
 const program = new Command()
 program.name('cf').description('Proxmox template builder').version('0.0.1')
@@ -24,10 +31,11 @@ program
 program
     .command('build <name>')
     .description('Build a template artifact using Packer')
-    .action(async (name: string) => {
+    .option('--skip-sync-back', 'Do not download built artifacts to CF_OUT_DIR')
+    .action(async (name: string, opts: BuildCommandOptions) => {
         const env = loadEnv()
         const recipe = await loadRecipe(name)
-        await runBuild(env, recipe)
+        await runBuild(env, recipe, { syncBack: shouldSyncBack(env, opts) })
     })
 
 program
@@ -35,22 +43,33 @@ program
     .description(
         'Build all recipes sequentially; continues on failure and prints a summary'
     )
-    .action(async () => {
+    .option('--skip-sync-back', 'Do not download built artifacts to CF_OUT_DIR')
+    .action(async (opts: BuildCommandOptions) => {
         const env = loadEnv()
         const recipes = await listRecipes()
         if (recipes.length === 0) return log.warn('No recipes found in builds/')
+
+        const syncBack = shouldSyncBack(env, opts)
 
         const passed: string[] = []
         const failed: { name: string; error: string }[] = []
 
         for (const recipe of recipes) {
             try {
-                await runBuild(env, recipe)
+                await runBuild(env, recipe, { syncBack: false })
                 passed.push(recipe.name)
             } catch (err) {
                 const msg = err instanceof Error ? err.message : String(err)
                 log.err(`${recipe.name}: ${msg}`)
                 failed.push({ name: recipe.name, error: msg })
+            }
+        }
+
+        if (passed.length > 0) {
+            if (!syncBack) {
+                log.step(`skip syncing artifacts back`)
+            } else {
+                await syncArtifactsBack(env)
             }
         }
 

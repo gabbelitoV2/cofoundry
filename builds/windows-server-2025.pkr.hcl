@@ -78,7 +78,7 @@ source "proxmox-iso" "windows-server-2025" {
   cpu_type = "host"
   cores    = 4
   sockets  = 1
-  memory   = 4096
+  memory   = 8192
 
   efi_config {
     efi_storage_pool  = var.proxmox_storage_pool

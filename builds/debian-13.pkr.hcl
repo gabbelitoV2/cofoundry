@@ -93,9 +93,9 @@ source "proxmox-iso" "debian-13" {
   machine                 = "q35"
   os                      = "l26"
   cpu_type                = "host"
-  cores                   = 2
+  cores                   = 4
   sockets                 = 1
-  memory                  = 2048
+  memory                  = 8192
   qemu_agent              = true
   cloud_init              = true
   cloud_init_storage_pool = var.proxmox_storage_pool
@@ -169,14 +169,19 @@ build {
 
   provisioner "shell" {
     inline = [
+      "echo '==> Waiting for cloud-init to finish'",
       "if command -v cloud-init >/dev/null 2>&1; then sudo cloud-init status --wait || true; fi",
+      "echo '==> Updating packages'",
       "sudo apt-get -y update",
       "sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get -y upgrade",
+      "echo '==> Cleaning up SSH host keys and machine ID'",
       "sudo rm -f /etc/ssh/ssh_host_*",
       "sudo truncate -s 0 /etc/machine-id",
+      "echo '==> Removing unused packages and cleaning cache'",
       "sudo apt-get -y autoremove --purge",
       "sudo apt-get -y clean",
       "sudo apt-get -y autoclean",
+      "echo '==> Cleaning cloud-init state'",
       "sudo cloud-init clean",
       "sudo rm -f /etc/cloud/cloud.cfg.d/subiquity-disable-cloudinit-networking.cfg",
       "sudo sync",

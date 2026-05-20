@@ -17,6 +17,18 @@ const REPO_ROOT = new URL('../', import.meta.url).pathname
 
 const fileExists = (path: string): Promise<boolean> => Bun.file(path).exists()
 
+type RunBuildOptions = {
+    syncBack?: boolean
+}
+
+const shouldSyncBack = (env: Env, options?: RunBuildOptions): boolean =>
+    options?.syncBack ?? !env.CF_SKIP_SYNC_BACK
+
+export const syncArtifactsBack = async (env: Env): Promise<void> => {
+    log.step(`sync artifacts back`)
+    await sftpDownload(env.SSH_TARGET, buildRemoteOutDir(env), env.CF_OUT_DIR)
+}
+
 const resolveBuildGateway = async (
     env: Env,
     bridge: string,
@@ -44,7 +56,11 @@ const resolveBuildGateway = async (
     return match[1]!
 }
 
-export const runBuild = async (env: Env, recipe: RecipeInfo): Promise<void> => {
+export const runBuild = async (
+    env: Env,
+    recipe: RecipeInfo,
+    options?: RunBuildOptions
+): Promise<void> => {
     const remoteWorkDir = buildRemoteWorkDir(env)
     const remoteOutDir = buildRemoteOutDir(env)
     const remoteTmpDir = buildRemoteTmpDir(env)
@@ -181,11 +197,10 @@ export const runBuild = async (env: Env, recipe: RecipeInfo): Promise<void> => {
         `${remoteEnv} ${packerArgs.join(' ')}`
     )
 
-    if (env.CF_SKIP_SYNC_BACK) {
+    if (!shouldSyncBack(env, options)) {
         log.step(`skip syncing artifacts back`)
     } else {
-        log.step(`sync artifacts back`)
-        await sftpDownload(env.SSH_TARGET, remoteOutDir, env.CF_OUT_DIR)
+        await syncArtifactsBack(env)
     }
 
     log.ok(`build ${recipe.name} completed`)

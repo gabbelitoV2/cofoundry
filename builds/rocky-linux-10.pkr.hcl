@@ -93,9 +93,9 @@ source "proxmox-iso" "rocky-linux-10" {
   machine                 = "q35"
   os                      = "l26"
   cpu_type                = "host"
-  cores                   = 2
+  cores                   = 4
   sockets                 = 1
-  memory                  = 2048
+  memory                  = 8192
   qemu_agent              = true
   cloud_init              = true
   cloud_init_storage_pool = var.proxmox_storage_pool
@@ -157,9 +157,13 @@ build {
 
   provisioner "shell" {
     inline = [
+      "echo '==> Waiting for cloud-init to finish (may report disabled on minimal installs)'",
       "sudo timeout 180 cloud-init status --wait || true",
+      "echo '==> Updating packages'",
       "sudo dnf -y update",
+      "echo '==> Removing unused packages'",
       "sudo dnf -y autoremove",
+      "echo '==> Cleaning package cache'",
       "sudo dnf -y clean all",
     ]
   }

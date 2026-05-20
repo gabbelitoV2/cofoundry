@@ -5,6 +5,7 @@
 ```sh
 cf build debian-12
 cf build windows-server-2025
+cf build debian-12 --skip-sync-back
 ```
 
 The first run for a recipe downloads the ISO to the node's cache automatically. Subsequent builds skip the download. Output lands in `./out/`:
@@ -26,7 +27,10 @@ Builds all recipes sequentially. Continues on failure and prints a pass/fail sum
 
 ```sh
 cf build-all
+cf build-all --skip-sync-back
 ```
+
+`--skip-sync-back` overrides the default artifact download for that command invocation. `CF_SKIP_SYNC_BACK=1` still works too.
 
 ## Check for upstream ISO changes
 

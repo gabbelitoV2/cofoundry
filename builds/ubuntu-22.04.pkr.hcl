@@ -93,9 +93,9 @@ source "proxmox-iso" "ubuntu-22-04" {
   machine                 = "q35"
   os                      = "l26"
   cpu_type                = "host"
-  cores                   = 2
+  cores                   = 4
   sockets                 = 1
-  memory                  = 2048
+  memory                  = 8192
   qemu_agent              = true
   cloud_init              = true
   cloud_init_storage_pool = var.proxmox_storage_pool
@@ -155,11 +155,15 @@ build {
 
   provisioner "shell" {
     inline = [
+      "echo '==> Waiting for cloud-init to finish'",
       "while [ ! -f /var/lib/cloud/instance/boot-finished ]; do echo 'Waiting for cloud-init...'; sleep 1; done",
+      "echo '==> Updating packages'",
       "sudo apt-get -y update",
       "sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get -y upgrade",
+      "echo '==> Removing unused packages and cleaning cache'",
       "sudo apt-get -y autoremove --purge",
       "sudo apt-get -y clean",
+      "echo '==> Removing installer network config'",
       "sudo rm -f /etc/netplan/00-installer-config.yaml",
       "sudo rm -f /etc/cloud/cloud.cfg.d/subiquity-disable-cloudinit-networking.cfg",
     ]

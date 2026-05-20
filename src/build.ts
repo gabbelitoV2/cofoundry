@@ -2,7 +2,8 @@ import type { Env } from './env.ts'
 import type { RecipeInfo } from './config.ts'
 import { log } from './log.ts'
 import { shellQuote } from './util.ts'
-import { captureRemote, remoteStreaming, streaming } from './build/remote.ts'
+import { captureRemote, remoteStreaming, remoteStreamingPty } from './build/remote.ts'
+import { sftpUpload, sftpDownload } from './build/sftp.ts'
 import {
     buildPackerVars,
     buildRemoteEnv,
@@ -83,16 +84,10 @@ export const runBuild = async (env: Env, recipe: RecipeInfo): Promise<void> => {
     )
 
     log.step(`sync repo to ${env.SSH_TARGET}:${remoteWorkDir}`)
-    await streaming('rsync', [
-        '-a',
-        '--delete',
-        '--progress',
-        '--exclude=.git',
-        '--exclude=node_modules',
-        '--exclude=out',
-        `${REPO_ROOT}`,
-        `${env.SSH_TARGET}:${remoteWorkDir}/`,
-    ])
+    await sftpUpload(env.SSH_TARGET, REPO_ROOT, remoteWorkDir, {
+        excludes: ['.git', 'node_modules', 'out'],
+        delete: true,
+    })
 
     if (recipe.buildVmid) {
         log.step(`remove stale VM ${recipe.buildVmid}`)
@@ -108,19 +103,47 @@ export const runBuild = async (env: Env, recipe: RecipeInfo): Promise<void> => {
         log.step(`ensure ISO cache: ${recipe.isoTargetPath}`)
         await captureRemote(
             env.SSH_TARGET,
-            `mkdir -p ${shellQuote(recipe.isoTargetPath.replace(/\/[^/]+$/, ''))} && ` +
-                `[ -f ${shellQuote(recipe.isoTargetPath)} ] && echo "cached" || ` +
-                `wget -q --show-progress -O ${shellQuote(recipe.isoTargetPath)} ${shellQuote(recipe.isoUrl)}`
+            `mkdir -p ${shellQuote(recipe.isoTargetPath.replace(/\/[^/]+$/, ''))}`
         )
+        const isoCached =
+            (
+                await captureRemote(
+                    env.SSH_TARGET,
+                    `[ -f ${shellQuote(recipe.isoTargetPath)} ] && echo 1 || echo 0`
+                )
+            ).trim() === '1'
+        if (!isoCached) {
+            const wgetCmd = process.stderr.isTTY
+                ? `wget -q --show-progress --progress=bar:force:noscroll -O ${shellQuote(recipe.isoTargetPath)} ${shellQuote(recipe.isoUrl)}`
+                : `wget -q -O ${shellQuote(recipe.isoTargetPath)} ${shellQuote(recipe.isoUrl)}`
+            const stream = process.stderr.isTTY ? remoteStreamingPty : remoteStreaming
+            await stream(env.SSH_TARGET, wgetCmd)
+        }
     }
 
     if (recipe.name.startsWith('windows-')) {
         log.step('pre-fetch Cloudbase-Init MSI on remote host')
         const msiDest = `${remoteWorkDir}/builds/_shared/CloudbaseInitSetup_x64.msi`
-        await captureRemote(
-            env.SSH_TARGET,
-            `[ -f ${msiDest} ] && echo "cached" || (url=$(curl -s https://api.github.com/repos/cloudbase/cloudbase-init/releases/latest | python3 -c "import sys,json; r=json.load(sys.stdin); print(next(a['browser_download_url'] for a in r['assets'] if 'x64' in a['name'] and a['name'].endswith('.msi')))") && wget -q --show-progress -O ${msiDest} "$url")`
-        )
+        const msiCached =
+            (
+                await captureRemote(
+                    env.SSH_TARGET,
+                    `[ -f ${shellQuote(msiDest)} ] && echo 1 || echo 0`
+                )
+            ).trim() === '1'
+        if (!msiCached) {
+            const curlAndWget = (wgetFlags: string) =>
+                `url=$(curl -s https://api.github.com/repos/cloudbase/cloudbase-init/releases/latest | python3 -c "import sys,json; r=json.load(sys.stdin); print(next(a['browser_download_url'] for a in r['assets'] if 'x64' in a['name'] and a['name'].endswith('.msi')))") && wget ${wgetFlags} -O ${shellQuote(msiDest)} "$url"`
+            const stream = process.stderr.isTTY ? remoteStreamingPty : remoteStreaming
+            await stream(
+                env.SSH_TARGET,
+                curlAndWget(
+                    process.stderr.isTTY
+                        ? '-q --show-progress --progress=bar:force:noscroll'
+                        : '-q'
+                )
+            )
+        }
     }
 
     log.step(`inject placeholders for ${recipe.name}`)
@@ -162,12 +185,7 @@ export const runBuild = async (env: Env, recipe: RecipeInfo): Promise<void> => {
         log.step(`skip syncing artifacts back`)
     } else {
         log.step(`sync artifacts back`)
-        await streaming('rsync', [
-            '-a',
-            '--progress',
-            `${env.SSH_TARGET}:${remoteOutDir}/`,
-            `${env.CF_OUT_DIR}/`,
-        ])
+        await sftpDownload(env.SSH_TARGET, remoteOutDir, env.CF_OUT_DIR)
     }
 
     log.ok(`build ${recipe.name} completed`)

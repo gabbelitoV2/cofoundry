@@ -23,6 +23,11 @@ export const captureRemote = async (
 export const remoteStreaming = (target: string, cmd: string): Promise<void> =>
     streaming('ssh', [target, cmd])
 
+// Allocates a PTY so remote programs (e.g. wget) detect a terminal and show
+// their native progress bar rather than falling back to dot-style output.
+export const remoteStreamingPty = (target: string, cmd: string): Promise<void> =>
+    streaming('ssh', ['-t', '-t', target, cmd])
+
 export const streaming = async (cmd: string, args: string[]): Promise<void> => {
     try {
         await execa(cmd, args, { stdio: 'inherit' })

@@ -33,10 +33,27 @@ const parseIsoUrl = (raw: string): string | undefined => {
     return m?.[1]
 }
 
+// Parse all variable default values from the HCL file.
+const parseVarDefaults = (raw: string): Record<string, string> => {
+    const vars: Record<string, string> = {}
+    const blockRe = /variable\s+"([^"]+)"\s*\{([^}]+)\}/g
+    let m: RegExpExecArray | null
+    while ((m = blockRe.exec(raw)) !== null) {
+        const defMatch = m[2]!.match(/default\s*=\s*"([^"]*)"/)
+        if (defMatch) vars[m[1]!] = defMatch[1]!
+    }
+    return vars
+}
+
+// Expand ${var.name} references using the parsed defaults.
+const resolveVarRefs = (value: string, vars: Record<string, string>): string =>
+    value.replace(/\$\{var\.([^}]+)\}/g, (orig, name: string) => vars[name] ?? orig)
+
 const parseIsoTargetPath = (raw: string): string | undefined => {
     // Only parse the first iso_target_path (the boot ISO, not additional ISOs like VirtIO).
     const m = raw.match(/iso_target_path\s*=\s*"([^"]+)"/)
-    return m?.[1]
+    if (!m) return undefined
+    return resolveVarRefs(m[1]!, parseVarDefaults(raw))
 }
 
 export const loadRecipe = async (

@@ -56,7 +56,7 @@ variable "build_dns" {
 
 variable "iso_cache_dir" {
   type    = string
-  default = "/var/lib/cofoundry/iso-cache"
+  default = "/var/lib/vz/template/iso"
 }
 
 variable "packer_ssh_private_key_file" {
@@ -127,7 +127,7 @@ source "proxmox-iso" "ubuntu-25-10" {
     iso_url          = "https://releases.ubuntu.com/25.10/ubuntu-25.10-live-server-amd64.iso"
     iso_checksum     = "sha256:dc54870e5261c0abad19f74b8146659d10e625971792bd42d7ecde820b60a1d0"
     iso_storage_pool = var.proxmox_iso_storage_pool
-    iso_target_path  = "${var.iso_cache_dir}/ubuntu-25.10-live-server-amd64.iso"
+    iso_target_path  = "${var.iso_cache_dir}/packer-ubuntu-25.10-live-server-amd64.iso"
     unmount          = true
   }
 

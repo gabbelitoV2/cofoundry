@@ -56,7 +56,7 @@ variable "build_dns" {
 
 variable "iso_cache_dir" {
   type    = string
-  default = "/var/lib/cofoundry/iso-cache"
+  default = "/var/lib/vz/template/iso"
 }
 
 variable "packer_ssh_private_key_file" {
@@ -127,7 +127,7 @@ source "proxmox-iso" "almalinux-10" {
     iso_url          = "https://repo.almalinux.org/almalinux/10/isos/x86_64/AlmaLinux-10.1-x86_64-minimal.iso"
     iso_checksum     = "sha256:049efd183a5a841dd432b3427eb6faa7deb3bf6c6bf2c63cbffa024b9c651725"
     iso_storage_pool = var.proxmox_iso_storage_pool
-    iso_target_path  = "${var.iso_cache_dir}/AlmaLinux-10.1-x86_64-minimal.iso"
+    iso_target_path  = "${var.iso_cache_dir}/packer-almalinux-10.1-x86_64-minimal.iso"
     unmount          = true
   }
 

@@ -41,7 +41,7 @@ variable "proxmox_bridge" {
 
 variable "iso_cache_dir" {
   type    = string
-  default = "/var/lib/cofoundry/iso-cache"
+  default = "/var/lib/vz/template/iso"
 }
 
 variable "build_ip" {
@@ -129,7 +129,7 @@ source "proxmox-iso" "debian-12" {
     iso_url          = "https://cdimage.debian.org/cdimage/archive/12.13.0/amd64/iso-cd/debian-12.13.0-amd64-netinst.iso"
     iso_checksum     = "sha256:2b880ffabe36dbe04a662a3125e5ecae4db69d0acce257dd74615bbf165ad76e"
     iso_storage_pool = var.proxmox_iso_storage_pool
-    iso_target_path  = "${var.iso_cache_dir}/debian-12.13.0-amd64-netinst.iso"
+    iso_target_path  = "${var.iso_cache_dir}/packer-debian-12.13.0-amd64-netinst.iso"
     unmount          = true
   }
 

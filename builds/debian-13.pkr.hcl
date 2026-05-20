@@ -56,7 +56,7 @@ variable "build_dns" {
 
 variable "iso_cache_dir" {
   type    = string
-  default = "/var/lib/cofoundry/iso-cache"
+  default = "/var/lib/vz/template/iso"
 }
 
 variable "packer_ssh_private_key_file" {
@@ -127,7 +127,7 @@ source "proxmox-iso" "debian-13" {
     iso_url          = "https://cdimage.debian.org/cdimage/release/13.5.0/amd64/iso-cd/debian-13.5.0-amd64-netinst.iso"
     iso_checksum     = "sha256:95838884f5ea6c82421dfe6baaa5a639dbbe6756c1e380f9fe7a7cb0c1949d2a"
     iso_storage_pool = var.proxmox_iso_storage_pool
-    iso_target_path  = "${var.iso_cache_dir}/debian-13.5.0-amd64-netinst.iso"
+    iso_target_path  = "${var.iso_cache_dir}/packer-debian-13.5.0-amd64-netinst.iso"
     unmount          = true
   }
 

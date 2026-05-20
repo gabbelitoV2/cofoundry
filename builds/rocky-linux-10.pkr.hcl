@@ -104,7 +104,7 @@ source "proxmox-iso" "rocky-linux-10" {
   serials = ["socket"]
 
   vga {
-    type = "serial0"
+    type = "std"
   }
 
   disks {
@@ -140,7 +140,7 @@ source "proxmox-iso" "rocky-linux-10" {
     "<down><wait>",
     "<down><wait>",
     "<end><wait>",
-    " inst.text inst.ks=http://{{ .HTTPIP }}:{{ .HTTPPort }}/ks.cfg inst.ks.sendmac ip=dhcp rd.neednet=1 inst.waitfornet=30<wait>",
+    " inst.text console=tty0 console=ttyS0,115200 inst.ks=http://{{ .HTTPIP }}:{{ .HTTPPort }}/ks.cfg inst.ks.sendmac ip=dhcp rd.neednet=1 inst.waitfornet=30<wait>",
     "<leftCtrlOn>x<leftCtrlOff><wait>",
   ]
 

@@ -104,7 +104,7 @@ source "proxmox-iso" "ubuntu-22-04" {
   serials = ["socket"]
 
   vga {
-    type = "serial0"
+    type = "std"
   }
 
   disks {
@@ -138,7 +138,7 @@ source "proxmox-iso" "ubuntu-22-04" {
     "e<wait>",
     "<down><down><down><end>",
     "<bs><bs><bs><wait>",
-    " autoinstall ds=nocloud-net\\;s=http://{{ .HTTPIP }}:{{ .HTTPPort }}/ ip=${var.build_ip}::${var.build_gw}:255.255.255.0::::${var.build_dns} ---<wait>",
+    " autoinstall ds=nocloud-net\\;s=http://{{ .HTTPIP }}:{{ .HTTPPort }}/ ip=${var.build_ip}::${var.build_gw}:255.255.255.0::::${var.build_dns} console=tty0 console=ttyS0,115200 ---<wait>",
     "<f10><wait>",
   ]
 

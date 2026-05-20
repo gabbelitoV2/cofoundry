@@ -104,7 +104,7 @@ source "proxmox-iso" "debian-11" {
   serials = ["socket"]
 
   vga {
-    type = "serial0"
+    type = "std"
   }
 
   disks {
@@ -136,7 +136,7 @@ source "proxmox-iso" "debian-11" {
   boot_wait = "10s"
   boot_command = [
     "<esc><wait>",
-    "install auto=true priority=critical <wait>",
+    "install auto=true priority=critical console=tty0 console=ttyS0,115200 <wait>",
     "netcfg/disable_autoconfig=true <wait>",
     "netcfg/get_ipaddress=${var.build_ip} <wait>",
     "netcfg/get_netmask=255.255.255.0 <wait>",

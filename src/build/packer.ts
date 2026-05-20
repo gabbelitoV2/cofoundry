@@ -60,6 +60,7 @@ export const buildRemoteEnv = (
         PVE_DUMP_DIR: env.PVE_DUMP_DIR,
         CF_OUT_DIR: remoteOutDir,
         TMPDIR: remoteTmpDir,
+        PACKER_CACHE_DIR: '/var/lib/vz/template/iso',
     }
     if (env.CF_UPLOAD_CMD) pairs.CF_UPLOAD_CMD = env.CF_UPLOAD_CMD
     if (env.CF_PUBLIC_URL_TMPL)

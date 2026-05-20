@@ -39,11 +39,6 @@ variable "proxmox_bridge" {
   default = "vmbr1"
 }
 
-variable "iso_cache_dir" {
-  type    = string
-  default = "/var/lib/cofoundry/iso-cache"
-}
-
 variable "winrm_password" {
   type      = string
   sensitive = true
@@ -109,7 +104,7 @@ source "proxmox-iso" "windows-server-2019" {
     iso_url          = "https://software-static.download.prss.microsoft.com/pr/download/17763.737.190906-2324.rs5_release_svc_refresh_SERVER_EVAL_x64FRE_en-us_1.iso"
     iso_checksum     = "none"
     iso_storage_pool = var.proxmox_iso_storage_pool
-    iso_target_path  = "${var.iso_cache_dir}/windows-server-2019-eval.iso"
+    iso_target_path  = "/var/lib/vz/template/iso/packer-windows-server-2019-eval.iso"
     unmount          = true
   }
 
@@ -119,7 +114,7 @@ source "proxmox-iso" "windows-server-2019" {
     iso_url          = "https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/archive-virtio/virtio-win-0.1.248-1/virtio-win.iso"
     iso_checksum     = "none"
     iso_storage_pool = var.proxmox_iso_storage_pool
-    iso_target_path  = "${var.iso_cache_dir}/virtio-win-0.1.248.iso"
+    iso_target_path  = "/var/lib/vz/template/iso/packer-virtio-win-0.1.248.iso"
     unmount          = true
   }
 

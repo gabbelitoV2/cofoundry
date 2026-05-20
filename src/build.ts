@@ -86,6 +86,7 @@ export const runBuild = async (env: Env, recipe: RecipeInfo): Promise<void> => {
     await streaming('rsync', [
         '-a',
         '--delete',
+        '--progress',
         '--exclude=.git',
         '--exclude=node_modules',
         '--exclude=out',
@@ -109,7 +110,7 @@ export const runBuild = async (env: Env, recipe: RecipeInfo): Promise<void> => {
             env.SSH_TARGET,
             `mkdir -p ${shellQuote(recipe.isoTargetPath.replace(/\/[^/]+$/, ''))} && ` +
                 `[ -f ${shellQuote(recipe.isoTargetPath)} ] && echo "cached" || ` +
-                `wget -q -O ${shellQuote(recipe.isoTargetPath)} ${shellQuote(recipe.isoUrl)}`
+                `wget -q --show-progress -O ${shellQuote(recipe.isoTargetPath)} ${shellQuote(recipe.isoUrl)}`
         )
     }
 
@@ -118,7 +119,7 @@ export const runBuild = async (env: Env, recipe: RecipeInfo): Promise<void> => {
         const msiDest = `${remoteWorkDir}/builds/_shared/CloudbaseInitSetup_x64.msi`
         await captureRemote(
             env.SSH_TARGET,
-            `[ -f ${msiDest} ] && echo "cached" || (url=$(curl -s https://api.github.com/repos/cloudbase/cloudbase-init/releases/latest | python3 -c "import sys,json; r=json.load(sys.stdin); print(next(a['browser_download_url'] for a in r['assets'] if 'x64' in a['name'] and a['name'].endswith('.msi')))") && wget -q -O ${msiDest} "$url")`
+            `[ -f ${msiDest} ] && echo "cached" || (url=$(curl -s https://api.github.com/repos/cloudbase/cloudbase-init/releases/latest | python3 -c "import sys,json; r=json.load(sys.stdin); print(next(a['browser_download_url'] for a in r['assets'] if 'x64' in a['name'] and a['name'].endswith('.msi')))") && wget -q --show-progress -O ${msiDest} "$url")`
         )
     }
 
@@ -163,6 +164,7 @@ export const runBuild = async (env: Env, recipe: RecipeInfo): Promise<void> => {
         log.step(`sync artifacts back`)
         await streaming('rsync', [
             '-a',
+            '--progress',
             `${env.SSH_TARGET}:${remoteOutDir}/`,
             `${env.CF_OUT_DIR}/`,
         ])

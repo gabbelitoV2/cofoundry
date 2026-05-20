@@ -5,8 +5,10 @@ import { shellQuote } from './util.ts'
 
 const REMOTE_WORK_DIR = '/tmp/cofoundry'
 const ISO_STORE_DIR = '/var/lib/vz/template/iso'
-const ISO_CACHE_DIR = '/var/lib/cofoundry/iso-cache'
 const DUMP_DIR = '/var/lib/vz/dump'
+const REMOTE_OUT_DIR = `${DUMP_DIR}/cofoundry-out`
+const REMOTE_TMP_DIR = `${DUMP_DIR}/cofoundry-tmp`
+const REMOTE_BUILD_WORK_DIR = `${DUMP_DIR}/cofoundry-work`
 
 export interface PruneOptions {
     days: number
@@ -95,6 +97,18 @@ export const runClean = async (env: Env): Promise<void> => {
         log.info(`removed ${dumps.length} dump file(s)`)
     }
 
+    log.step(`removing build output dirs from ${DUMP_DIR}`)
+    for (const dir of [REMOTE_OUT_DIR, REMOTE_TMP_DIR, REMOTE_BUILD_WORK_DIR]) {
+        const sz = await ssh(
+            env.SSH_TARGET,
+            `du -sh ${shellQuote(dir)} 2>/dev/null | cut -f1 || echo "(absent)"`
+        )
+        if (sz !== '(absent)') {
+            await ssh(env.SSH_TARGET, `rm -rf ${shellQuote(dir)}`)
+            log.info(`removed ${dir} (${sz})`)
+        }
+    }
+
     log.ok('clean done')
 }
 
@@ -109,29 +123,19 @@ export const runPrune = async (
 ): Promise<void> => {
     if (dryRun) log.warn('--dry-run: no files will be deleted')
 
-    // 1. Ephemeral Packer ISOs (any age).
+    // 1. Ephemeral Packer ISOs (any age) — packer-prefixed names and SHA-hash
+    // named files from PACKER_CACHE_DIR, all landing in the Proxmox ISO store.
     log.step('ephemeral Packer ISOs in Proxmox ISO storage')
     const packerIsos = lines(
         await ssh(
             env.SSH_TARGET,
-            `find ${ISO_STORE_DIR} -maxdepth 1 -name 'packer*.iso' 2>/dev/null || true`
+            `find ${ISO_STORE_DIR} -maxdepth 1 \\( -name 'packer*.iso' -o -regextype posix-extended -regex '.*\/[0-9a-f]{40}\\.iso' \\) 2>/dev/null || true`
         )
     )
     await remove(env, packerIsos, dryRun)
     report('ephemeral Packer ISOs', packerIsos, dryRun)
 
-    // 2. iso-cache files older than --days.
-    log.step(`iso-cache files older than ${days} day(s)`)
-    const oldIsos = lines(
-        await ssh(
-            env.SSH_TARGET,
-            `find ${ISO_CACHE_DIR} -maxdepth 1 -name '*.iso' -mtime +${days} 2>/dev/null || true`
-        )
-    )
-    await remove(env, oldIsos, dryRun)
-    report('stale iso-cache entries', oldIsos, dryRun)
-
-    // 3. Stale vzdump archives in the dump dir older than --days.
+    // 2. Stale vzdump archives in the dump dir older than --days.
     // Catches both build-VMID-prefixed dumps (91xx/92xx) and any vzdump-qemu-*
     // that failed to move to the artifact dir.
     log.step(`stale vzdump archives in ${DUMP_DIR} older than ${days} day(s)`)
@@ -144,7 +148,7 @@ export const runPrune = async (
     await remove(env, oldDumps, dryRun)
     report('stale vzdump archives', oldDumps, dryRun)
 
-    // 4. Orphaned build VMs (91xx/92xx, excluding templates).
+    // 3. Orphaned build VMs (91xx/92xx, excluding templates).
     log.step('orphaned build VMs (91xx / 92xx, excluding templates)')
     const orphans = lines(
         await ssh(
@@ -172,7 +176,7 @@ export const runPrune = async (
         )
     }
 
-    // 5. Working dir (only if no other build appears to be using it).
+    // 4. Working dir (only if no other build appears to be using it).
     log.step(`working dir ${REMOTE_WORK_DIR}`)
     const workInUse = await ssh(
         env.SSH_TARGET,

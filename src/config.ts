@@ -2,7 +2,6 @@ import { readdir, readFile } from 'node:fs/promises'
 import { basename, join } from 'node:path'
 
 const DEFAULT_BUILDS_DIR = new URL('../builds/', import.meta.url).pathname
-const ISO_CACHE_DIR = '/var/lib/cofoundry/iso-cache'
 
 export interface RecipeInfo {
     name: string
@@ -36,11 +35,8 @@ const parseIsoUrl = (raw: string): string | undefined => {
 
 const parseIsoTargetPath = (raw: string): string | undefined => {
     // Only parse the first iso_target_path (the boot ISO, not additional ISOs like VirtIO).
-    const m = raw.match(
-        /iso_target_path\s*=\s*"\$\{var\.iso_cache_dir\}\/([^"]+)"/
-    )
-    if (!m) return undefined
-    return `${ISO_CACHE_DIR}/${m[1]}`
+    const m = raw.match(/iso_target_path\s*=\s*"([^"]+)"/)
+    return m?.[1]
 }
 
 export const loadRecipe = async (

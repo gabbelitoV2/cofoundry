@@ -1,5 +1,7 @@
 # display: Debian 12 (Bookworm)
 # build_vmid: 9100
+# iso_url: https://cdimage.debian.org/cdimage/archive/12.13.0/amd64/iso-cd/debian-12.13.0-amd64-netinst.iso
+# iso_target_path: ${var.iso_cache_dir}/packer-debian-12.13.0-amd64-netinst.iso
 
 packer {
   required_plugins {
@@ -125,12 +127,10 @@ source "proxmox-iso" "debian-12" {
   }
 
   boot_iso {
-    type             = "ide"
-    iso_url          = "https://cdimage.debian.org/cdimage/archive/12.13.0/amd64/iso-cd/debian-12.13.0-amd64-netinst.iso"
-    iso_checksum     = "sha256:2b880ffabe36dbe04a662a3125e5ecae4db69d0acce257dd74615bbf165ad76e"
-    iso_storage_pool = var.proxmox_iso_storage_pool
-    iso_target_path  = "${var.iso_cache_dir}/packer-debian-12.13.0-amd64-netinst.iso"
-    unmount          = true
+    type         = "ide"
+    iso_file     = "${var.proxmox_iso_storage_pool}:iso/packer-debian-12.13.0-amd64-netinst.iso"
+    iso_checksum = "sha256:2b880ffabe36dbe04a662a3125e5ecae4db69d0acce257dd74615bbf165ad76e"
+    unmount      = true
   }
 
   http_directory = "${path.root}/debian-12/http"
@@ -193,7 +193,22 @@ build {
   }
 
   provisioner "shell" {
-    inline = ["sudo cp /tmp/99-pve.cfg /etc/cloud/cloud.cfg.d/99-pve.cfg"]
+    inline = [
+      "sudo cp /tmp/99-pve.cfg /etc/cloud/cloud.cfg.d/99-pve.cfg",
+      "sudo sync",
+    ]
+  }
+
+  provisioner "shell" {
+    inline = [
+      "echo '==> Verifying cloud-init is enabled for the final image'",
+      "sudo systemctl is-enabled cloud-init-local cloud-init cloud-config cloud-final",
+      "test ! -e /etc/cloud/cloud-init.disabled",
+      "! grep -qw 'cloud-init=disabled' /proc/cmdline",
+      "cloud-init --version",
+      "test -s /etc/cloud/cloud.cfg",
+      "grep -qx 'datasource_list: \\[ConfigDrive, NoCloud\\]' /etc/cloud/cloud.cfg.d/99-pve.cfg",
+    ]
   }
 
   post-processor "shell-local" {

@@ -1,5 +1,7 @@
 # display: Ubuntu 24.04 LTS (Noble Numbat)
 # build_vmid: 9102
+# iso_url: https://releases.ubuntu.com/24.04/ubuntu-24.04.4-live-server-amd64.iso
+# iso_target_path: ${var.iso_cache_dir}/packer-ubuntu-24.04.4-live-server-amd64.iso
 
 packer {
   required_plugins {
@@ -123,12 +125,10 @@ source "proxmox-iso" "ubuntu-24-04" {
   }
 
   boot_iso {
-    type             = "ide"
-    iso_url          = "https://releases.ubuntu.com/24.04/ubuntu-24.04.4-live-server-amd64.iso"
-    iso_checksum     = "sha256:e907d92eeec9df64163a7e454cbc8d7755e8ddc7ed42f99dbc80c40f1a138433"
-    iso_storage_pool = var.proxmox_iso_storage_pool
-    iso_target_path  = "${var.iso_cache_dir}/packer-ubuntu-24.04.4-live-server-amd64.iso"
-    unmount          = true
+    type         = "ide"
+    iso_file     = "${var.proxmox_iso_storage_pool}:iso/packer-ubuntu-24.04.4-live-server-amd64.iso"
+    iso_checksum = "sha256:e907d92eeec9df64163a7e454cbc8d7755e8ddc7ed42f99dbc80c40f1a138433"
+    unmount      = true
   }
 
   http_directory = "${path.root}/${local.recipe_name}/http"
@@ -187,6 +187,18 @@ build {
     inline = [
       "sudo cp /tmp/99-pve.cfg /etc/cloud/cloud.cfg.d/99-pve.cfg",
       "sudo sync",
+    ]
+  }
+
+  provisioner "shell" {
+    inline = [
+      "echo '==> Verifying cloud-init is enabled for the final image'",
+      "sudo systemctl is-enabled cloud-init-local cloud-init cloud-config cloud-final",
+      "test ! -e /etc/cloud/cloud-init.disabled",
+      "! grep -qw 'cloud-init=disabled' /proc/cmdline",
+      "cloud-init --version",
+      "test -s /etc/cloud/cloud.cfg",
+      "grep -qx 'datasource_list: \\[ConfigDrive, NoCloud\\]' /etc/cloud/cloud.cfg.d/99-pve.cfg",
     ]
   }
 

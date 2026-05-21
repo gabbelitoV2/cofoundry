@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { addSensitiveValues } from './util.ts'
 
 const EnvSchema = z.object({
     PVE_HOST: z.string().min(1),
@@ -32,4 +33,8 @@ const EnvSchema = z.object({
 
 export type Env = z.infer<typeof EnvSchema>
 
-export const loadEnv = (): Env => EnvSchema.parse(process.env)
+export const loadEnv = (): Env => {
+    const env = EnvSchema.parse(process.env)
+    addSensitiveValues(env.PVE_TOKEN_ID, env.PVE_TOKEN_SECRET)
+    return env
+}

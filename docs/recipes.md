@@ -39,8 +39,9 @@ Unattended install from a Microsoft evaluation ISO. Packer boots the ISO, `autou
 ### Linux cloud image
 
 1. Create `builds/<name>.pkr.hcl` — copy an existing one (e.g. `ubuntu-24.04.pkr.hcl`) and update:
-   - `iso_url` — direct link to the `.qcow2` or `.img` cloud image
-   - `iso_target_path` — filename to cache it as under `${var.iso_cache_dir}`
+   - `# iso_url:` — direct link to the installer ISO
+   - `# iso_target_path:` — filename the wrapper caches under `${var.iso_cache_dir}`
+   - `boot_iso.iso_file` — Proxmox storage reference to that cached `packer-*` ISO, e.g. `${var.proxmox_iso_storage_pool}:iso/packer-<name>.iso`
    - `build_vmid` — pick an unused ID in the 91xx range
    - `display`, `recipe_name` locals
 
@@ -62,8 +63,9 @@ Unattended install from a Microsoft evaluation ISO. Packer boots the ISO, `autou
 ### Windows Server
 
 1. Create `builds/windows-server-<version>.pkr.hcl` — copy `windows-server-2022.pkr.hcl` and update:
-   - `iso_url` — Microsoft Eval Center link for the version
-   - `iso_target_path` — cache filename
+   - `# iso_url:` — Microsoft Eval Center link for the version
+   - `# iso_target_path:` — cache filename used by the wrapper
+   - `boot_iso.iso_file` — Proxmox storage reference to that cached ISO
    - `build_vmid` — pick an unused ID in the 92xx range
    - `os` — Proxmox OS type: `win10` (2019), `win2k22` (2022), `win11` (2025)
    - `tpm_config` — required for 2025, remove for 2019

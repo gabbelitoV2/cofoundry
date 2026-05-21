@@ -1,5 +1,7 @@
 # display: Ubuntu 22.04 LTS (Jammy Jellyfish)
 # build_vmid: 9106
+# iso_url: https://releases.ubuntu.com/22.04/ubuntu-22.04.5-live-server-amd64.iso
+# iso_target_path: ${var.iso_cache_dir}/packer-ubuntu-22.04.5-live-server-amd64.iso
 
 packer {
   required_plugins {
@@ -123,12 +125,10 @@ source "proxmox-iso" "ubuntu-22-04" {
   }
 
   boot_iso {
-    type             = "ide"
-    iso_url          = "https://releases.ubuntu.com/22.04/ubuntu-22.04.5-live-server-amd64.iso"
-    iso_checksum     = "sha256:9bc6028870aef3f74f4e16b900008179e78b130e6b0b9a140635434a46aa98b0"
-    iso_storage_pool = var.proxmox_iso_storage_pool
-    iso_target_path  = "${var.iso_cache_dir}/packer-ubuntu-22.04.5-live-server-amd64.iso"
-    unmount          = true
+    type         = "ide"
+    iso_file     = "${var.proxmox_iso_storage_pool}:iso/packer-ubuntu-22.04.5-live-server-amd64.iso"
+    iso_checksum = "sha256:9bc6028870aef3f74f4e16b900008179e78b130e6b0b9a140635434a46aa98b0"
+    unmount      = true
   }
 
   http_directory = "${path.root}/${local.recipe_name}/http"
@@ -187,6 +187,18 @@ build {
     inline = [
       "sudo cp /tmp/99-pve.cfg /etc/cloud/cloud.cfg.d/99-pve.cfg",
       "sudo sync",
+    ]
+  }
+
+  provisioner "shell" {
+    inline = [
+      "echo '==> Verifying cloud-init is enabled for the final image'",
+      "sudo systemctl is-enabled cloud-init-local cloud-init cloud-config cloud-final",
+      "test ! -e /etc/cloud/cloud-init.disabled",
+      "! grep -qw 'cloud-init=disabled' /proc/cmdline",
+      "cloud-init --version",
+      "test -s /etc/cloud/cloud.cfg",
+      "grep -qx 'datasource_list: \\[ConfigDrive, NoCloud\\]' /etc/cloud/cloud.cfg.d/99-pve.cfg",
     ]
   }
 

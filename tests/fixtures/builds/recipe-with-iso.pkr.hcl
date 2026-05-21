@@ -1,5 +1,7 @@
 # display: Recipe With ISO
 # build_vmid: 9101
+# iso_url: https://example.com/foo-1.2.3-amd64.iso
+# iso_target_path: ${var.iso_cache_dir}/foo-1.2.3-amd64.iso
 
 variable "iso_cache_dir" {
   type    = string
@@ -8,9 +10,8 @@ variable "iso_cache_dir" {
 
 source "proxmox-iso" "withiso" {
   boot_iso {
-    iso_url          = "https://example.com/foo-1.2.3-amd64.iso"
+    iso_file         = "local:iso/foo-1.2.3-amd64.iso"
     iso_checksum     = "sha256:deadbeef"
-    iso_target_path  = "${var.iso_cache_dir}/foo-1.2.3-amd64.iso"
     unmount          = true
   }
 

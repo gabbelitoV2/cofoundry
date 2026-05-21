@@ -1,5 +1,7 @@
 # display: AlmaLinux 9
 # build_vmid: 9110
+# iso_url: https://repo.almalinux.org/almalinux/9/isos/x86_64/AlmaLinux-9.7-x86_64-minimal.iso
+# iso_target_path: ${var.iso_cache_dir}/packer-almalinux-9.7-x86_64-minimal.iso
 
 packer {
   required_plugins {
@@ -123,12 +125,10 @@ source "proxmox-iso" "almalinux-9" {
   }
 
   boot_iso {
-    type             = "ide"
-    iso_url          = "https://repo.almalinux.org/almalinux/9/isos/x86_64/AlmaLinux-9.7-x86_64-minimal.iso"
-    iso_checksum     = "sha256:d51ed22cf272a0f30fcf55579d2748ff6ee1fddd6e36ba728cb386b933ceb7fc"
-    iso_storage_pool = var.proxmox_iso_storage_pool
-    iso_target_path  = "${var.iso_cache_dir}/packer-almalinux-9.7-x86_64-minimal.iso"
-    unmount          = true
+    type         = "ide"
+    iso_file     = "${var.proxmox_iso_storage_pool}:iso/packer-almalinux-9.7-x86_64-minimal.iso"
+    iso_checksum = "sha256:d51ed22cf272a0f30fcf55579d2748ff6ee1fddd6e36ba728cb386b933ceb7fc"
+    unmount      = true
   }
 
   http_directory = "${path.root}/${local.recipe_name}/http"
@@ -182,6 +182,18 @@ build {
     inline = [
       "sudo install -m 0644 /tmp/99-pve.cfg /etc/cloud/cloud.cfg.d/99-pve.cfg",
       "sudo sync",
+    ]
+  }
+
+  provisioner "shell" {
+    inline = [
+      "echo '==> Verifying cloud-init is enabled for the final image'",
+      "sudo systemctl is-enabled cloud-init-local cloud-init cloud-config cloud-final",
+      "test ! -e /etc/cloud/cloud-init.disabled",
+      "! grep -qw 'cloud-init=disabled' /proc/cmdline",
+      "cloud-init --version",
+      "test -s /etc/cloud/cloud.cfg",
+      "grep -qx 'datasource_list: \\[ConfigDrive, NoCloud\\]' /etc/cloud/cloud.cfg.d/99-pve.cfg",
     ]
   }
 

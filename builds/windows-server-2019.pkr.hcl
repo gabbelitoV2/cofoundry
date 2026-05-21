@@ -1,5 +1,7 @@
 # display: Windows Server 2019 Datacenter Core
 # build_vmid: 9201
+# iso_url: https://software-static.download.prss.microsoft.com/pr/download/17763.737.190906-2324.rs5_release_svc_refresh_SERVER_EVAL_x64FRE_en-us_1.iso
+# iso_target_path: /var/lib/vz/template/iso/packer-windows-server-2019-eval.iso
 
 packer {
   required_plugins {
@@ -100,12 +102,10 @@ source "proxmox-iso" "windows-server-2019" {
   }
 
   boot_iso {
-    type             = "ide"
-    iso_url          = "https://software-static.download.prss.microsoft.com/pr/download/17763.737.190906-2324.rs5_release_svc_refresh_SERVER_EVAL_x64FRE_en-us_1.iso"
-    iso_checksum     = "none"
-    iso_storage_pool = var.proxmox_iso_storage_pool
-    iso_target_path  = "/var/lib/vz/template/iso/packer-windows-server-2019-eval.iso"
-    unmount          = true
+    type         = "ide"
+    iso_file     = "${var.proxmox_iso_storage_pool}:iso/packer-windows-server-2019-eval.iso"
+    iso_checksum = "none"
+    unmount      = true
   }
 
   # VirtIO drivers ISO (provides virtio-win-guest-tools.exe for TemplatePrep.ps1)
@@ -113,6 +113,7 @@ source "proxmox-iso" "windows-server-2019" {
     type             = "sata"
     iso_url          = "https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/archive-virtio/virtio-win-0.1.248-1/virtio-win.iso"
     iso_checksum     = "none"
+    iso_download_pve = true
     iso_storage_pool = var.proxmox_iso_storage_pool
     iso_target_path  = "/var/lib/vz/template/iso/packer-virtio-win-0.1.248.iso"
     unmount          = true

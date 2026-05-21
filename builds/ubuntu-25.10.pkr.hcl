@@ -1,5 +1,7 @@
 # display: Ubuntu 25.10 (Questing Quokka)
 # build_vmid: 9107
+# iso_url: https://releases.ubuntu.com/25.10/ubuntu-25.10-live-server-amd64.iso
+# iso_target_path: ${var.iso_cache_dir}/packer-ubuntu-25.10-live-server-amd64.iso
 
 packer {
   required_plugins {
@@ -123,12 +125,10 @@ source "proxmox-iso" "ubuntu-25-10" {
   }
 
   boot_iso {
-    type             = "ide"
-    iso_url          = "https://releases.ubuntu.com/25.10/ubuntu-25.10-live-server-amd64.iso"
-    iso_checksum     = "sha256:dc54870e5261c0abad19f74b8146659d10e625971792bd42d7ecde820b60a1d0"
-    iso_storage_pool = var.proxmox_iso_storage_pool
-    iso_target_path  = "${var.iso_cache_dir}/packer-ubuntu-25.10-live-server-amd64.iso"
-    unmount          = true
+    type         = "ide"
+    iso_file     = "${var.proxmox_iso_storage_pool}:iso/packer-ubuntu-25.10-live-server-amd64.iso"
+    iso_checksum = "sha256:dc54870e5261c0abad19f74b8146659d10e625971792bd42d7ecde820b60a1d0"
+    unmount      = true
   }
 
   http_directory = "${path.root}/${local.recipe_name}/http"
@@ -187,6 +187,18 @@ build {
     inline = [
       "sudo cp /tmp/99-pve.cfg /etc/cloud/cloud.cfg.d/99-pve.cfg",
       "sudo sync",
+    ]
+  }
+
+  provisioner "shell" {
+    inline = [
+      "echo '==> Verifying cloud-init is enabled for the final image'",
+      "sudo systemctl is-enabled cloud-init-local cloud-init cloud-config cloud-final",
+      "test ! -e /etc/cloud/cloud-init.disabled",
+      "! grep -qw 'cloud-init=disabled' /proc/cmdline",
+      "cloud-init --version",
+      "test -s /etc/cloud/cloud.cfg",
+      "grep -qx 'datasource_list: \\[ConfigDrive, NoCloud\\]' /etc/cloud/cloud.cfg.d/99-pve.cfg",
     ]
   }
 

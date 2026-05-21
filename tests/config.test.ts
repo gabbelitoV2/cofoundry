@@ -13,7 +13,7 @@ describe('loadRecipe', () => {
         expect(r.isoTargetPath).toBeUndefined()
     })
 
-    test('parses iso_url and iso_target_path from boot_iso block', async () => {
+    test('parses iso_url and iso_target_path from recipe metadata', async () => {
         const r = await loadRecipe('recipe-with-iso', FIXTURES)
         expect(r.display).toBe('Recipe With ISO')
         expect(r.buildVmid).toBe(9101)

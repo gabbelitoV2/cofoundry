@@ -1,12 +1,13 @@
 #!/usr/bin/env bun
 import { Command } from 'commander'
 import { listRecipes, loadRecipe } from './config.ts'
-import { runBuild, syncArtifactsBack } from './build.ts'
+import { runBuild, syncArtifactsBack, syncRepoToRemote } from './build.ts'
 import { runClean, runPrune } from './prune.ts'
 import { checkRecipes, SYNTHETIC_RECIPES, saveChecksums } from './upstream.ts'
 import { buildManifest } from './manifest.ts'
 import { type Env, loadEnv } from './env.ts'
 import { log } from './log.ts'
+import { redactSensitive } from './util.ts'
 
 type BuildCommandOptions = {
     skipSyncBack?: boolean
@@ -51,15 +52,19 @@ program
 
         const syncBack = shouldSyncBack(env, opts)
 
+        await syncRepoToRemote(env)
+
         const passed: string[] = []
         const failed: { name: string; error: string }[] = []
 
         for (const recipe of recipes) {
             try {
-                await runBuild(env, recipe, { syncBack: false })
+                await runBuild(env, recipe, { syncBack: false, skipSync: true })
                 passed.push(recipe.name)
             } catch (err) {
-                const msg = err instanceof Error ? err.message : String(err)
+                const msg = redactSensitive(
+                    err instanceof Error ? err.message : String(err)
+                )
                 log.err(`${recipe.name}: ${msg}`)
                 failed.push({ name: recipe.name, error: msg })
             }
@@ -137,7 +142,7 @@ program
 program
     .command('clean')
     .description(
-        'Remove the remote working directory (/tmp/cofoundry) to free tmpfs space'
+        'Remove remote build leftovers: working dir, ISO cache, dump artifacts, and uploaded ISOs'
     )
     .action(async () => {
         const env = loadEnv()
@@ -168,6 +173,6 @@ program
     })
 
 program.parseAsync(process.argv).catch(err => {
-    log.err(err instanceof Error ? err.message : String(err))
+    log.err(redactSensitive(err instanceof Error ? err.message : String(err)))
     process.exit(1)
 })

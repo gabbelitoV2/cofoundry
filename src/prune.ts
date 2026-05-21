@@ -5,6 +5,7 @@ import { shellQuote } from './util.ts'
 
 const REMOTE_WORK_DIR = '/tmp/cofoundry'
 const ISO_STORE_DIR = '/var/lib/vz/template/iso'
+const DOWNLOADED_ISO_DIR = '/root/downloaded_iso_path'
 const DUMP_DIR = '/var/lib/vz/dump'
 const REMOTE_OUT_DIR = `${DUMP_DIR}/cofoundry-out`
 const REMOTE_TMP_DIR = `${DUMP_DIR}/cofoundry-tmp`
@@ -28,6 +29,9 @@ const lines = (s: string): string[] =>
         .split('\n')
         .map(l => l.trim())
         .filter(Boolean)
+
+const sizeOrAbsent = (path: string, absentLabel = '(absent)'): string =>
+    `if [ -e ${shellQuote(path)} ]; then du -sh ${shellQuote(path)} | cut -f1; else echo ${shellQuote(absentLabel)}; fi`
 
 const remove = async (
     env: Env,
@@ -54,7 +58,7 @@ export const runClean = async (env: Env): Promise<void> => {
     log.step(`removing ${REMOTE_WORK_DIR} on ${env.SSH_TARGET}`)
     const workSize = await ssh(
         env.SSH_TARGET,
-        `du -sh ${REMOTE_WORK_DIR} 2>/dev/null | cut -f1 || echo "(not present)"`
+        sizeOrAbsent(REMOTE_WORK_DIR, '(not present)')
     )
     log.info(`working dir was ${workSize}`)
     await ssh(env.SSH_TARGET, `rm -rf ${REMOTE_WORK_DIR}`)
@@ -81,6 +85,18 @@ export const runClean = async (env: Env): Promise<void> => {
         )
     }
 
+    log.step(`removing Packer download cache from ${DOWNLOADED_ISO_DIR}`)
+    const downloadedIsoSize = await ssh(
+        env.SSH_TARGET,
+        sizeOrAbsent(DOWNLOADED_ISO_DIR)
+    )
+    if (downloadedIsoSize === '(absent)') {
+        log.info('no Packer download cache found')
+    } else {
+        await ssh(env.SSH_TARGET, `rm -rf ${shellQuote(DOWNLOADED_ISO_DIR)}`)
+        log.info(`removed ${DOWNLOADED_ISO_DIR} (${downloadedIsoSize})`)
+    }
+
     log.step(`removing stale dump files from ${DUMP_DIR}`)
     const dumps = lines(
         await ssh(
@@ -99,10 +115,7 @@ export const runClean = async (env: Env): Promise<void> => {
 
     log.step(`removing build output dirs from ${DUMP_DIR}`)
     for (const dir of [REMOTE_OUT_DIR, REMOTE_TMP_DIR, REMOTE_BUILD_WORK_DIR]) {
-        const sz = await ssh(
-            env.SSH_TARGET,
-            `du -sh ${shellQuote(dir)} 2>/dev/null | cut -f1 || echo "(absent)"`
-        )
+        const sz = await ssh(env.SSH_TARGET, sizeOrAbsent(dir))
         if (sz !== '(absent)') {
             await ssh(env.SSH_TARGET, `rm -rf ${shellQuote(dir)}`)
             log.info(`removed ${dir} (${sz})`)
@@ -135,7 +148,19 @@ export const runPrune = async (
     await remove(env, packerIsos, dryRun)
     report('ephemeral Packer ISOs', packerIsos, dryRun)
 
-    // 2. Stale vzdump archives in the dump dir older than --days.
+    // 2. Packer's local ISO download cache. These are hash-named staging files
+    // under /root, separate from the final ISO storage pool copies.
+    log.step(`Packer download cache in ${DOWNLOADED_ISO_DIR}`)
+    const downloadedIsos = lines(
+        await ssh(
+            env.SSH_TARGET,
+            `find ${DOWNLOADED_ISO_DIR} -maxdepth 1 \( -name '*.iso' -o -name '*.iso.lock' \) 2>/dev/null || true`
+        )
+    )
+    await remove(env, downloadedIsos, dryRun)
+    report('Packer download cache', downloadedIsos, dryRun)
+
+    // 3. Stale vzdump archives in the dump dir older than --days.
     // Catches both build-VMID-prefixed dumps (91xx/92xx) and any vzdump-qemu-*
     // that failed to move to the artifact dir.
     log.step(`stale vzdump archives in ${DUMP_DIR} older than ${days} day(s)`)
@@ -148,7 +173,7 @@ export const runPrune = async (
     await remove(env, oldDumps, dryRun)
     report('stale vzdump archives', oldDumps, dryRun)
 
-    // 3. Orphaned build VMs (91xx/92xx, excluding templates).
+    // 4. Orphaned build VMs (91xx/92xx, excluding templates).
     log.step('orphaned build VMs (91xx / 92xx, excluding templates)')
     const orphans = lines(
         await ssh(
@@ -176,7 +201,7 @@ export const runPrune = async (
         )
     }
 
-    // 4. Working dir (only if no other build appears to be using it).
+    // 5. Working dir (only if no other build appears to be using it).
     log.step(`working dir ${REMOTE_WORK_DIR}`)
     const workInUse = await ssh(
         env.SSH_TARGET,
@@ -187,10 +212,7 @@ export const runPrune = async (
         log.info(`${REMOTE_WORK_DIR}: in use, skipping`)
     } else {
         if (dryRun) {
-            const sz = await ssh(
-                env.SSH_TARGET,
-                `du -sh ${REMOTE_WORK_DIR} 2>/dev/null | cut -f1 || echo "(absent)"`
-            )
+            const sz = await ssh(env.SSH_TARGET, sizeOrAbsent(REMOTE_WORK_DIR))
             log.info(`${REMOTE_WORK_DIR}: would remove (${sz})`)
         } else {
             await ssh(env.SSH_TARGET, `rm -rf ${REMOTE_WORK_DIR}`)

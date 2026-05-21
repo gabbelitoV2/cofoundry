@@ -1,4 +1,5 @@
 import { execa, ExecaError } from 'execa'
+import { redactSensitive } from '../util.ts'
 
 export const captureRemote = async (
     target: string,
@@ -16,6 +17,7 @@ export const captureRemote = async (
                 `"ssh" not found — is it installed and on your PATH?`
             )
         }
+        if (err instanceof Error) throw new Error(redactSensitive(err.message))
         throw err
     }
 }
@@ -25,8 +27,10 @@ export const remoteStreaming = (target: string, cmd: string): Promise<void> =>
 
 // Allocates a PTY so remote programs (e.g. wget) detect a terminal and show
 // their native progress bar rather than falling back to dot-style output.
-export const remoteStreamingPty = (target: string, cmd: string): Promise<void> =>
-    streaming('ssh', ['-t', '-t', target, cmd])
+export const remoteStreamingPty = (
+    target: string,
+    cmd: string
+): Promise<void> => streaming('ssh', ['-t', '-t', target, cmd])
 
 export const streaming = async (cmd: string, args: string[]): Promise<void> => {
     try {
@@ -37,6 +41,7 @@ export const streaming = async (cmd: string, args: string[]): Promise<void> => {
                 `"${cmd}" not found — is it installed and on your PATH?`
             )
         }
+        if (err instanceof Error) throw new Error(redactSensitive(err.message))
         throw err
     }
 }

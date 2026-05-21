@@ -1,5 +1,7 @@
 # display: Windows Server 2025 Datacenter Core
 # build_vmid: 9205
+# iso_url: https://go.microsoft.com/fwlink/?linkid=2345730&clcid=0x409&culture=en-us&country=us
+# iso_target_path: /var/lib/vz/template/iso/packer-windows-server-2025-eval.iso
 
 packer {
   required_plugins {
@@ -109,12 +111,10 @@ source "proxmox-iso" "windows-server-2025" {
   }
 
   boot_iso {
-    type             = "ide"
-    iso_url          = "https://go.microsoft.com/fwlink/?linkid=2345730&clcid=0x409&culture=en-us&country=us"
-    iso_checksum     = "none"
-    iso_storage_pool = var.proxmox_iso_storage_pool
-    iso_target_path  = "/var/lib/vz/template/iso/packer-windows-server-2025-eval.iso"
-    unmount          = true
+    type         = "ide"
+    iso_file     = "${var.proxmox_iso_storage_pool}:iso/packer-windows-server-2025-eval.iso"
+    iso_checksum = "none"
+    unmount      = true
   }
 
   # VirtIO drivers ISO (provides virtio-win-guest-tools.exe for TemplatePrep.ps1)
@@ -122,6 +122,7 @@ source "proxmox-iso" "windows-server-2025" {
     type             = "sata"
     iso_url          = "https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/archive-virtio/virtio-win-0.1.248-1/virtio-win.iso"
     iso_checksum     = "none"
+    iso_download_pve = true
     iso_storage_pool = var.proxmox_iso_storage_pool
     iso_target_path  = "/var/lib/vz/template/iso/packer-virtio-win-0.1.248.iso"
     unmount          = true

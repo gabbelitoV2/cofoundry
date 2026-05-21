@@ -1,5 +1,5 @@
 # display: Rocky Linux 10
-# build_vmid: 9104
+# build_vmid: 5002
 # iso_url: https://download.rockylinux.org/pub/rocky/10/isos/x86_64/Rocky-10.1-x86_64-minimal.iso
 # iso_target_path: ${var.iso_cache_dir}/packer-rocky-10.1-x86_64-minimal.iso
 
@@ -67,7 +67,7 @@ variable "packer_ssh_private_key_file" {
 }
 
 locals {
-  build_vmid     = 9104
+  build_vmid     = 5002
   recipe_name    = "rocky-linux-10"
   recipe_display = "Rocky Linux 10"
 }
@@ -110,7 +110,7 @@ source "proxmox-iso" "rocky-linux-10" {
   }
 
   disks {
-    disk_size    = "10G"
+    disk_size    = "5G"
     format       = "qcow2"
     storage_pool = var.proxmox_storage_pool
     type         = "scsi"

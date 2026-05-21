@@ -1,5 +1,5 @@
 # display: Rocky Linux 9
-# build_vmid: 9112
+# build_vmid: 5001
 # iso_url: https://download.rockylinux.org/pub/rocky/9/isos/x86_64/Rocky-9.7-x86_64-minimal.iso
 # iso_target_path: ${var.iso_cache_dir}/packer-rocky-9.7-x86_64-minimal.iso
 
@@ -67,7 +67,7 @@ variable "packer_ssh_private_key_file" {
 }
 
 locals {
-  build_vmid     = 9112
+  build_vmid     = 5001
   recipe_name    = "rocky-linux-9"
   recipe_display = "Rocky Linux 9"
 }
@@ -110,7 +110,7 @@ source "proxmox-iso" "rocky-linux-9" {
   }
 
   disks {
-    disk_size    = "10G"
+    disk_size    = "5G"
     format       = "qcow2"
     storage_pool = var.proxmox_storage_pool
     type         = "scsi"

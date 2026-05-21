@@ -1,5 +1,5 @@
 # display: Debian 13 (Trixie)
-# build_vmid: 9101
+# build_vmid: 4002
 # iso_url: https://cdimage.debian.org/cdimage/release/13.5.0/amd64/iso-cd/debian-13.5.0-amd64-netinst.iso
 # iso_target_path: ${var.iso_cache_dir}/packer-debian-13.5.0-amd64-netinst.iso
 
@@ -67,7 +67,7 @@ variable "packer_ssh_private_key_file" {
 }
 
 locals {
-  build_vmid     = 9101
+  build_vmid     = 4002
   recipe_name    = "debian-13"
   recipe_display = "Debian 13 (Trixie)"
 }

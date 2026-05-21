@@ -1,5 +1,5 @@
 # display: Debian 12 (Bookworm)
-# build_vmid: 9100
+# build_vmid: 4001
 # iso_url: https://cdimage.debian.org/cdimage/archive/12.13.0/amd64/iso-cd/debian-12.13.0-amd64-netinst.iso
 # iso_target_path: ${var.iso_cache_dir}/packer-debian-12.13.0-amd64-netinst.iso
 
@@ -67,7 +67,7 @@ variable "packer_ssh_private_key_file" {
 }
 
 locals {
-  build_vmid     = 9100
+  build_vmid     = 4001
   recipe_name    = "debian-12"
   recipe_display = "Debian 12 (Bookworm)"
 }

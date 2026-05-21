@@ -24,6 +24,7 @@ const fileExists = (path: string): Promise<boolean> => Bun.file(path).exists()
 type RunBuildOptions = {
     syncBack?: boolean
     skipSync?: boolean
+    skipPrefetch?: boolean
 }
 
 const shouldSyncBack = (env: Env, options?: RunBuildOptions): boolean =>
@@ -72,6 +73,64 @@ const resolveBuildGateway = async (
         )
     }
     return match[1]!
+}
+
+export const prefetchRecipeAssets = async (
+    env: Env,
+    recipe: RecipeInfo
+): Promise<void> => {
+    const remoteWorkDir = buildRemoteWorkDir(env)
+
+    if (recipe.isoUrl && recipe.isoTargetPath) {
+        log.step(`ensure ISO cache: ${recipe.isoTargetPath}`)
+        await captureRemote(
+            env.SSH_TARGET,
+            `mkdir -p ${shellQuote(recipe.isoTargetPath.replace(/\/[^/]+$/, ''))}`
+        )
+        const isoCached =
+            (
+                await captureRemote(
+                    env.SSH_TARGET,
+                    `[ -f ${shellQuote(recipe.isoTargetPath)} ] && echo 1 || echo 0`
+                )
+            ).trim() === '1'
+        if (!isoCached) {
+            const wgetCmd = process.stderr.isTTY
+                ? `wget -q --show-progress --progress=bar:force:noscroll -O ${shellQuote(recipe.isoTargetPath)} ${shellQuote(recipe.isoUrl)}`
+                : `wget -q -O ${shellQuote(recipe.isoTargetPath)} ${shellQuote(recipe.isoUrl)}`
+            const stream = process.stderr.isTTY
+                ? remoteStreamingPty
+                : remoteStreaming
+            await stream(env.SSH_TARGET, wgetCmd)
+        }
+    }
+
+    if (recipe.name.startsWith('windows-')) {
+        log.step('pre-fetch Cloudbase-Init MSI on remote host')
+        const msiDest = `${remoteWorkDir}/builds/_shared/CloudbaseInitSetup_x64.msi`
+        const msiCached =
+            (
+                await captureRemote(
+                    env.SSH_TARGET,
+                    `[ -f ${shellQuote(msiDest)} ] && echo 1 || echo 0`
+                )
+            ).trim() === '1'
+        if (!msiCached) {
+            const curlAndWget = (wgetFlags: string) =>
+                `url=$(curl -s https://api.github.com/repos/cloudbase/cloudbase-init/releases/latest | python3 -c "import sys,json; r=json.load(sys.stdin); print(next(a['browser_download_url'] for a in r['assets'] if 'x64' in a['name'] and a['name'].endswith('.msi')))") && wget ${wgetFlags} -O ${shellQuote(msiDest)} "$url"`
+            const stream = process.stderr.isTTY
+                ? remoteStreamingPty
+                : remoteStreaming
+            await stream(
+                env.SSH_TARGET,
+                curlAndWget(
+                    process.stderr.isTTY
+                        ? '-q --show-progress --progress=bar:force:noscroll'
+                        : '-q'
+                )
+            )
+        }
+    }
 }
 
 export const runBuild = async (
@@ -135,55 +194,8 @@ export const runBuild = async (
         )
     }
 
-    if (recipe.isoUrl && recipe.isoTargetPath) {
-        log.step(`ensure ISO cache: ${recipe.isoTargetPath}`)
-        await captureRemote(
-            env.SSH_TARGET,
-            `mkdir -p ${shellQuote(recipe.isoTargetPath.replace(/\/[^/]+$/, ''))}`
-        )
-        const isoCached =
-            (
-                await captureRemote(
-                    env.SSH_TARGET,
-                    `[ -f ${shellQuote(recipe.isoTargetPath)} ] && echo 1 || echo 0`
-                )
-            ).trim() === '1'
-        if (!isoCached) {
-            const wgetCmd = process.stderr.isTTY
-                ? `wget -q --show-progress --progress=bar:force:noscroll -O ${shellQuote(recipe.isoTargetPath)} ${shellQuote(recipe.isoUrl)}`
-                : `wget -q -O ${shellQuote(recipe.isoTargetPath)} ${shellQuote(recipe.isoUrl)}`
-            const stream = process.stderr.isTTY
-                ? remoteStreamingPty
-                : remoteStreaming
-            await stream(env.SSH_TARGET, wgetCmd)
-        }
-    }
-
-    if (recipe.name.startsWith('windows-')) {
-        log.step('pre-fetch Cloudbase-Init MSI on remote host')
-        const msiDest = `${remoteWorkDir}/builds/_shared/CloudbaseInitSetup_x64.msi`
-        const msiCached =
-            (
-                await captureRemote(
-                    env.SSH_TARGET,
-                    `[ -f ${shellQuote(msiDest)} ] && echo 1 || echo 0`
-                )
-            ).trim() === '1'
-        if (!msiCached) {
-            const curlAndWget = (wgetFlags: string) =>
-                `url=$(curl -s https://api.github.com/repos/cloudbase/cloudbase-init/releases/latest | python3 -c "import sys,json; r=json.load(sys.stdin); print(next(a['browser_download_url'] for a in r['assets'] if 'x64' in a['name'] and a['name'].endswith('.msi')))") && wget ${wgetFlags} -O ${shellQuote(msiDest)} "$url"`
-            const stream = process.stderr.isTTY
-                ? remoteStreamingPty
-                : remoteStreaming
-            await stream(
-                env.SSH_TARGET,
-                curlAndWget(
-                    process.stderr.isTTY
-                        ? '-q --show-progress --progress=bar:force:noscroll'
-                        : '-q'
-                )
-            )
-        }
+    if (!options?.skipPrefetch) {
+        await prefetchRecipeAssets(env, recipe)
     }
 
     log.step(`inject placeholders for ${recipe.name}`)
@@ -215,7 +227,7 @@ export const runBuild = async (
         ...buildPackerVars(env, recipe, needsStaticIp, buildBridge, buildGw),
         recipeHcl,
     ]
-    const remoteEnv = buildRemoteEnv(env, remoteOutDir, remoteTmpDir)
+    const remoteEnv = buildRemoteEnv(env, remoteOutDir, remoteTmpDir, recipe.arch)
     await remoteStreaming(
         env.SSH_TARGET,
         `${remoteEnv} ${packerArgs.join(' ')}`

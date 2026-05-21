@@ -24,8 +24,9 @@ set -euo pipefail
 : "${CF_RECIPE_NAME:?}"
 : "${CF_RECIPE_DISPLAY:?}"
 : "${CF_BUILT_VMID:?}"
+: "${CF_ARCH:?}"
 
-LOCAL_FILE="$CF_OUT_DIR/${CF_RECIPE_NAME}.vma.zst"
+LOCAL_FILE="$CF_OUT_DIR/${CF_RECIPE_NAME}-${CF_ARCH}.vma.zst"
 LOCAL_MODE=0
 [ "$SSH_TARGET" = "local" ] && LOCAL_MODE=1
 
@@ -91,10 +92,10 @@ if [ -n "${CF_UPLOAD_CMD:-}" ]; then
 fi
 
 echo "==> writing sidecar"
-SIDECAR="$CF_OUT_DIR/${CF_RECIPE_NAME}.json"
+SIDECAR="$CF_OUT_DIR/${CF_RECIPE_NAME}-${CF_ARCH}.json"
 cat >"$SIDECAR" <<JSON
 {
-  "name": "$CF_RECIPE_NAME",
+  "name": "${CF_RECIPE_NAME}-${CF_ARCH}",
   "display": "$CF_RECIPE_DISPLAY",
   "sha256": "$SHA256",
   "size": $SIZE,

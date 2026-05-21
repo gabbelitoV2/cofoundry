@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import { Command } from 'commander'
 import { listRecipes, loadRecipe } from './config.ts'
-import { runBuild, syncArtifactsBack, syncRepoToRemote } from './build.ts'
+import { prefetchRecipeAssets, runBuild, syncArtifactsBack, syncRepoToRemote } from './build.ts'
 import { runClean, runPrune } from './prune.ts'
 import { checkRecipes, SYNTHETIC_RECIPES, saveChecksums } from './upstream.ts'
 import { buildManifest } from './manifest.ts'
@@ -54,12 +54,29 @@ program
 
         await syncRepoToRemote(env)
 
+        log.step(`prefetching ISOs and assets in parallel (${recipes.length} recipes)`)
+        const prefetchResults = await Promise.allSettled(
+            recipes.map(r => prefetchRecipeAssets(env, r))
+        )
+
         const passed: string[] = []
         const failed: { name: string; error: string }[] = []
 
-        for (const recipe of recipes) {
+        for (let i = 0; i < recipes.length; i++) {
+            const recipe = recipes[i]!
+            const prefetch = prefetchResults[i]!
+            if (prefetch.status === 'rejected') {
+                const msg = redactSensitive(
+                    prefetch.reason instanceof Error
+                        ? prefetch.reason.message
+                        : String(prefetch.reason)
+                )
+                log.err(`${recipe.name}: prefetch failed — ${msg}`)
+                failed.push({ name: recipe.name, error: `prefetch: ${msg}` })
+                continue
+            }
             try {
-                await runBuild(env, recipe, { syncBack: false, skipSync: true })
+                await runBuild(env, recipe, { syncBack: false, skipSync: true, skipPrefetch: true })
                 passed.push(recipe.name)
             } catch (err) {
                 const msg = redactSensitive(

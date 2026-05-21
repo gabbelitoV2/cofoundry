@@ -1,5 +1,5 @@
 # display: Ubuntu 22.04 LTS (Jammy Jellyfish)
-# build_vmid: 9106
+# build_vmid: 1002
 # iso_url: https://releases.ubuntu.com/22.04/ubuntu-22.04.5-live-server-amd64.iso
 # iso_target_path: ${var.iso_cache_dir}/packer-ubuntu-22.04.5-live-server-amd64.iso
 
@@ -67,7 +67,7 @@ variable "packer_ssh_private_key_file" {
 }
 
 locals {
-  build_vmid     = 9106
+  build_vmid     = 1002
   recipe_name    = "ubuntu-22.04"
   recipe_display = "Ubuntu 22.04 LTS (Jammy Jellyfish)"
 }
@@ -110,7 +110,7 @@ source "proxmox-iso" "ubuntu-22-04" {
   }
 
   disks {
-    disk_size    = "10G"
+    disk_size    = "5G"
     format       = "qcow2"
     storage_pool = var.proxmox_storage_pool
     type         = "scsi"

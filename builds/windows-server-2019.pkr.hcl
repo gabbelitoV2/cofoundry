@@ -1,5 +1,5 @@
 # display: Windows Server 2019 Datacenter Core
-# build_vmid: 9201
+# build_vmid: 2000
 # iso_url: https://software-static.download.prss.microsoft.com/pr/download/17763.737.190906-2324.rs5_release_svc_refresh_SERVER_EVAL_x64FRE_en-us_1.iso
 # iso_target_path: /var/lib/vz/template/iso/packer-windows-server-2019-eval.iso
 
@@ -47,7 +47,7 @@ variable "winrm_password" {
 }
 
 locals {
-  build_vmid     = 9201
+  build_vmid     = 2000
   recipe_name    = "windows-server-2019"
   recipe_display = "Windows Server 2019 Datacenter Core"
 }

@@ -1,5 +1,5 @@
 # display: Windows Server 2022 Datacenter Core
-# build_vmid: 9202
+# build_vmid: 2001
 # iso_url: https://software-download.microsoft.com/download/sg/20348.169.210806-2348.fe_release_svc_refresh_SERVER_EVAL_x64FRE_en-us.iso
 # iso_target_path: /var/lib/vz/template/iso/packer-windows-server-2022-eval.iso
 
@@ -47,7 +47,7 @@ variable "winrm_password" {
 }
 
 locals {
-  build_vmid     = 9202
+  build_vmid     = 2001
   recipe_name    = "windows-server-2022"
   recipe_display = "Windows Server 2022 Datacenter Core"
 }

@@ -1,5 +1,5 @@
 # display: AlmaLinux 8
-# build_vmid: 9109
+# build_vmid: 6000
 # iso_url: https://repo.almalinux.org/almalinux/8/isos/x86_64/AlmaLinux-8.10-x86_64-minimal.iso
 # iso_target_path: ${var.iso_cache_dir}/packer-almalinux-8.10-x86_64-minimal.iso
 
@@ -67,7 +67,7 @@ variable "packer_ssh_private_key_file" {
 }
 
 locals {
-  build_vmid     = 9109
+  build_vmid     = 6000
   recipe_name    = "almalinux-8"
   recipe_display = "AlmaLinux 8"
 }
@@ -110,7 +110,7 @@ source "proxmox-iso" "almalinux-8" {
   }
 
   disks {
-    disk_size    = "10G"
+    disk_size    = "5G"
     format       = "qcow2"
     storage_pool = var.proxmox_storage_pool
     type         = "scsi"

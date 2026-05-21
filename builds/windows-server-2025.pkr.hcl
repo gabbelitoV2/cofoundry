@@ -1,5 +1,5 @@
 # display: Windows Server 2025 Datacenter Core
-# build_vmid: 9205
+# build_vmid: 2002
 # iso_url: https://go.microsoft.com/fwlink/?linkid=2345730&clcid=0x409&culture=en-us&country=us
 # iso_target_path: /var/lib/vz/template/iso/packer-windows-server-2025-eval.iso
 
@@ -47,7 +47,7 @@ variable "winrm_password" {
 }
 
 locals {
-  build_vmid     = 9205
+  build_vmid     = 2002
   recipe_name    = "windows-server-2025"
   recipe_display = "Windows Server 2025 Datacenter Core"
 }

@@ -14,6 +14,8 @@ export interface RecipeInfo {
     isoUrl?: string
     /** Resolved local path for the boot ISO on the Proxmox node */
     isoTargetPath?: string
+    /** Architecture tag from `# arch: ...` comment; defaults to "amd64" */
+    arch: string
 }
 
 const parseMeta = (raw: string, key: string): string | undefined => {
@@ -77,6 +79,7 @@ export const loadRecipe = async (
         buildVmid: parseMetaInt(raw, 'build_vmid'),
         isoUrl: parseIsoUrl(raw),
         isoTargetPath: parseIsoTargetPath(raw),
+        arch: parseMeta(raw, 'arch') ?? 'amd64',
     }
 }
 

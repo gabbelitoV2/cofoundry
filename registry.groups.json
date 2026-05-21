@@ -1,0 +1,7 @@
+[
+  { "id": "ubuntu",         "display_name": "Ubuntu",         "description": null },
+  { "id": "debian",         "display_name": "Debian",         "description": null },
+  { "id": "almalinux",      "display_name": "AlmaLinux",      "description": null },
+  { "id": "rocky-linux",    "display_name": "Rocky Linux",    "description": null },
+  { "id": "windows-server", "display_name": "Windows Server", "description": null }
+]

@@ -28,7 +28,7 @@ autoinstall:
     - qemu-guest-agent
   storage:
     layout:
-      name: lvm
+      name: direct
     swap:
       size: 0
   late-commands:

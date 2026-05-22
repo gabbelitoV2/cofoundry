@@ -1,12 +1,16 @@
+import { spawnSync } from 'node:child_process'
 import type { Env } from './env.ts'
 import type { RecipeInfo } from './config.ts'
 import { log } from './log.ts'
 import { shellQuote } from './util.ts'
 import {
     captureRemote,
+    registerCleanup,
     remoteStreaming,
     remoteStreamingPty,
+    remoteWgetCapture,
 } from './build/remote.ts'
+import { MultiDownloadProgress } from './build/wget-progress.ts'
 import { sftpUpload, sftpDownload } from './build/sftp.ts'
 import {
     buildPackerVars,
@@ -25,6 +29,7 @@ type RunBuildOptions = {
     syncBack?: boolean
     skipSync?: boolean
     skipPrefetch?: boolean
+    keepVm?: boolean
 }
 
 const shouldSyncBack = (env: Env, options?: RunBuildOptions): boolean =>
@@ -77,7 +82,8 @@ const resolveBuildGateway = async (
 
 export const prefetchRecipeAssets = async (
     env: Env,
-    recipe: RecipeInfo
+    recipe: RecipeInfo,
+    tracker?: MultiDownloadProgress
 ): Promise<void> => {
     const remoteWorkDir = buildRemoteWorkDir(env)
 
@@ -95,18 +101,20 @@ export const prefetchRecipeAssets = async (
                 )
             ).trim() === '1'
         if (!isoCached) {
-            const wgetCmd = process.stderr.isTTY
-                ? `wget -q --show-progress --progress=bar:force:noscroll -O ${shellQuote(recipe.isoTargetPath)} ${shellQuote(recipe.isoUrl)}`
-                : `wget -q -O ${shellQuote(recipe.isoTargetPath)} ${shellQuote(recipe.isoUrl)}`
-            const stream = process.stderr.isTTY
-                ? remoteStreamingPty
-                : remoteStreaming
-            await stream(env.SSH_TARGET, wgetCmd)
+            const wgetCmd = `wget -q --show-progress --progress=bar:force:noscroll -O ${shellQuote(recipe.isoTargetPath)} ${shellQuote(recipe.isoUrl)}`
+            const slot = tracker?.addSlot(recipe.name)
+            try {
+                await remoteWgetCapture(env.SSH_TARGET, wgetCmd, line => slot?.onLine(line))
+                slot?.finish()
+            } catch (err) {
+                slot?.fail()
+                throw err
+            }
         }
     }
 
     if (recipe.name.startsWith('windows-')) {
-        log.step('pre-fetch Cloudbase-Init MSI on remote host')
+        if (!tracker) log.step('pre-fetch Cloudbase-Init MSI on remote host')
         const msiDest = `${remoteWorkDir}/builds/_shared/CloudbaseInitSetup_x64.msi`
         const msiCached =
             (
@@ -116,19 +124,37 @@ export const prefetchRecipeAssets = async (
                 )
             ).trim() === '1'
         if (!msiCached) {
-            const curlAndWget = (wgetFlags: string) =>
-                `url=$(curl -s https://api.github.com/repos/cloudbase/cloudbase-init/releases/latest | python3 -c "import sys,json; r=json.load(sys.stdin); print(next(a['browser_download_url'] for a in r['assets'] if 'x64' in a['name'] and a['name'].endswith('.msi')))") && wget ${wgetFlags} -O ${shellQuote(msiDest)} "$url"`
-            const stream = process.stderr.isTTY
-                ? remoteStreamingPty
-                : remoteStreaming
-            await stream(
-                env.SSH_TARGET,
-                curlAndWget(
-                    process.stderr.isTTY
-                        ? '-q --show-progress --progress=bar:force:noscroll'
-                        : '-q'
+            const curlAndWget = `url=$(curl -s https://api.github.com/repos/cloudbase/cloudbase-init/releases/latest | python3 -c "import sys,json; r=json.load(sys.stdin); print(next(a['browser_download_url'] for a in r['assets'] if 'x64' in a['name'] and a['name'].endswith('.msi')))") && wget -q --show-progress --progress=bar:force:noscroll -O ${shellQuote(msiDest)} "$url"`
+            const slotLabel = recipe.name.replace('windows-server-', 'win-') + ' msi'
+            const slot = tracker?.addSlot(slotLabel)
+            try {
+                await remoteWgetCapture(env.SSH_TARGET, curlAndWget, line => slot?.onLine(line))
+                slot?.finish()
+            } catch (err) {
+                slot?.fail()
+                throw err
+            }
+        }
+
+        const virtioIsoDest = '/var/lib/vz/template/iso/packer-virtio-win.iso'
+        const virtioIsoUrl = 'https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/stable-virtio/virtio-win.iso'
+        const virtioCached =
+            (
+                await captureRemote(
+                    env.SSH_TARGET,
+                    `[ -f ${shellQuote(virtioIsoDest)} ] && echo 1 || echo 0`
                 )
-            )
+            ).trim() === '1'
+        if (!virtioCached) {
+            const wgetCmd = `wget -q --show-progress --progress=bar:force:noscroll -O ${shellQuote(virtioIsoDest)} ${shellQuote(virtioIsoUrl)}`
+            const slot = tracker?.addSlot('virtio-win iso')
+            try {
+                await remoteWgetCapture(env.SSH_TARGET, wgetCmd, line => slot?.onLine(line))
+                slot?.finish()
+            } catch (err) {
+                slot?.fail()
+                throw err
+            }
         }
     }
 }
@@ -195,7 +221,7 @@ export const runBuild = async (
     }
 
     if (!options?.skipPrefetch) {
-        await prefetchRecipeAssets(env, recipe)
+        await prefetchRecipeAssets(env, recipe, new MultiDownloadProgress())
     }
 
     log.step(`inject placeholders for ${recipe.name}`)
@@ -227,11 +253,30 @@ export const runBuild = async (
         ...buildPackerVars(env, recipe, needsStaticIp, buildBridge, buildGw),
         recipeHcl,
     ]
-    const remoteEnv = buildRemoteEnv(env, remoteOutDir, remoteTmpDir, recipe.arch)
-    await remoteStreaming(
-        env.SSH_TARGET,
-        `${remoteEnv} ${packerArgs.join(' ')}`
-    )
+    const remoteEnv = buildRemoteEnv(env, remoteOutDir, remoteTmpDir, recipe.arch, recipe.group ?? '')
+
+    const unregisterVmCleanup =
+        recipe.buildVmid && !options?.keepVm
+            ? registerCleanup(() => {
+                  process.stderr.write(
+                      `\ncancelled — destroying build VM ${recipe.buildVmid}\n`
+                  )
+                  const destroyCmd =
+                      `qm stop ${recipe.buildVmid} --skiplock 1 >/dev/null 2>&1 || true; ` +
+                      `qm unlock ${recipe.buildVmid} >/dev/null 2>&1 || true; ` +
+                      `qm destroy ${recipe.buildVmid} --purge 1 --destroy-unreferenced-disks 1 --skiplock 1 >/dev/null 2>&1 || true`
+                  spawnSync('ssh', [env.SSH_TARGET, destroyCmd], { stdio: 'inherit' })
+              })
+            : undefined
+
+    try {
+        await remoteStreaming(
+            env.SSH_TARGET,
+            `${remoteEnv} ${packerArgs.join(' ')}`
+        )
+    } finally {
+        unregisterVmCleanup?.()
+    }
 
     if (!shouldSyncBack(env, options)) {
         log.step(`skip syncing artifacts back`)

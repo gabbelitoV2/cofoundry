@@ -246,7 +246,7 @@ export async function sftpUpload(
                   const speed = elapsed > 0.1 ? doneBytes / elapsed : 0
                   const name = relPath.split('/').pop()!.slice(0, 22)
                   process.stderr.write(
-                      `\r  ${renderBar(pct)} ${String(pct).padStart(3)}%  ${(fmtBytes(speed) + '/s').padEnd(12)}  ${name}`
+                      `\r\x1b[K  ${renderBar(pct)} ${String(pct).padStart(3)}%  ${(fmtBytes(speed) + '/s').padEnd(12)}  ${name}`
                   )
               }
             : () => {}

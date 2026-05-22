@@ -26,6 +26,11 @@ const EnvSchema = z.object({
     CF_BUILD_GW: z.string().optional(),
     CF_BUILD_DNS: z.string().default('1.1.1.1'),
 
+    // If set, skip destroying the build VM on abort (useful for debugging failed builds).
+    CF_KEEP_VM: z
+        .preprocess(v => v === '1' || v === 'true' || v === true, z.boolean())
+        .default(false),
+
     // Optional CDN integration. {{file}} and {{name}} placeholders.
     CF_UPLOAD_CMD: z.string().optional(),
     CF_PUBLIC_URL_TMPL: z.string().optional(),

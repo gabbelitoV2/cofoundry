@@ -18,6 +18,7 @@ type SlotState = {
     eta: string
     done: boolean
     error: boolean
+    lastLoggedPct: number
 }
 
 export type WgetSlotHandle = {
@@ -40,6 +41,7 @@ export class MultiDownloadProgress {
             eta: '',
             done: false,
             error: false,
+            lastLoggedPct: -10,
         }
         this.slots.push(slot)
 
@@ -66,8 +68,9 @@ export class MultiDownloadProgress {
         const line = stripAnsi(raw).trim()
         if (!line) return
 
-        // wget bar line: "  75%[=====>     ] 900MB  90.0MB/s  eta 2s"
-        const pctMatch = line.match(/^(\d+)%\[/)
+        // wget bar line: "[filename]  75%[=====>     ] 900MB  90.0MB/s  eta 2s"
+        // filename may or may not precede the bar, so don't anchor with ^
+        const pctMatch = line.match(/(\d+)%\[/)
         if (!pctMatch) return
 
         slot.pct = parseInt(pctMatch[1]!, 10)
@@ -78,7 +81,8 @@ export class MultiDownloadProgress {
         const etaMatch = line.match(/\beta\s+(.+)$/)
         if (etaMatch) slot.eta = etaMatch[1]!.trim()
 
-        if (!this.isTTY) {
+        if (!this.isTTY && slot.pct >= slot.lastLoggedPct + 10) {
+            slot.lastLoggedPct = slot.pct
             const label = slot.label.slice(0, 18).padEnd(18)
             process.stderr.write(
                 `  ${label}  ${String(slot.pct).padStart(3)}%  ${slot.speed.padEnd(12)}  ${slot.eta ? 'eta ' + slot.eta : ''}\n`
@@ -119,6 +123,6 @@ export class MultiDownloadProgress {
             }
             process.stderr.write(`\r\x1b[K  ${label}  ${status}\n`)
         }
-        this.renderedLines = this.slots.size
+        this.renderedLines = this.slots.length
     }
 }

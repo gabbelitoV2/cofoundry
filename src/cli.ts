@@ -2,6 +2,7 @@
 import { Command } from 'commander'
 import { listRecipes, loadRecipe } from './config.ts'
 import { prefetchRecipeAssets, runBuild, syncArtifactsBack, syncRepoToRemote } from './build.ts'
+import { MultiDownloadProgress } from './build/wget-progress.ts'
 import { runClean, runPrune } from './prune.ts'
 import { checkRecipes, SYNTHETIC_RECIPES, saveChecksums } from './upstream.ts'
 import { buildManifest } from './manifest.ts'
@@ -11,6 +12,8 @@ import { redactSensitive } from './util.ts'
 
 type BuildCommandOptions = {
     skipSyncBack?: boolean
+    skipSync?: boolean
+    keepVm?: boolean
 }
 
 const shouldSyncBack = (env: Env, opts: BuildCommandOptions): boolean =>
@@ -30,13 +33,42 @@ program
     })
 
 program
-    .command('build <name>')
-    .description('Build a template artifact using Packer')
+    .command('build <names...>')
+    .description('Build one or more template artifacts sequentially')
     .option('--skip-sync-back', 'Do not download built artifacts to CF_OUT_DIR')
-    .action(async (name: string, opts: BuildCommandOptions) => {
+    .option('--skip-sync', 'Do not sync the repo to the remote node before building')
+    .option('--keep-vm', 'Do not destroy the build VM if the build is cancelled (also: CF_KEEP_VM=1)')
+    .action(async (names: string[], opts: BuildCommandOptions) => {
         const env = loadEnv()
-        const recipe = await loadRecipe(name)
-        await runBuild(env, recipe, { syncBack: shouldSyncBack(env, opts) })
+        if (names.length === 1) {
+            const recipe = await loadRecipe(names[0]!)
+            await runBuild(env, recipe, {
+                syncBack: shouldSyncBack(env, opts),
+                skipSync: opts.skipSync,
+                keepVm: opts.keepVm || env.CF_KEEP_VM,
+            })
+            return
+        }
+        const recipes = await Promise.all(names.map(n => loadRecipe(n)))
+        const passed: string[] = []
+        const failed: { name: string; error: string }[] = []
+        for (const recipe of recipes) {
+            try {
+                await runBuild(env, recipe, { syncBack: false, skipSync: opts.skipSync, keepVm: opts.keepVm || env.CF_KEEP_VM })
+                passed.push(recipe.name)
+            } catch (err) {
+                const msg = redactSensitive(err instanceof Error ? err.message : String(err))
+                log.err(`${recipe.name}: ${msg}`)
+                failed.push({ name: recipe.name, error: msg })
+            }
+        }
+        if (passed.length > 0 && shouldSyncBack(env, opts)) await syncArtifactsBack(env)
+        console.log('')
+        log.ok(`${passed.length} succeeded: ${passed.join(', ') || 'none'}`)
+        if (failed.length > 0) {
+            log.err(`${failed.length} failed: ${failed.map(f => f.name).join(', ')}`)
+            process.exit(1)
+        }
     })
 
 program
@@ -55,8 +87,9 @@ program
         await syncRepoToRemote(env)
 
         log.step(`prefetching ISOs and assets in parallel (${recipes.length} recipes)`)
+        const prefetchTracker = new MultiDownloadProgress()
         const prefetchResults = await Promise.allSettled(
-            recipes.map(r => prefetchRecipeAssets(env, r))
+            recipes.map(r => prefetchRecipeAssets(env, r, prefetchTracker))
         )
 
         const passed: string[] = []
@@ -118,6 +151,7 @@ program
             path: '<synthetic>',
             display: s.name,
             isoUrl: s.isoUrl,
+            arch: 'amd64',
         }))
         const withUrl = [...recipes, ...(name ? [] : synthetic)].filter(
             r => r.isoUrl
@@ -183,7 +217,7 @@ program
 
 program
     .command('publish')
-    .description('Aggregate sidecar JSONs in CF_OUT_DIR into images.json')
+    .description('Aggregate sidecar JSONs in CF_OUT_DIR into registry.json')
     .action(async () => {
         const env = loadEnv()
         await buildManifest(env.CF_OUT_DIR)

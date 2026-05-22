@@ -1,4 +1,5 @@
 # display: Ubuntu 24.04 LTS (Noble Numbat)
+# group: ubuntu
 # build_vmid: 1003
 # iso_url: https://releases.ubuntu.com/24.04/ubuntu-24.04.4-live-server-amd64.iso
 # iso_target_path: ${var.iso_cache_dir}/packer-ubuntu-24.04.4-live-server-amd64.iso

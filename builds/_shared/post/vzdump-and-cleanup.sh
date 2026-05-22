@@ -25,6 +25,7 @@ set -euo pipefail
 : "${CF_RECIPE_DISPLAY:?}"
 : "${CF_BUILT_VMID:?}"
 : "${CF_ARCH:?}"
+: "${CF_GROUP:?}"
 
 LOCAL_FILE="$CF_OUT_DIR/${CF_RECIPE_NAME}-${CF_ARCH}.vma.zst"
 LOCAL_MODE=0
@@ -97,8 +98,11 @@ cat >"$SIDECAR" <<JSON
 {
   "name": "${CF_RECIPE_NAME}-${CF_ARCH}",
   "display": "$CF_RECIPE_DISPLAY",
+  "arch": "$CF_ARCH",
+  "group": "$CF_GROUP",
   "sha256": "$SHA256",
   "size": $SIZE,
+  "suggested_vmid": ${CF_BUILT_VMID},
   "url": "$PUBLIC_URL",
   "built_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 }

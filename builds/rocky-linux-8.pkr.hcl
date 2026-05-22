@@ -1,4 +1,5 @@
 # display: Rocky Linux 8
+# group: rocky-linux
 # build_vmid: 5000
 # iso_url: https://download.rockylinux.org/pub/rocky/8/isos/x86_64/Rocky-8.10-x86_64-minimal.iso
 # iso_target_path: ${var.iso_cache_dir}/packer-rocky-8.10-x86_64-minimal.iso

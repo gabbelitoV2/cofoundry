@@ -1,4 +1,5 @@
 # display: AlmaLinux 9
+# group: almalinux
 # build_vmid: 6001
 # iso_url: https://repo.almalinux.org/almalinux/9/isos/x86_64/AlmaLinux-9.7-x86_64-minimal.iso
 # iso_target_path: ${var.iso_cache_dir}/packer-almalinux-9.7-x86_64-minimal.iso

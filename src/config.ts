@@ -16,6 +16,8 @@ export interface RecipeInfo {
     isoTargetPath?: string
     /** Architecture tag from `# arch: ...` comment; defaults to "amd64" */
     arch: string
+    /** Group id from `# group: ...` comment */
+    group?: string
 }
 
 const parseMeta = (raw: string, key: string): string | undefined => {
@@ -80,6 +82,7 @@ export const loadRecipe = async (
         isoUrl: parseIsoUrl(raw),
         isoTargetPath: parseIsoTargetPath(raw),
         arch: parseMeta(raw, 'arch') ?? 'amd64',
+        group: parseMeta(raw, 'group'),
     }
 }
 

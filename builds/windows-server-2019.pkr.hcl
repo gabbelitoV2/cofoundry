@@ -1,4 +1,5 @@
-# display: Windows Server 2019 Datacenter Core
+# display: Windows Server 2019 Datacenter
+# group: windows-server
 # build_vmid: 2000
 # iso_url: https://software-static.download.prss.microsoft.com/pr/download/17763.737.190906-2324.rs5_release_svc_refresh_SERVER_EVAL_x64FRE_en-us_1.iso
 # iso_target_path: /var/lib/vz/template/iso/packer-windows-server-2019-eval.iso
@@ -49,7 +50,7 @@ variable "winrm_password" {
 locals {
   build_vmid     = 2000
   recipe_name    = "windows-server-2019"
-  recipe_display = "Windows Server 2019 Datacenter Core"
+  recipe_display = "Windows Server 2019 Datacenter"
 }
 
 source "proxmox-iso" "windows-server-2019" {
@@ -86,6 +87,8 @@ source "proxmox-iso" "windows-server-2019" {
     efi_type          = "4m"
   }
 
+  scsi_controller = "virtio-scsi-single"
+
   disks {
     disk_size    = "15G"
     format       = "qcow2"
@@ -110,13 +113,10 @@ source "proxmox-iso" "windows-server-2019" {
 
   # VirtIO drivers ISO (provides virtio-win-guest-tools.exe for TemplatePrep.ps1)
   additional_iso_files {
-    type             = "sata"
-    iso_url          = "https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/archive-virtio/virtio-win-0.1.248-1/virtio-win.iso"
-    iso_checksum     = "none"
-    iso_download_pve = true
-    iso_storage_pool = var.proxmox_iso_storage_pool
-    iso_target_path  = "/var/lib/vz/template/iso/packer-virtio-win-0.1.248.iso"
-    unmount          = true
+    type         = "ide"
+    iso_file     = "${var.proxmox_iso_storage_pool}:iso/packer-virtio-win.iso"
+    iso_checksum = "none"
+    unmount      = true
   }
 
   # Packer creates an ISO from these local files and attaches it as a CD-ROM.
@@ -126,7 +126,6 @@ source "proxmox-iso" "windows-server-2019" {
     iso_storage_pool = var.proxmox_iso_storage_pool
     cd_files = [
       "${path.root}/windows-server-2019/autounattend.xml",
-      "${path.root}/windows-server-2019/scripts/TemplatePrep.ps1",
       "${path.root}/_shared/CloudbaseInitSetup_x64.msi",
     ]
     cd_label = "ANSWERFILES"
@@ -134,7 +133,7 @@ source "proxmox-iso" "windows-server-2019" {
   }
 
   boot_wait    = "3s"
-  boot_command = ["<enter><wait><enter><wait><enter><wait><enter><wait><enter><wait><enter>"]
+  boot_command = ["<enter><wait2><enter><wait2><enter><wait2><enter><wait2><enter><wait2><enter><wait2><enter><wait2><enter><wait2><enter><wait2><enter><wait2>"]
 
   communicator   = "winrm"
   winrm_host     = "10.0.0.100"
@@ -149,11 +148,33 @@ source "proxmox-iso" "windows-server-2019" {
 build {
   sources = ["source.proxmox-iso.windows-server-2019"]
 
-  # TemplatePrep.ps1 installs VirtIO tools, Cloudbase-Init, runs Windows Update,
-  # and finally syspreps + shuts down. Packer detects WinRM drop on shutdown.
   provisioner "powershell" {
-    script           = "${path.root}/windows-server-2019/scripts/TemplatePrep.ps1"
-    valid_exit_codes = [0]
+    script = "${path.root}/windows-server-2019/scripts/Install.ps1"
+  }
+
+  provisioner "powershell" {
+    script = "${path.root}/windows-server-2019/scripts/WU.ps1"
+  }
+  provisioner "windows-restart" {
+    restart_timeout = "30m"
+  }
+
+  provisioner "powershell" {
+    script = "${path.root}/windows-server-2019/scripts/WU.ps1"
+  }
+  provisioner "windows-restart" {
+    restart_timeout = "30m"
+  }
+
+  provisioner "powershell" {
+    script = "${path.root}/windows-server-2019/scripts/WU.ps1"
+  }
+  provisioner "windows-restart" {
+    restart_timeout = "30m"
+  }
+
+  provisioner "powershell" {
+    script = "${path.root}/windows-server-2019/scripts/Finalize.ps1"
   }
 
   post-processor "shell-local" {

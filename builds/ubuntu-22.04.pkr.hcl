@@ -1,4 +1,5 @@
 # display: Ubuntu 22.04 LTS (Jammy Jellyfish)
+# group: ubuntu
 # build_vmid: 1002
 # iso_url: https://releases.ubuntu.com/22.04/ubuntu-22.04.5-live-server-amd64.iso
 # iso_target_path: ${var.iso_cache_dir}/packer-ubuntu-22.04.5-live-server-amd64.iso

@@ -1,4 +1,5 @@
 # display: Debian 12 (Bookworm)
+# group: debian
 # build_vmid: 4001
 # iso_url: https://cdimage.debian.org/cdimage/archive/12.13.0/amd64/iso-cd/debian-12.13.0-amd64-netinst.iso
 # iso_target_path: ${var.iso_cache_dir}/packer-debian-12.13.0-amd64-netinst.iso

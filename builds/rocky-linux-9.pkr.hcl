@@ -1,4 +1,5 @@
 # display: Rocky Linux 9
+# group: rocky-linux
 # build_vmid: 5001
 # iso_url: https://download.rockylinux.org/pub/rocky/9/isos/x86_64/Rocky-9.7-x86_64-minimal.iso
 # iso_target_path: ${var.iso_cache_dir}/packer-rocky-9.7-x86_64-minimal.iso

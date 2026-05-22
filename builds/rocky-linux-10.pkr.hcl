@@ -1,4 +1,5 @@
 # display: Rocky Linux 10
+# group: rocky-linux
 # build_vmid: 5002
 # iso_url: https://download.rockylinux.org/pub/rocky/10/isos/x86_64/Rocky-10.1-x86_64-minimal.iso
 # iso_target_path: ${var.iso_cache_dir}/packer-rocky-10.1-x86_64-minimal.iso

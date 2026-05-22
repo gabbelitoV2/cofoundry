@@ -1,4 +1,5 @@
 # display: Debian 11 (Bullseye)
+# group: debian
 # build_vmid: 4000
 # iso_url: https://cdimage.debian.org/cdimage/archive/11.11.0/amd64/iso-cd/debian-11.11.0-amd64-netinst.iso
 # iso_target_path: ${var.iso_cache_dir}/packer-debian-11.11.0-amd64-netinst.iso

@@ -1,4 +1,5 @@
 # display: AlmaLinux 10
+# group: almalinux
 # build_vmid: 6002
 # iso_url: https://repo.almalinux.org/almalinux/10/isos/x86_64/AlmaLinux-10.1-x86_64-minimal.iso
 # iso_target_path: ${var.iso_cache_dir}/packer-almalinux-10.1-x86_64-minimal.iso

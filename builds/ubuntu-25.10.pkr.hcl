@@ -1,4 +1,5 @@
 # display: Ubuntu 25.10 (Questing Quokka)
+# group: ubuntu
 # build_vmid: 1004
 # iso_url: https://releases.ubuntu.com/25.10/ubuntu-25.10-live-server-amd64.iso
 # iso_target_path: ${var.iso_cache_dir}/packer-ubuntu-25.10-live-server-amd64.iso

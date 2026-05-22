@@ -1,4 +1,5 @@
 # display: Ubuntu 26.04 LTS (Resolute Raccoon)
+# group: ubuntu
 # build_vmid: 1005
 # iso_url: https://releases.ubuntu.com/26.04/ubuntu-26.04-live-server-amd64.iso
 # iso_target_path: ${var.iso_cache_dir}/packer-ubuntu-26.04-live-server-amd64.iso

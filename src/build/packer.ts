@@ -52,7 +52,8 @@ export const buildRemoteEnv = (
     env: Env,
     remoteOutDir: string,
     remoteTmpDir: string,
-    arch: string
+    arch: string,
+    group: string
 ): string => {
     // Packer runs on the PVE node, so SSH_TARGET=local tells the post-processor
     // to run vzdump directly instead of SSHing back to itself.
@@ -61,6 +62,7 @@ export const buildRemoteEnv = (
         PVE_DUMP_DIR: env.PVE_DUMP_DIR,
         CF_OUT_DIR: remoteOutDir,
         CF_ARCH: arch,
+        CF_GROUP: group,
         TMPDIR: remoteTmpDir,
         PACKER_CACHE_DIR: '/var/lib/vz/template/iso',
     }

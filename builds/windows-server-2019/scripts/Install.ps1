@@ -79,3 +79,21 @@ plugins=cloudbaseinit.plugins.common.mtu.MTUPlugin,cloudbaseinit.plugins.windows
 Write-Step "enable services"
 Set-Service -Name cloudbase-init -StartupType Automatic -ErrorAction SilentlyContinue
 Set-Service -Name QEMU-GA -StartupType Automatic -ErrorAction SilentlyContinue
+
+Write-Step "clean up UEFI boot order"
+# OVMF re-adds the SATA DVD-ROM (VirtIO ISO) to the front of BootOrder on every
+# boot, causing a ~60s hang per restart (DVD timeout + PXE timeout) before
+# reaching Windows. Delete the DVD-ROM and PXE entries entirely so subsequent
+# reboots go straight to the Windows Boot Manager.
+$raw = & bcdedit.exe /enum firmware 2>&1 | Out-String
+$blocks = ($raw -split '(?m)^-{2,}') | Where-Object { $_ -match 'identifier' }
+foreach ($block in $blocks) {
+  $id   = if ($block -match 'identifier\s+(\S+)') { $Matches[1] } else { continue }
+  $desc = if ($block -match 'description\s+(.+)')  { $Matches[1].Trim() } else { '' }
+  if ($id -eq '{fwbootmgr}') { continue }
+  if ($desc -match 'DVD|ROM|Network|IPv[46]|PXE|EFI Shell') {
+    bcdedit.exe /delete $id 2>&1 | Out-Null
+    Write-Host "    removed UEFI boot entry: $desc ($id)"
+  }
+}
+bcdedit.exe /set '{fwbootmgr}' displayorder '{bootmgr}' /addfirst 2>&1 | Out-Null

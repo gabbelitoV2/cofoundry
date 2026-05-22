@@ -41,7 +41,7 @@ Start-Process -FilePath $virtioInstaller -ArgumentList "/quiet", "/norestart" -W
 Write-Step "install Cloudbase-Init"
 $cloudbaseMsi = Find-FileOnMedia "CloudbaseInitSetup_x64.msi"
 if (-not $cloudbaseMsi) {
-  # Not on media — download from GitHub releases
+  # Not on media - download from GitHub releases
   $cloudbaseMsi = "$env:TEMP\CloudbaseInitSetup_Stable_x64.msi"
   $msiUrl = "https://github.com/cloudbase/cloudbase-init/releases/latest/download/CloudbaseInitSetup_Stable_x64.msi"
   Write-Step "downloading Cloudbase-Init MSI from $msiUrl"
@@ -130,7 +130,7 @@ if ($result.RebootRequired) {
   }
 
   if (-not (Test-Path $WUFlag)) {
-    Write-Step "Windows Update timed out after 2h — continuing anyway"
+    Write-Step "Windows Update timed out after 2h - continuing anyway"
   }
 }
 

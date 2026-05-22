@@ -3,7 +3,7 @@ import { RegistrySchema, type Registry } from '../../src/registry/schema.ts'
 import { isFilePath } from './config.ts'
 import { log } from './log.ts'
 
-export async function fetchRegistry(source: string): Promise<Registry> {
+export const fetchRegistry = async (source: string): Promise<Registry> => {
     let raw: string
     if (isFilePath(source)) {
         raw = await readFile(source, 'utf8')

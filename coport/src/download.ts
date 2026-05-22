@@ -5,23 +5,19 @@ import { join } from 'node:path'
 const TEMP_DIR = '/var/lib/vz/dump/coport-tmp'
 const MAX_RETRIES = 3
 
-export function tempPath(name: string): string {
-    return join(TEMP_DIR, `${name}.vma.zst`)
-}
+export const tempPath = (name: string): string => join(TEMP_DIR, `${name}.vma.zst`)
 
-export async function ensureTempDir(): Promise<void> {
-    await mkdir(TEMP_DIR, { recursive: true })
-}
+export const ensureTempDir = (): Promise<void> =>
+    mkdir(TEMP_DIR, { recursive: true }).then(() => {})
 
-async function sleep(ms: number): Promise<void> {
-    return new Promise(resolve => setTimeout(resolve, ms))
-}
+const sleep = (ms: number): Promise<void> =>
+    new Promise(resolve => setTimeout(resolve, ms))
 
-export async function downloadWithRetry(
+export const downloadWithRetry = async (
     url: string,
     destPath: string,
     onProgress?: (pct: number) => void
-): Promise<void> {
+): Promise<void> => {
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
         try {
             await download(url, destPath, onProgress)
@@ -33,11 +29,11 @@ export async function downloadWithRetry(
     }
 }
 
-async function download(
+const download = async (
     url: string,
     destPath: string,
     onProgress?: (pct: number) => void
-): Promise<void> {
+): Promise<void> => {
     const res = await fetch(url)
     if (!res.ok) throw new Error(`HTTP ${res.status} fetching ${url}`)
 
@@ -56,10 +52,9 @@ async function download(
     await writer.end()
 }
 
-export async function verifySha256(filePath: string, expected: string): Promise<void> {
+export const verifySha256 = async (filePath: string, expected: string): Promise<void> => {
     const hash = createHash('sha256')
-    const file = Bun.file(filePath)
-    const stream = file.stream()
+    const stream = Bun.file(filePath).stream()
     for await (const chunk of stream) {
         hash.update(chunk)
     }

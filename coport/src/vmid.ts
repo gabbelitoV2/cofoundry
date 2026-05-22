@@ -1,7 +1,7 @@
 import { access } from 'node:fs/promises'
 import type { Template } from '../../src/registry/schema.ts'
 
-export async function vmidTaken(vmid: number): Promise<boolean> {
+export const vmidTaken = async (vmid: number): Promise<boolean> => {
     const paths = [
         `/etc/pve/qemu-server/${vmid}.conf`,
         `/etc/pve/lxc/${vmid}.conf`,
@@ -17,7 +17,7 @@ export async function vmidTaken(vmid: number): Promise<boolean> {
     return false
 }
 
-export async function findFreeVmid(start: number, reserved: Set<number>): Promise<number> {
+export const findFreeVmid = async (start: number, reserved: Set<number>): Promise<number> => {
     let id = start
     while (reserved.has(id) || await vmidTaken(id)) {
         id++
@@ -31,10 +31,10 @@ export interface VmidAssignment {
     conflict: boolean
 }
 
-export async function resolveVmids(
+export const resolveVmids = async (
     templates: Template[],
     vmidStart: number
-): Promise<VmidAssignment[]> {
+): Promise<VmidAssignment[]> => {
     const reserved = new Set<number>()
     const assignments: VmidAssignment[] = []
 

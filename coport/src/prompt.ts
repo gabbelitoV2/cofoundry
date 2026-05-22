@@ -3,32 +3,30 @@ import pc from 'picocolors'
 import type { Registry, Group, Template } from '../../src/registry/schema.ts'
 import type { VmidAssignment } from './vmid.ts'
 
-function rl(): ReturnType<typeof createInterface> {
-    return createInterface({ input: process.stdin, output: process.stdout })
-}
+const rl = (): ReturnType<typeof createInterface> =>
+    createInterface({ input: process.stdin, output: process.stdout })
 
-async function question(prompt: string): Promise<string> {
-    const iface = rl()
-    return new Promise(resolve => {
+const question = (prompt: string): Promise<string> =>
+    new Promise(resolve => {
+        const iface = rl()
         iface.question(prompt, answer => {
             iface.close()
             resolve(answer.trim())
         })
     })
-}
 
-export async function promptStorage(defaultStorage?: string): Promise<string> {
+export const promptStorage = async (defaultStorage?: string): Promise<string> => {
     if (defaultStorage) return defaultStorage
     const answer = await question(pc.bold('Proxmox storage volume: '))
     if (!answer) throw new Error('Storage volume is required.')
     return answer
 }
 
-export async function promptTemplateSelection(
+export const promptTemplateSelection = async (
     registry: Registry,
     groupFilter?: string,
     tagFilter?: string
-): Promise<Template[]> {
+): Promise<Template[]> => {
     const groups = groupFilter
         ? registry.groups.filter(g => g.id === groupFilter)
         : registry.groups
@@ -63,7 +61,7 @@ export async function promptTemplateSelection(
     return selected.map(idx => entries[idx - 1]!.template)
 }
 
-function parseSelection(input: string, max: number): number[] {
+const parseSelection = (input: string, max: number): number[] => {
     if (input.toLowerCase() === 'all') {
         return Array.from({ length: max }, (_, i) => i + 1)
     }
@@ -81,7 +79,7 @@ function parseSelection(input: string, max: number): number[] {
     return [...indices].sort((a, b) => a - b)
 }
 
-export async function confirmVmidConflicts(assignments: VmidAssignment[]): Promise<boolean> {
+export const confirmVmidConflicts = async (assignments: VmidAssignment[]): Promise<boolean> => {
     const conflicts = assignments.filter(a => a.conflict)
     if (conflicts.length === 0) return true
 

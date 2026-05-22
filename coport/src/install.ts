@@ -1,9 +1,9 @@
-export async function qmrestore(
+export const qmrestore = async (
     filePath: string,
     vmid: number,
     storage: string,
     onProgress?: (pct: number) => void
-): Promise<void> {
+): Promise<void> => {
     const proc = Bun.spawn(
         ['qmrestore', filePath, String(vmid), '-storage', storage],
         { stdout: 'pipe', stderr: 'pipe' }

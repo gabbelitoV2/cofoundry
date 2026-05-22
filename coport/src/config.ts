@@ -9,7 +9,7 @@ interface CoportConfig {
     storage?: string
 }
 
-async function readConfigFile(): Promise<CoportConfig> {
+const readConfigFile = async (): Promise<CoportConfig> => {
     const path = join(homedir(), '.coport', 'config.json')
     try {
         return JSON.parse(await readFile(path, 'utf8')) as CoportConfig
@@ -23,7 +23,7 @@ export interface ResolvedConfig {
     defaultStorage?: string
 }
 
-export async function resolveConfig(cliArg?: string): Promise<ResolvedConfig> {
+export const resolveConfig = async (cliArg?: string): Promise<ResolvedConfig> => {
     if (cliArg) {
         return { registrySource: cliArg }
     }
@@ -37,6 +37,5 @@ export async function resolveConfig(cliArg?: string): Promise<ResolvedConfig> {
     }
 }
 
-export function isFilePath(source: string): boolean {
-    return source.startsWith('/') || source.startsWith('./')
-}
+export const isFilePath = (source: string): boolean =>
+    source.startsWith('/') || source.startsWith('./')

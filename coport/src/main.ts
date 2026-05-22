@@ -9,6 +9,34 @@ import { promptStorage, promptTemplateSelection, confirmVmidConflicts } from './
 import { log } from './log.ts'
 import type { Template } from '../../src/registry/schema.ts'
 
+const installTemplate = async (
+    template: Template,
+    vmid: number,
+    storage: string,
+    verify: boolean
+): Promise<void> => {
+    const dest = tempPath(template.name)
+
+    log.info(`[${template.name}] downloading...`)
+    await downloadWithRetry(template.url, dest, pct => {
+        process.stdout.write(`\r  ${template.name}: download ${pct}%  `)
+    })
+    process.stdout.write('\n')
+
+    if (verify) {
+        log.info(`[${template.name}] verifying SHA-256...`)
+        await verifySha256(dest, template.sha256)
+    }
+
+    log.info(`[${template.name}] installing as VMID ${vmid}...`)
+    await qmrestore(dest, vmid, storage, pct => {
+        process.stdout.write(`\r  ${template.name}: install ${pct}%  `)
+    })
+    process.stdout.write('\n')
+
+    import('node:fs/promises').then(({ unlink }) => unlink(dest).catch(() => {}))
+}
+
 const program = new Command()
 
 program
@@ -30,9 +58,7 @@ program
         const registry = await fetchRegistry(registrySource)
         log.success(`Loaded "${registry.name}" (${registry.groups.reduce((n, g) => n + g.templates.length, 0)} templates)`)
 
-        const storage = opts.storage ?? defaultStorage
-            ? (opts.storage ?? defaultStorage)!
-            : await promptStorage()
+        const storage = (opts.storage ?? defaultStorage) || await promptStorage()
 
         const selected = await promptTemplateSelection(registry, opts.group, opts.filter)
         if (selected.length === 0) {
@@ -43,13 +69,10 @@ program
         const vmidStart = Number(opts.vmidStart)
         const assignments = await resolveVmids(selected, vmidStart)
 
-        const hasConflicts = assignments.some(a => a.conflict)
-        if (hasConflicts || assignments.length > 0) {
-            const ok = await confirmVmidConflicts(assignments)
-            if (!ok) {
-                log.warn('Aborted.')
-                process.exit(0)
-            }
+        const ok = await confirmVmidConflicts(assignments)
+        if (!ok) {
+            log.warn('Aborted.')
+            process.exit(0)
         }
 
         if (opts.dryRun) {
@@ -80,38 +103,8 @@ program
             }
         }
 
-        if (failed > 0) {
-            process.exit(1)
-        }
+        if (failed > 0) process.exit(1)
     })
-
-async function installTemplate(
-    template: Template,
-    vmid: number,
-    storage: string,
-    verify: boolean
-): Promise<void> {
-    const dest = tempPath(template.name)
-
-    log.info(`[${template.name}] downloading...`)
-    await downloadWithRetry(template.url, dest, pct => {
-        process.stdout.write(`\r  ${template.name}: download ${pct}%  `)
-    })
-    process.stdout.write('\n')
-
-    if (verify) {
-        log.info(`[${template.name}] verifying SHA-256...`)
-        await verifySha256(dest, template.sha256)
-    }
-
-    log.info(`[${template.name}] installing as VMID ${vmid}...`)
-    await qmrestore(dest, vmid, storage, pct => {
-        process.stdout.write(`\r  ${template.name}: install ${pct}%  `)
-    })
-    process.stdout.write('\n')
-
-    import('node:fs/promises').then(({ unlink }) => unlink(dest).catch(() => {}))
-}
 
 program.parseAsync(process.argv).catch(err => {
     log.error(err instanceof Error ? err.message : String(err))

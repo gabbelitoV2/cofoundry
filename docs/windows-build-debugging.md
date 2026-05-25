@@ -162,3 +162,27 @@ try {
 ```
 
 Windows Updates are not required in the template — they can be applied post-deployment via WSUS or Windows Update on deployed VMs.
+
+---
+
+## Problem 9: "Windows Server installation has failed" during WinPE (Server 2025 only)
+
+**Symptom:** Generic "Windows Server installation has failed" dialog appears immediately during the WinPE install phase. No disk is visible in the installer.
+
+**Root cause:** `autounattend.xml` for Server 2025 was pointing vioscsi and NetKVM driver paths at `2k22\amd64`, but the `packer-virtio-win.iso` on the Proxmox node contains a `2k25` subdirectory (not just `2k22`). Without the correct vioscsi driver, WinPE can't see the virtio-scsi disk and setup fails immediately.
+
+**Verified via:**
+```bash
+mount -o loop /var/lib/vz/template/iso/packer-virtio-win.iso /tmp/vm
+ls /tmp/vm/vioscsi/   # output included: 2k19  2k22  2k25  w10  w11  ...
+ls /tmp/vm/vioscsi/2k25/amd64/  # vioscsi.cat  vioscsi.inf  vioscsi.pdb  vioscsi.sys
+```
+
+**Fix:** Change all six driver paths in `builds/windows-server-2025/autounattend.xml` from `2k22` → `2k25`:
+```xml
+<Path>D:\vioscsi\2k25\amd64</Path>
+<Path>D:\NetKVM\2k25\amd64</Path>
+<!-- (repeated for E:\ and F:\ drive letters) -->
+```
+
+**Note:** Server 2019 uses `2k19`, Server 2022 uses `2k22`, Server 2025 uses `2k25`. Match the OS version to its exact subdirectory — do not reuse `2k22` for `2k25` even though they share the same kernel. The virtio-win ISO has separate tested builds for each.

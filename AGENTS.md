@@ -16,9 +16,16 @@ Guidelines:
 - **Linux cloud-image recipes**: match the upstream cloud image's default disk (usually 10G or less). Do not pad.
 - **Debian netinstall (preseed)**: the installed base is ~3GB of actual data. Use `5G` — tight but sufficient for the standard task + LVM layout. If a build fails mid-install with a disk full error, bump to `6G`.
 - **Windows Server 2019/2022**: the installed OS + VirtIO + Cloudbase-Init takes ~10–12GB. Use `15G` as the minimum that reliably fits.
-- **Windows Server 2025**: the Datacenter Desktop Experience WIM is 23 GB uncompressed (before hard-link dedup). Windows Setup checks the raw WIM size before writing any files, so it immediately errors on a 15 GB disk. Use `32G`.
-
+- **Windows Server 2025**: the Datacenter Desktop Experience WIM is 23 GB uncompressed. MOSETUP always enables CompactOS (it evaluates the disk at ~8 GB below physical size, so even 40G is seen as ~32G, leaving insufficient headroom to skip CompactOS). Install.ps1 decompresses the WOF-compressed OS post-boot (~20-30 min). Final installed footprint is ~25-27 GB. Use `32G` — that fits the decompressed OS with enough headroom. If setup fails mid-install with a disk full error, bump to `36G`.
 When adding a new recipe, verify the actual installed size from the vzdump output (`INFO: backup is sparse: X GiB (Y%) total zero data`) and shrink the disk if there is excessive free space.
+
+## Accessing the Proxmox node
+
+To SSH into the Proxmox node directly (e.g. to inspect running VMs, check logs, or mount ISOs):
+
+```
+ssh $SSH_TARGET   # SSH_TARGET is set in .env
+```
 
 ## Before debugging a recurring Windows build failure
 
@@ -46,6 +53,10 @@ If any one is missing, the installer appears to start then reboots into "press a
 ## CompactOS protection
 
 All Windows `Install.ps1` scripts run `Compact.exe /CompactOS:never` as the first step. This ensures the installed OS is never in CompactOS mode — if Windows setup silently enabled it due to a small disk, this disables it before VirtIO and Cloudbase-Init are installed. Do NOT use `<Compact>false</Compact>` inside `<OSImage>` in autounattend.xml: that directive corrupts the Windows component store transaction log (COMPONENTS hive TxR state) during WIM extraction on Windows Server 2025, causing `ERROR_REGISTRY_IO_FAILED` in the CSI component store loader during specialize, which manifests as "The computer restarted unexpectedly." Run the protection via `Compact.exe` in Install.ps1 instead.
+
+**Important — WinPE RunSynchronous does NOT work:** MOSETUP (Windows Server 2025's setup engine) does not execute `<RunSynchronous>` commands in the `windowsPE` pass before WIM extraction. Any `compact.exe /CompactOS:never` or `reg add` commands there are silently ignored. CompactOS is enabled by policy detection regardless. Similarly, adding `compact.exe /CompactOS:never` to the `specialize` pass (via `Microsoft-Windows-Deployment`) causes a regression — MOSETUP pre-applies it to the offline staging image in WinPE, triggering a DISM `0x80071160` failure.
+
+**Known issue — slow decompression on Windows Server 2025:** The WIM is extracted with WOF compression (CompactOS enabled), so Install.ps1's `Compact.exe /CompactOS:never` must decompress ~14 GB of files. This takes 20-30 minutes. Do not kill the build during this step. See `docs/windows-build-debugging.md` Problem 11 for full context and potential future fix (increasing disk size past MOSETUP's CompactOS threshold).
 
 ## Preseed SSH key injection
 

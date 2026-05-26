@@ -156,21 +156,21 @@ build {
     script = "${path.root}/windows-server-2019/scripts/WU.ps1"
   }
   provisioner "windows-restart" {
-    restart_timeout = "30m"
+    restart_timeout = "90m"
   }
 
   provisioner "powershell" {
     script = "${path.root}/windows-server-2019/scripts/WU.ps1"
   }
   provisioner "windows-restart" {
-    restart_timeout = "30m"
+    restart_timeout = "90m"
   }
 
   provisioner "powershell" {
     script = "${path.root}/windows-server-2019/scripts/WU.ps1"
   }
   provisioner "windows-restart" {
-    restart_timeout = "30m"
+    restart_timeout = "90m"
   }
 
   provisioner "powershell" {

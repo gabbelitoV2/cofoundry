@@ -186,3 +186,198 @@ ls /tmp/vm/vioscsi/2k25/amd64/  # vioscsi.cat  vioscsi.inf  vioscsi.pdb  vioscsi
 ```
 
 **Note:** Server 2019 uses `2k19`, Server 2022 uses `2k22`, Server 2025 uses `2k25`. Match the OS version to its exact subdirectory — do not reuse `2k22` for `2k25` even though they share the same kernel. The virtio-win ISO has separate tested builds for each.
+
+---
+
+## Problem 10: "Windows Server installation has failed" — CompactOS WOF copy failure (Server 2025)
+
+**Symptom:** Same "Windows Server installation has failed" dialog. Happens ~8 minutes into setup (after WIM extraction starts), not immediately. VM's disk will show ~11GB written before failure.
+
+**Root cause (confirmed via Panther logs):**
+Windows Server 2025 setup auto-enables CompactOS via "policy detection" even when autounattend.xml has no `<Compact>` element (log shows `Compact OS option set to [0]` from unattend, then `CompactOS Enabled via policy detection` overrides it). Once CompactOS is enabled, the WIM is extracted with WOF compression to `$WINDOWS.~BT\NewOS`. DISM then tries to copy `Windows\System32\downlevel\api-ms-win-core-file-l1-2-0.dll` from the staged OS to its work directory to open a new OS session — but the WOF filter driver is not loaded in WinPE, so the compressed file can't be read. The copy fails with `GLE=0x1160`, which surfaces as `Failed to open new OS DISM session. Error: 0x80071160`.
+
+**How to read the logs next time:**
+```bash
+ssh ${SSH_TARGET}
+qm stop 2002 --skiplock 1
+modprobe nbd max_part=8
+qemu-nbd --read-only --connect=/dev/nbd1 /var/lib/vz/images/2002/vm-2002-disk-1.qcow2
+sleep 2
+mkdir -p /tmp/winpart && mount -t ntfs3 -o ro /dev/nbd1p3 /tmp/winpart
+cat '/tmp/winpart/$Windows.~BT/Sources/Panther/setuperr.log'
+grep 'compact\|DISM\|0x80071' '/tmp/winpart/$Windows.~BT/Sources/Panther/setupact.log'
+umount /tmp/winpart && qemu-nbd --disconnect /dev/nbd1
+```
+
+**What does NOT fix it:**
+- Switching vioscsi/NetKVM driver paths between `2k22` and `2k25` (unrelated — those fix disk visibility in early WinPE, not this failure)
+- `<Compact>false</Compact>` in autounattend.xml — per existing AGENTS.md note, this causes CBS component store corruption in specialize (different failure mode: "The computer restarted unexpectedly")
+
+**Fix:** Add a `<RunSynchronousCommand>` in the `windowsPE` pass of autounattend.xml to run `compact.exe /CompactOS:never` **before** the WIM is applied. This sets the WinPE registry key that setup's policy detection reads, preventing CompactOS from being auto-enabled:
+
+```xml
+<component name="Microsoft-Windows-Setup" ...>
+  <RunSynchronous>
+    <RunSynchronousCommand wcm:action="add">
+      <Order>1</Order>
+      <Description>Disable CompactOS before WIM extraction</Description>
+      <Path>compact.exe /CompactOS:never</Path>
+    </RunSynchronousCommand>
+  </RunSynchronous>
+  <DiskConfiguration>...</DiskConfiguration>
+  ...
+</component>
+```
+
+This is distinct from the banned `<Compact>false</Compact>` directive — it runs as a shell command before disk partitioning, not as a WIM-extraction flag.
+
+---
+
+## Problem 11: Install.ps1 "disable CompactOS" hangs 20-30 min — root cause confirmed
+
+**Symptom:** Build completes WinPE installation, WinRM connects, Install.ps1 starts, prints "==> disable CompactOS", then hangs for 20-30+ minutes.
+
+**Root cause (confirmed via Panther logs):** MOSETUP (Windows Server 2025's modern setup host, `SetupHost.exe`) does NOT execute `<RunSynchronous>` commands in the `windowsPE` pass before WIM extraction. Zero RunSynchronous log entries appear in the setupact.log between unattend loading and WIM extraction. This means `compact.exe /CompactOS:never` and the `reg add` policy key command in the WinPE `<RunSynchronous>` are completely ignored.
+
+CompactOS policy detection fires at ~09:43:00 in the log and overrides the unattend setting:
+```
+SetupManager: Detecting CompactOS via policy...
+SetupManager: CompactOS Enabled via policy detection.
+CSetupPlatform::CreateNewSystem: Creating a compact OS
+```
+`CompactEvalVolumeSizeMB=32649 MB` (MOSETUP sees ~32 GB even though disk is 40 GB — exact reason unknown, possibly staging/pre-partition evaluation). WIM is then extracted with WOF compression. When Install.ps1 runs `Compact.exe /CompactOS:never`, it must decompress ~14 GB of WOF-compressed files — hence the long hang.
+
+**What does NOT fix it:**
+- `compact.exe /CompactOS:never` in the WinPE `<RunSynchronous>` — MOSETUP does not run these before WIM extraction.
+- `reg add HKLM\SOFTWARE\Policies\Microsoft\Windows\CompactOS` in WinPE RunSynchronous — same reason.
+- Adding `compact.exe /CompactOS:never` to the **specialize** `<RunSynchronous>` (via `Microsoft-Windows-Deployment` component) — CAUSES REGRESSION: triggers DISM failure (`0x80071160 ERROR_FILE_SYSTEM_LIMITATION`) in WinPE. The specialize-pass compact.exe appears to be pre-applied by MOSETUP to the offline staging image in WinPE, conflicting with WOF-compressed files that DISM is trying to access. Manifests as "The computer restarted unexpectedly" dialog (actually a WinPE failure, not specialize CBS).
+
+**Current behavior:** WIM is extracted with CompactOS. Install.ps1's `Compact.exe /CompactOS:never` decompresses the ~14 GB of WOF files. This takes ~20-30 minutes but eventually completes. Do not kill the build — let it run.
+
+**Potential future fix:** The disk size MOSETUP evaluates for CompactOS threshold is ~32 GB despite the disk being 40 GB. Increasing disk to 64G or 80G may push MOSETUP's evaluated size above its CompactOS threshold. This would prevent WOF compression during WIM extraction and eliminate the decompression step entirely.
+
+---
+
+## Problem 12: WinRM 401 "invalid content type" after first reboot (post-VirtIO)
+
+**Symptom:** Build succeeds through Install.ps1 and the first `windows-restart`. Packer prints "Machine successfully restarted, moving on", then immediately fails with:
+```
+Error uploading file ...: Couldn't create shell: http response error: 401 - invalid content type
+```
+
+**Root cause:** The `PackerWinRMKeepalive` startup task included `winrm quickconfig -q -force`. On boot, Defender resets WinRM auth (Basic and AllowUnencrypted back to disabled). The keepalive task is supposed to re-enable them. However, WinRM auth settings **persist in the registry across reboots** — so when the restart provisioner reconnects, Basic auth is still enabled from the previous session. The restart provisioner succeeds and prints "moving on". Then quickconfig (from the keepalive task, which is still running in the background as a startup task) fires and causes a brief WinRM service disruption or configuration reset, right as the PowerShell provisioner creates its first shell. The 401 response contains HTML instead of SOAP XML ("invalid content type"), which happens when WinRM rejects Basic auth.
+
+**What confirmed it:** After the failed build (with `--keep-vm`), WinRM was checked from the Proxmox host:
+```
+curl -X POST http://10.0.0.100:5985/wsman ...
+# Response: WWW-Authenticate: Basic realm="WSMAN"  ← keepalive task eventually ran
+```
+Basic auth was available *after* the failure — meaning the keepalive task ran successfully but too late.
+
+**Fix:** Remove `winrm quickconfig -q -force` from the keepalive task in all three `Install.ps1` scripts. `winrm quickconfig` is redundant — WinRM was already configured to auto-start by `FirstLogonCommands` in autounattend.xml. The two `winrm set` commands are sufficient to re-enable Basic auth without touching the service state. Applied to `windows-server-2019`, `windows-server-2022`, and `windows-server-2025`.
+
+---
+
+## Problem 13: "The computer restarted unexpectedly" — WinPE crash from RunSynchronous compact.exe
+
+**Symptom:** The "The computer restarted unexpectedly or encountered an unexpected error" dialog appears consistently. No Panther logs are written to disk at all (`$Windows.~BT/Sources/Panther/` does not exist).
+
+**Diagnosis:** When Panther logs are absent but the partition table and `$Windows.~BT/Drivers/Unattend/` exist, the crash is happening after disk partitioning but before WIM extraction — exactly when `RunSynchronous` commands in the `windowsPE` unattend pass execute.
+
+**Root cause:** `RunSynchronous` commands were added to the `windowsPE` pass of `autounattend.xml` (a `reg add` to set CompactOS policy, then `compact.exe /CompactOS:never`). Problem 11 had concluded these are "silently ignored" by MOSETUP, based on Panther log analysis. That conclusion was wrong or context-dependent: when the crash happens during RunSynchronous execution itself, Panther hasn't started writing yet, so there are no logs to show zero RunSynchronous entries. `compact.exe /CompactOS:never` in WinPE crashes the setup process — likely because the WOF filter driver isn't loaded in the WinPE RAM disk environment and compact.exe faults rather than returning an error.
+
+**What does NOT fix it:**
+- `reg add HKLM\SOFTWARE\Policies\Microsoft\Windows\CompactOS` in WinPE RunSynchronous — this one is probably safe but irrelevant (modifies WinPE's RAM HKLM, not the target OS)
+- `compact.exe /CompactOS:never` in WinPE RunSynchronous — **this causes the crash**
+
+**Fix:** Remove the entire `<RunSynchronous>` block from the `windowsPE` component in `autounattend.xml`. The CompactOS mitigation belongs in `Install.ps1` (which runs `Compact.exe /CompactOS:never` after the OS is booted), not in WinPE.
+
+---
+
+## Problem 14: "Windows Server installation has failed" — invalid CompactOS value in setupconfig.ini
+
+**Symptom:** "Windows Server installation has failed" dialog. The disk has NO partition table at all (sgdisk shows an empty GPT). This is earlier than Problem 10 (which shows ~11 GB written and no Panther) — here nothing was written to the OS partition.
+
+**Diagnosis:** The ANSWERFILES CD contains a `setupconfig.ini` alongside `autounattend.xml`. Windows Setup reads `setupconfig.ini` from the same media root as `autounattend.xml`. If `setupconfig.ini` contains an invalid option value, setup aborts before it reaches disk partitioning.
+
+**Root cause:** `setupconfig.ini` contained `CompactOS=disable`. The valid values for the `/CompactOS` setup option are `Always` and `Never` (not `disable`). An unrecognized value causes setup to fail before creating any partitions.
+
+**How to diagnose:** Stop the VM mid-failure, connect the disk via nbd, and check whether the partition table is empty:
+```bash
+qemu-nbd --read-only --connect=/dev/nbd1 /var/lib/vz/images/2002/vm-2002-disk-1.qcow2
+sleep 2
+sgdisk -p /dev/nbd1   # if "no partitions" → failure was before disk partitioning
+```
+If there are no partitions and $Windows.~BT doesn't exist (or only Drivers/Unattend does from a *previous* stale nbd session), the failure is pre-partitioning — check setupconfig.ini syntax.
+
+**Fix:** Change `CompactOS=disable` → `CompactOS=Never` in `builds/windows-server-2025/setupconfig.ini`.
+
+**Caveat:** `CompactOS=Never` in setupconfig.ini gets past the pre-partition crash but does NOT actually prevent CompactOS — see Problem 15.
+
+---
+
+## Problem 15: "Windows Server installation has failed" — CompactOS policy always wins, WOF not loaded in WinPE (current blocker)
+
+**Symptom:** Same "Windows Server installation has failed" dialog, ~11 GB written to disk. Panther logs exist. Disk IS partitioned (Problem 14 is fixed).
+
+**Root error (from `setuperr.log`):**
+```
+CSetBootCommand::DoExecute: Failed to open new OS DISM session. Error: 0x80071160
+DISM Manager: PID=1356 TID=888 Failed to copy inbox forwarders to the temporary location.
+CDISMManager::CreateImageSessionFromLocation(hr:0x80071160)
+```
+`0x80071160 = ERROR_FILE_SYSTEM_LIMITATION` — WOF (Windows Overlay Filter) compressed files can't be read without the WOF kernel driver loaded.
+
+**Root cause (confirmed from `setupact.log`):**
+```
+Unattend Compact: No Value Found          ← setupconfig.ini CompactOS=Never is NOT read
+Compact OS option set to [0]              ← unattend says no compact
+SetupManager: Detecting CompactOS via policy...
+SetupManager: CompactOS Enabled via policy detection.   ← policy overrides
+CompactEvalVolumeSizeMB = 0x6389 (25481 MB ≈ 24.9 GiB)
+CompactEvalPolicyFlags  = 0x8   ← only bit 3 set
+CompactEvalSystemPolicy = 0x5   ← compact = enabled
+Apply WIM file PathForNewOSFile (compact), index 4 to G:\$WINDOWS.~BT\NewOS  [SUCCESS, 7:47]
+DISM Manager: Failed to copy inbox forwarders to the temporary location.      [FAIL, 0x80071160]
+```
+
+Windows Server 2025's MOSETUP always enables CompactOS via policy detection (likely a server-SKU policy, `CompactEvalPolicyFlags = 0x8`). The WIM is extracted with WOF compression to `G:\$WINDOWS.~BT\NewOS`. DISM then tries to open an offline session from that staging dir to set up the boot command, which requires copying `downlevel\api-ms-win-*.dll` inbox forwarders. These DLLs are now WOF-compressed. WinPE does not load wof.sys as a kernel driver, so any Win32 file operation against a WOF-compressed file returns `ERROR_FILE_SYSTEM_LIMITATION`.
+
+**What does NOT fix it:**
+- `setupconfig.ini` with `CompactOS=Never` — MOSETUP does not read this file from the ANSWERFILES CD; log shows "No Value Found" for UnattendCompact
+- Any disk size tried (25G or 40G) — policy-based compact fires regardless; `CompactEvalVolumeSizeMB` for 25G = 25481 MB, for 40G = 32649 MB (from Problem 11)
+- `<Compact>false</Compact>` in autounattend.xml `<OSImage>` — causes COMPONENTS hive TxR corruption → "The computer restarted unexpectedly" (per AGENTS.md; not yet retested on current ISO)
+- `RunSynchronous compact.exe` in windowsPE pass — crashes WinPE (Problem 13)
+
+**Approaches not yet tried (as of 2026-05-25):**
+1. Very large disk (64–80G) to see if there's a size above which policy-based CompactOS doesn't fire
+2. Remove `discard = true` from the HCL disk block — if CompactEvalPolicyFlags bit 3 = "SSD/TRIM storage", removing SCSI UNMAP might make MOSETUP classify the disk as HDD and skip CompactOS
+3. Retry `<Compact>false</Compact>` with the current ISO version — CBS corruption was observed previously but the ISO is updated periodically
+
+**Current approach (2026-05-25):** Trying `<Compact>false</Compact>` in `<OSImage>` with a 32G disk. This suppresses WOF compression so DISM can read files in WinPE. The CBS corruption risk from AGENTS.md is accepted as the only remaining option — if it manifests as "The computer restarted unexpectedly" in specialize, the ISO hasn't fixed that bug.
+
+---
+
+## Problem 16: WU.ps1 fails with CommandNotFoundException on temp script path (WinRM race condition)
+
+**Symptom:** After the first WU.ps1 round installs updates and the `windows-restart` provisioner reboots the VM, the second WU.ps1 run immediately fails:
+```
+& : The term 'c:/Windows/Temp/script-6a15dad3-5a2d-a895-64ac-f316b3b0c9c2.ps1' is not recognized
+as the name of a cmdlet, function, script file, or operable program.
+```
+
+The build does not abort — the `windows-restart` provisioner after WU.ps1 still fires, and the subsequent WU.ps1 run succeeds normally.
+
+**Root cause:** Packer's WinRM PowerShell provisioner works by uploading the script to `c:/Windows/Temp/script-<uuid>.ps1` and immediately executing it via `& 'path'`. After a post-update reboot (especially one that involves Windows applying patches on first boot), WinRM reconnects before the filesystem is fully settled. The file is uploaded successfully but the temp path is not yet accessible when the execute command runs.
+
+This is most likely on the WU.ps1 call that immediately follows the first update round reboot — that reboot involves Windows doing post-update finalization work on first boot, which makes the OS slower to stabilize than a plain restart.
+
+**Fix:** Add `pause_before = "30s"` to the PowerShell provisioners that follow a `windows-restart`. This tells Packer to wait 30 seconds after WinRM reconnects before uploading and executing the script:
+```hcl
+provisioner "powershell" {
+  pause_before = "30s"
+  script       = "${path.root}/windows-server-2025/scripts/WU.ps1"
+}
+```
+
+Applied to all three WU.ps1 provisioner steps in `windows-server-2025.pkr.hcl` that follow a `windows-restart`. If the race condition recurs, bump to `60s`.

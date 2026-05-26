@@ -4,22 +4,22 @@
     <component name="Microsoft-Windows-PnpCustomizationsWinPE" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
       <DriverPaths>
         <PathAndCredentials wcm:keyValue="1" wcm:action="add">
-          <Path>D:\vioscsi\2k22\amd64</Path>
+          <Path>D:\vioscsi\2k25\amd64</Path>
         </PathAndCredentials>
         <PathAndCredentials wcm:keyValue="2" wcm:action="add">
-          <Path>E:\vioscsi\2k22\amd64</Path>
+          <Path>E:\vioscsi\2k25\amd64</Path>
         </PathAndCredentials>
         <PathAndCredentials wcm:keyValue="3" wcm:action="add">
-          <Path>F:\vioscsi\2k22\amd64</Path>
+          <Path>F:\vioscsi\2k25\amd64</Path>
         </PathAndCredentials>
         <PathAndCredentials wcm:keyValue="4" wcm:action="add">
-          <Path>D:\NetKVM\2k22\amd64</Path>
+          <Path>D:\NetKVM\2k25\amd64</Path>
         </PathAndCredentials>
         <PathAndCredentials wcm:keyValue="5" wcm:action="add">
-          <Path>E:\NetKVM\2k22\amd64</Path>
+          <Path>E:\NetKVM\2k25\amd64</Path>
         </PathAndCredentials>
         <PathAndCredentials wcm:keyValue="6" wcm:action="add">
-          <Path>F:\NetKVM\2k22\amd64</Path>
+          <Path>F:\NetKVM\2k25\amd64</Path>
         </PathAndCredentials>
       </DriverPaths>
     </component>
@@ -73,6 +73,7 @@
       </DiskConfiguration>
       <ImageInstall>
         <OSImage>
+          <Compact>false</Compact>
           <InstallFrom>
             <MetaData wcm:action="add">
               <Key>/IMAGE/NAME</Key>

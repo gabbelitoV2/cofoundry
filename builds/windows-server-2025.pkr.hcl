@@ -97,7 +97,7 @@ source "proxmox-iso" "windows-server-2025" {
   }
 
   disks {
-    disk_size    = "15G"
+    disk_size    = "32G"
     format       = "qcow2"
     storage_pool = var.proxmox_storage_pool
     type         = "scsi"
@@ -158,26 +158,32 @@ build {
   provisioner "powershell" {
     script = "${path.root}/windows-server-2025/scripts/Install.ps1"
   }
-
-  provisioner "powershell" {
-    script = "${path.root}/windows-server-2025/scripts/WU.ps1"
-  }
   provisioner "windows-restart" {
     restart_timeout = "30m"
   }
 
   provisioner "powershell" {
-    script = "${path.root}/windows-server-2025/scripts/WU.ps1"
+    pause_before = "30s"
+    script       = "${path.root}/windows-server-2025/scripts/WU.ps1"
   }
   provisioner "windows-restart" {
-    restart_timeout = "30m"
+    restart_timeout = "90m"
   }
 
   provisioner "powershell" {
-    script = "${path.root}/windows-server-2025/scripts/WU.ps1"
+    pause_before = "30s"
+    script       = "${path.root}/windows-server-2025/scripts/WU.ps1"
   }
   provisioner "windows-restart" {
-    restart_timeout = "30m"
+    restart_timeout = "90m"
+  }
+
+  provisioner "powershell" {
+    pause_before = "30s"
+    script       = "${path.root}/windows-server-2025/scripts/WU.ps1"
+  }
+  provisioner "windows-restart" {
+    restart_timeout = "90m"
   }
 
   provisioner "powershell" {

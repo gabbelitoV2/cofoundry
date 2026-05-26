@@ -7,7 +7,6 @@ import {
     captureRemote,
     registerCleanup,
     remoteStreaming,
-    remoteStreamingPty,
     remoteWgetCapture,
 } from './build/remote.ts'
 import { MultiDownloadProgress } from './build/wget-progress.ts'
@@ -248,6 +247,7 @@ export const runBuild = async (
         'packer',
         'build',
         '-force',
+        ...(options?.keepVm ? ['-on-error=abort'] : []),
         '-var-file',
         varsFile,
         ...buildPackerVars(env, recipe, needsStaticIp, buildBridge, buildGw),

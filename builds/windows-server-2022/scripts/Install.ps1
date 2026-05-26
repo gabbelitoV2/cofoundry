@@ -11,6 +11,9 @@ function Find-FileOnMedia($FileName) {
   return $null
 }
 
+Write-Step "disable CompactOS"
+Compact.exe /CompactOS:never | Out-Null
+
 Write-Step "install VirtIO guest tools"
 $virtioInstaller = Find-FileOnMedia "virtio-win-guest-tools.exe"
 if (-not $virtioInstaller) {
@@ -79,6 +82,23 @@ plugins=cloudbaseinit.plugins.common.mtu.MTUPlugin,cloudbaseinit.plugins.windows
 Write-Step "enable services"
 Set-Service -Name cloudbase-init -StartupType Automatic -ErrorAction SilentlyContinue
 Set-Service -Name QEMU-GA -StartupType Automatic -ErrorAction SilentlyContinue
+
+Write-Step "register WinRM keepalive startup task"
+# Defender platform updates (KB4052623 / platform 4.18.26040+) reset WinRM
+# AllowUnencrypted and Basic auth on reboot. Re-apply on every boot so Packer
+# can reconnect after each windows-restart provisioner cycle.
+$winrmFixPath = "C:\Windows\System32\packer-winrm-keepalive.ps1"
+@'
+winrm set winrm/config/service @{AllowUnencrypted="true"} 2>&1 | Out-Null
+winrm set winrm/config/service/auth @{Basic="true"} 2>&1 | Out-Null
+'@ | Set-Content $winrmFixPath -Encoding UTF8
+$action    = New-ScheduledTaskAction -Execute "powershell.exe" `
+               -Argument "-ExecutionPolicy Bypass -NonInteractive -File `"$winrmFixPath`""
+$trigger   = New-ScheduledTaskTrigger -AtStartup
+$principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
+$settings  = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 5)
+Register-ScheduledTask -TaskName "PackerWinRMKeepalive" -Action $action `
+  -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
 
 Write-Step "clean up UEFI boot order"
 # OVMF re-adds the SATA DVD-ROM (VirtIO ISO) to the front of BootOrder on every

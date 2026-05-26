@@ -74,7 +74,7 @@ source "proxmox-iso" "windows-server-2022" {
 
   bios    = "ovmf"
   machine = "q35"
-  os      = "win2k22"
+  os      = "win11"
 
   cpu_type = "host"
   cores    = 4
@@ -161,21 +161,21 @@ build {
     script = "${path.root}/windows-server-2022/scripts/WU.ps1"
   }
   provisioner "windows-restart" {
-    restart_timeout = "30m"
+    restart_timeout = "90m"
   }
 
   provisioner "powershell" {
     script = "${path.root}/windows-server-2022/scripts/WU.ps1"
   }
   provisioner "windows-restart" {
-    restart_timeout = "30m"
+    restart_timeout = "90m"
   }
 
   provisioner "powershell" {
     script = "${path.root}/windows-server-2022/scripts/WU.ps1"
   }
   provisioner "windows-restart" {
-    restart_timeout = "30m"
+    restart_timeout = "90m"
   }
 
   provisioner "powershell" {

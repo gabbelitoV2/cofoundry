@@ -30,6 +30,10 @@ Write-Step "zero free space"
 Zero-FreeSpace "C"
 Optimize-Volume -DriveLetter C -ReTrim -ErrorAction SilentlyContinue
 
+Write-Step "remove Packer WinRM keepalive task"
+Unregister-ScheduledTask -TaskName "PackerWinRMKeepalive" -Confirm:$false -ErrorAction SilentlyContinue
+Remove-Item "C:\Windows\System32\packer-winrm-keepalive.ps1" -Force -ErrorAction SilentlyContinue
+
 Write-Step "sysprep and shutdown"
 $p = Start-Process -FilePath "C:\Windows\System32\Sysprep\Sysprep.exe" `
   -ArgumentList "/generalize", "/oobe", "/shutdown", "/quiet" -Wait -PassThru

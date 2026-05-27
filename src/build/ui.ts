@@ -1,14 +1,4 @@
-// Shared UI helpers: renderer selection + formatters + wget output parsing.
-// Centralised so we don't reinvent ANSI escapes or TTY branching anywhere else —
-// Listr handles those.
-
-export type RendererName = 'default' | 'simple' | 'verbose' | 'silent'
-
-export const rendererFor = (opts: { verbose?: boolean; ci?: boolean } = {}): RendererName => {
-    if (opts.verbose) return 'verbose'
-    if (opts.ci || process.env.CI || !process.stderr.isTTY) return 'simple'
-    return 'default'
-}
+// Shared formatters + wget output parsing used by the pipeline renderer.
 
 export const fmtBytes = (n: number): string => {
     if (n >= 1e9) return `${(n / 1e9).toFixed(2)}GB`

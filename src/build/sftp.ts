@@ -1,11 +1,9 @@
 import SftpClient from 'ssh2-sftp-client'
-import { readdir, stat } from 'fs/promises'
-import { createWriteStream, mkdirSync } from 'fs'
+import { readdir, stat, rename, unlink } from 'fs/promises'
+import { mkdirSync } from 'fs'
 import { dirname, join, relative, posix } from 'path'
 import { homedir } from 'os'
 import { existsSync } from 'fs'
-import { PassThrough } from 'stream'
-import { finished } from 'stream/promises'
 import PQueue from 'p-queue'
 import pRetry, { AbortError } from 'p-retry'
 
@@ -331,26 +329,23 @@ export async function sftpDownload(
             const client = clients[idx % clients.length]!
             queue.add(async () => {
                 const localPath = join(localDir, file.relPath)
+                // Write to a sibling .tmp path and rename on completion so an
+                // interrupted download never leaves a truncated artifact at
+                // the final filename. Rename is atomic on the same filesystem.
+                const tmpPath = `${localPath}.tmp`
                 mkdirSync(dirname(localPath), { recursive: true })
 
-                const fileStream = createWriteStream(localPath)
-                const meter = new PassThrough()
-                const fileDone = finished(fileStream)
-
-                meter.on('data', (chunk: Buffer) => {
-                    fileBytes[idx] = (fileBytes[idx] ?? 0) + chunk.length
-                    currentFile = file.relPath
-                    emit()
-                })
-
-                meter.pipe(fileStream)
-
                 try {
-                    await client.get(file.remotePath, meter)
-                    await fileDone
+                    await client.fastGet(file.remotePath, tmpPath, {
+                        step: (transferred: number) => {
+                            fileBytes[idx] = transferred
+                            currentFile = file.relPath
+                            emit()
+                        },
+                    })
+                    await rename(tmpPath, localPath)
                 } catch (err) {
-                    meter.destroy()
-                    fileStream.destroy()
+                    await unlink(tmpPath).catch(() => {})
                     throw err
                 }
 

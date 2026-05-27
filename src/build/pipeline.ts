@@ -1,5 +1,4 @@
 import PQueue from 'p-queue'
-import { Listr, PRESET_TIMER, type ListrTaskWrapper, type ListrRendererFactory } from 'listr2'
 import type { Env } from '../env.ts'
 import type { RecipeInfo } from '../config.ts'
 import {
@@ -10,13 +9,11 @@ import {
 } from '../build.ts'
 import { redactSensitive } from '../util.ts'
 import {
-    rendererFor,
     formatTransferStatus,
-    fmtElapsed,
     parseWgetLine,
     formatWgetStatus,
 } from './ui.ts'
-import type { OnProgress, TransferEvent } from './sftp.ts'
+import { createRenderer, type Renderer, type TaskHandle } from './render.ts'
 
 export type PipelineOptions = {
     syncBack: boolean
@@ -35,45 +32,13 @@ export type PipelineResult = {
     failed: { name: string; error: string }[]
 }
 
-type Task = ListrTaskWrapper<unknown, ListrRendererFactory, ListrRendererFactory>
+// p-queue positional hint. `pending` is in-flight, `size` is waiting.
+const queueAhead = (q: PQueue): number =>
+    Math.max(0, q.pending + q.size - q.concurrency)
 
-const transferOutput = (label: string, ev: TransferEvent): string =>
-    `${label}: ${formatTransferStatus(
-        ev.direction,
-        ev.doneBytes,
-        ev.totalBytes,
-        ev.doneFiles,
-        ev.totalFiles,
-        ev.currentFile,
-        ev.startMs
-    )}`
-
-// Throttle progress emissions so the verbose renderer doesn't get a new line
-// per kilobyte. The final 100% always emits.
-const throttle = (intervalMs: number, fn: (s: string) => void): ((s: string, force?: boolean) => void) => {
-    let last = 0
-    return (s, force = false) => {
-        const now = Date.now()
-        if (!force && now - last < intervalMs) return
-        last = now
-        fn(s)
-    }
-}
-
-const setTaskOutput = (
-    task: Task,
-    label: string,
-    throttleMs: number,
-    prefix = ''
-): OnProgress => {
-    const emit = throttle(throttleMs, s => {
-        task.output = s
-    })
-    return ev => {
-        const done = ev.doneFiles === ev.totalFiles && ev.doneBytes === ev.totalBytes
-        const s = transferOutput(label, ev)
-        emit(prefix ? `${prefix}: ${s}` : s, done)
-    }
+const phaseTitle = (phase: string, q: PQueue): string => {
+    const ahead = queueAhead(q)
+    return ahead > 0 ? `${phase} · queued (${ahead} ahead)` : phase
 }
 
 export const runPipeline = async (
@@ -88,95 +53,65 @@ export const runPipeline = async (
     const passed: string[] = []
     const failed: { name: string; error: string }[] = []
 
-    const renderer = rendererFor({ ci: opts.ci, verbose: opts.verbose })
-    // `default` renderer overwrites a single line — fast refresh feels smooth.
-    // `simple` / `verbose` append, so frequent updates spam — slow them down.
-    const throttleMs = renderer === 'default' ? 100 : 1000
-    const outputBar = Math.max(1, opts.outputLines ?? 1)
+    const renderer = createRenderer({
+        ci: opts.ci,
+        verbose: opts.verbose,
+        outputLines: opts.outputLines,
+    })
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const tasks = new (Listr as any)(
-        [
-            ...(opts.skipRepoSync
-                ? []
-                : [
-                      {
-                          title: 'sync repo to remote',
-                          // outputBar=1: only the latest status line under the spinner.
-                          // The repo sync is one ephemeral step, not a log stream.
-                          rendererOptions: { outputBar: 1, persistentOutput: false },
-                          task: async (_ctx: unknown, task: Task) => {
-                              const start = Date.now()
-                              let phaseText = 'starting…'
-                              const writeTitle = (): void => {
-                                  const elapsed = fmtElapsed(Date.now() - start)
-                                  task.title = `sync repo to remote · ${phaseText} [${elapsed}]`
-                              }
-                              const setPhase = (s: string): void => {
-                                  phaseText = s
-                                  writeTitle()
-                              }
-                              const ticker = setInterval(writeTitle, 1000)
-                              const emit = throttle(throttleMs, setPhase)
-                              try {
-                                  await syncRepoToRemote(env, {
-                                      concurrency: opts.uploadConcurrency,
-                                      onPhase: phase => setPhase(phase),
-                                      onProgress: ev => {
-                                          const done = ev.doneFiles === ev.totalFiles && ev.doneBytes === ev.totalBytes
-                                          emit(formatTransferStatus(
-                                              ev.direction,
-                                              ev.doneBytes,
-                                              ev.totalBytes,
-                                              ev.doneFiles,
-                                              ev.totalFiles,
-                                              ev.currentFile,
-                                              ev.startMs
-                                          ), done)
-                                      },
-                                  })
-                              } finally {
-                                  clearInterval(ticker)
-                                  task.title = 'sync repo to remote'
-                              }
-                          },
-                      },
-                  ]),
-            {
-                title: `build ${recipes.length} recipe${recipes.length === 1 ? '' : 's'}`,
-                task: (_ctx: unknown, task: Task) =>
-                    task.newListr(
-                        recipes.map(recipe => ({
-                            title: `${recipe.name} · queued`,
-                            // outputBar shows the last N `task.output` lines under the spinner.
-                            // No sub-Listr — one row per recipe so many concurrent recipes fit.
-                            rendererOptions: { outputBar, persistentOutput: false },
-                            task: (_c: unknown, recipeTask: Task) =>
-                                runRecipe(env, recipe, opts, recipeTask, {
-                                    prefetchQ,
-                                    buildQ,
-                                    syncQ,
-                                    passed,
-                                    failed,
-                                    throttleMs,
-                                }),
-                        })),
-                        { concurrent: true, exitOnError: false }
-                    ),
-            },
-        ],
-        {
-            renderer,
-            fallbackRenderer: 'simple',
-            exitOnError: false,
-            rendererOptions: { timer: PRESET_TIMER },
-            fallbackRendererOptions: { timer: PRESET_TIMER },
+    try {
+        if (!opts.skipRepoSync) {
+            await runRepoSync(env, opts, renderer)
         }
-    )
 
-    await tasks.run()
+        await Promise.allSettled(
+            recipes.map(recipe =>
+                runRecipe(env, recipe, opts, renderer, {
+                    prefetchQ,
+                    buildQ,
+                    syncQ,
+                    passed,
+                    failed,
+                })
+            )
+        )
+    } finally {
+        renderer.finish()
+    }
 
     return { passed, failed }
+}
+
+const runRepoSync = async (
+    env: Env,
+    opts: PipelineOptions,
+    renderer: Renderer
+): Promise<void> => {
+    const handle = renderer.task('sync repo to remote')
+    try {
+        await syncRepoToRemote(env, {
+            concurrency: opts.uploadConcurrency,
+            onPhase: phase => handle.setPhase(phase),
+            onProgress: ev => {
+                handle.setProgress(
+                    formatTransferStatus(
+                        ev.direction,
+                        ev.doneBytes,
+                        ev.totalBytes,
+                        ev.doneFiles,
+                        ev.totalFiles,
+                        ev.currentFile,
+                        ev.startMs
+                    )
+                )
+            },
+        })
+        handle.succeed()
+    } catch (err) {
+        const msg = redactSensitive(err instanceof Error ? err.message : String(err))
+        handle.fail(msg)
+        throw err
+    }
 }
 
 type RecipeContext = {
@@ -185,123 +120,91 @@ type RecipeContext = {
     syncQ: PQueue
     passed: string[]
     failed: { name: string; error: string }[]
-    throttleMs: number
 }
 
 const recordFailure = (
     ctx: RecipeContext,
     recipe: RecipeInfo,
-    err: unknown
+    err: unknown,
+    handle: TaskHandle
 ): Error => {
     const msg = redactSensitive(err instanceof Error ? err.message : String(err))
     if (!ctx.failed.some(f => f.name === recipe.name)) {
         ctx.failed.push({ name: recipe.name, error: msg })
     }
+    handle.fail(msg)
     return err instanceof Error ? err : new Error(msg)
 }
-
-// p-queue positional hint. `pending` is in-flight, `size` is waiting.
-const queueAhead = (q: PQueue): number => Math.max(0, q.pending + q.size - q.concurrency)
 
 const runRecipe = async (
     env: Env,
     recipe: RecipeInfo,
     opts: PipelineOptions,
-    task: Task,
+    renderer: Renderer,
     ctx: RecipeContext
 ): Promise<void> => {
-    // `task.title` carries phase + transient progress (wget %, sftp %) and a
-    // live elapsed timer. `task.output` is the packer log stream so the
-    // renderer's `outputBar = N` accumulates packer scrollback, not progress.
-    const recipeStart = Date.now()
-    let currentPhase = 'queued'
-    const writeTitle = (): void => {
-        const elapsed = fmtElapsed(Date.now() - recipeStart)
-        task.title = `${recipe.name} · ${currentPhase} [${elapsed}]`
-    }
-    const setTitle = (s: string): void => {
-        currentPhase = s
-        writeTitle()
-    }
-    const setOut = (s: string): void => {
-        task.output = s
-    }
-    const phaseTitle = (phase: string, q: PQueue): string => {
-        const ahead = queueAhead(q)
-        return ahead > 0 ? `${phase} · queued (${ahead} ahead)` : phase
-    }
-    const titleEmitter = throttle(ctx.throttleMs, setTitle)
-    // Tick the title every second so the elapsed timer is live even when the
-    // current phase isn't producing progress updates (e.g. packer mid-step).
-    const ticker = setInterval(writeTitle, 1000)
+    const handle = renderer.task(recipe.name)
 
+    // ── prefetch ──
+    handle.setPhase(phaseTitle('prefetch', ctx.prefetchQ))
     try {
-    // ── prefetch ── (progress goes in title, not output)
-    setTitle(phaseTitle('prefetch', ctx.prefetchQ))
-    await ctx.prefetchQ.add(async () => {
-        setTitle('prefetch')
-        try {
+        await ctx.prefetchQ.add(async () => {
+            handle.setPhase('prefetch')
             await prefetchPhase(env, recipe, (slot, line) => {
                 const p = parseWgetLine(line)
-                if (!p) return
-                titleEmitter(`prefetch · ${formatWgetStatus(slot, p)}`, p.pct >= 100)
+                if (p) handle.setProgress(formatWgetStatus(slot, p))
             })
-        } catch (err) {
-            throw recordFailure(ctx, recipe, err)
-        }
-    })
+        })
+    } catch (err) {
+        throw recordFailure(ctx, recipe, err, handle)
+    }
 
-    // ── build ── (packer lines go in output — this is what outputBar shows)
-    setTitle(phaseTitle('build', ctx.buildQ))
-    await ctx.buildQ.add(async () => {
-        setTitle('build')
-        try {
+    // ── build ──
+    handle.setPhase(phaseTitle('build', ctx.buildQ))
+    try {
+        await ctx.buildQ.add(async () => {
+            handle.setPhase('build')
             await buildPhase(env, recipe, { keepVm: opts.keepVm }, line => {
                 const trimmed = line.trim()
                 if (!trimmed) return
-                setOut(opts.verbose ? trimmed : trimmed.slice(0, 200))
+                handle.log(opts.verbose ? trimmed : trimmed.slice(0, 200))
             })
-        } catch (err) {
-            throw recordFailure(ctx, recipe, err)
-        }
-    })
+        })
+    } catch (err) {
+        throw recordFailure(ctx, recipe, err, handle)
+    }
 
     if (!opts.syncBack) {
         ctx.passed.push(recipe.name)
+        handle.succeed()
         return
     }
 
-    // ── sync ── (progress goes in title, not output)
-    setTitle(phaseTitle('sync', ctx.syncQ))
-    await ctx.syncQ.add(async () => {
-        setTitle('sync')
-        try {
-            const emit = throttle(ctx.throttleMs, (s: string) => setTitle(s))
+    // ── sync ──
+    handle.setPhase(phaseTitle('sync', ctx.syncQ))
+    try {
+        await ctx.syncQ.add(async () => {
+            handle.setPhase('sync')
             await syncPhase(env, recipe, {
                 concurrency: opts.downloadConcurrency,
                 onProgress: ev => {
-                    const done = ev.doneFiles === ev.totalFiles && ev.doneBytes === ev.totalBytes
-                    emit(`sync · ${formatTransferStatus(
-                        ev.direction,
-                        ev.doneBytes,
-                        ev.totalBytes,
-                        ev.doneFiles,
-                        ev.totalFiles,
-                        ev.currentFile,
-                        ev.startMs
-                    )}`, done)
+                    handle.setProgress(
+                        formatTransferStatus(
+                            ev.direction,
+                            ev.doneBytes,
+                            ev.totalBytes,
+                            ev.doneFiles,
+                            ev.totalFiles,
+                            ev.currentFile,
+                            ev.startMs
+                        )
+                    )
                 },
             })
-            ctx.passed.push(recipe.name)
-        } catch (err) {
-            throw recordFailure(ctx, recipe, err)
-        }
-    })
-    } finally {
-        clearInterval(ticker)
-        // Drop the live timer suffix on completion so Listr's own
-        // PRESET_TIMER ([Xm Ys]) renders cleanly without doubling up.
-        task.title = `${recipe.name}`
+        })
+        ctx.passed.push(recipe.name)
+        handle.succeed()
+    } catch (err) {
+        throw recordFailure(ctx, recipe, err, handle)
     }
 }
-

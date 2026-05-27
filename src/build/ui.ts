@@ -2,12 +2,11 @@
 // Centralised so we don't reinvent ANSI escapes or TTY branching anywhere else —
 // Listr handles those.
 
-export type RendererName = 'default' | 'simple' | 'silent'
+export type RendererName = 'default' | 'simple' | 'verbose' | 'silent'
 
-export const rendererFor = (forceCi?: boolean): RendererName => {
-    if (forceCi) return 'simple'
-    if (process.env.CI) return 'simple'
-    if (!process.stderr.isTTY) return 'simple'
+export const rendererFor = (opts: { verbose?: boolean; ci?: boolean } = {}): RendererName => {
+    if (opts.verbose) return 'verbose'
+    if (opts.ci || process.env.CI || !process.stderr.isTTY) return 'simple'
     return 'default'
 }
 

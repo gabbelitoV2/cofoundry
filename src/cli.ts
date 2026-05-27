@@ -20,6 +20,8 @@ type BuildCommandOptions = {
     downloadConcurrency?: string
     prefetchConcurrency?: string
     ci?: boolean
+    verbose?: boolean
+    outputLines?: string
 }
 
 const shouldSyncBack = (env: Env, opts: BuildCommandOptions): boolean =>
@@ -44,6 +46,8 @@ const buildAction = async (names: string[], opts: BuildCommandOptions): Promise<
         downloadConcurrency: parseNum(opts.downloadConcurrency),
         prefetchConcurrency: parseNum(opts.prefetchConcurrency),
         ci: opts.ci,
+        verbose: opts.verbose,
+        outputLines: parseNum(opts.outputLines),
     }
 
     const { passed, failed } = await runPipeline(env, recipes, pipelineOpts)
@@ -80,6 +84,8 @@ program
     .option('--download-concurrency <n>', 'Parallel SFTP connections for artifact download (overrides CF_DOWNLOAD_CONCURRENCY)')
     .option('--prefetch-concurrency <n>', 'Parallel ISO/asset prefetches on the remote node (default 3)')
     .option('--ci', 'Force line-oriented output for non-TTY environments (auto-detected from CI env or non-TTY stderr)')
+    .option('-v, --verbose', 'Stream full logs (no truncation, no overwriting) for debugging or copy-paste')
+    .option('--output-lines <n>', 'Number of recent log lines to show under each task (default 1)')
     .action((names: string[], opts: BuildCommandOptions) => buildAction(names, opts))
 
 program
@@ -90,6 +96,8 @@ program
     .option('--download-concurrency <n>', 'Parallel SFTP connections for artifact download (overrides CF_DOWNLOAD_CONCURRENCY)')
     .option('--prefetch-concurrency <n>', 'Parallel ISO/asset prefetches on the remote node (default 3)')
     .option('--ci', 'Force line-oriented output for non-TTY environments')
+    .option('-v, --verbose', 'Stream full logs (no truncation, no overwriting) for debugging')
+    .option('--output-lines <n>', 'Number of recent log lines to show under each task (default 1)')
     .action((opts: BuildCommandOptions) => buildAction([], opts))
 
 program

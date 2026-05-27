@@ -166,7 +166,7 @@ source "proxmox-iso" "debian-12" {
   ssh_private_key_file   = var.packer_ssh_private_key_file
   ssh_handshake_attempts = 10
   ssh_pty                = true
-  ssh_timeout            = "35m"
+  ssh_timeout            = "60m"
 }
 
 build {

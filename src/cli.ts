@@ -1,8 +1,7 @@
 #!/usr/bin/env bun
 import { Command } from 'commander'
 import { listRecipes, loadRecipe } from './config.ts'
-import { prefetchRecipeAssets, runBuild, syncArtifactsBack, syncRepoToRemote } from './build.ts'
-import { MultiDownloadProgress } from './build/wget-progress.ts'
+import { runPipeline, type PipelineOptions } from './build/pipeline.ts'
 import { runClean, runPrune, runPruneR2 } from './prune.ts'
 import { runVerify } from './verify.ts'
 import { runBootstrap } from './bootstrap.ts'
@@ -19,10 +18,44 @@ type BuildCommandOptions = {
     keepVm?: boolean
     uploadConcurrency?: string
     downloadConcurrency?: string
+    prefetchConcurrency?: string
+    ci?: boolean
 }
 
 const shouldSyncBack = (env: Env, opts: BuildCommandOptions): boolean =>
     !opts.skipArtifactSync && !env.CF_SKIP_SYNC_BACK && !!env.CF_OUT_DIR
+
+const parseNum = (s?: string): number | undefined =>
+    s !== undefined ? parseInt(s, 10) : undefined
+
+const buildAction = async (names: string[], opts: BuildCommandOptions): Promise<void> => {
+    const env = loadEnv()
+    const recipes =
+        names.length > 0
+            ? await Promise.all(names.map(n => loadRecipe(n)))
+            : await listRecipes()
+    if (recipes.length === 0) return log.warn('No recipes found in builds/')
+
+    const pipelineOpts: PipelineOptions = {
+        syncBack: shouldSyncBack(env, opts),
+        skipRepoSync: opts.skipRepoSync,
+        keepVm: opts.keepVm || env.CF_KEEP_VM,
+        uploadConcurrency: parseNum(opts.uploadConcurrency),
+        downloadConcurrency: parseNum(opts.downloadConcurrency),
+        prefetchConcurrency: parseNum(opts.prefetchConcurrency),
+        ci: opts.ci,
+    }
+
+    const { passed, failed } = await runPipeline(env, recipes, pipelineOpts)
+
+    console.log('')
+    log.ok(`${passed.length} succeeded: ${passed.join(', ') || 'none'}`)
+    if (failed.length > 0) {
+        log.err(`${failed.length} failed: ${failed.map(f => f.name).join(', ')}`)
+        for (const f of failed) log.err(`  ${f.name}: ${f.error}`)
+        process.exit(1)
+    }
+}
 
 const program = new Command()
 program.name('cf').description('Proxmox template builder').version('0.0.1')
@@ -38,120 +71,26 @@ program
     })
 
 program
-    .command('build <names...>')
-    .description('Build one or more template artifacts sequentially')
+    .command('build [names...]')
+    .description('Build one or more template artifacts (no names = all recipes); stage-pipelined')
     .option('--skip-artifact-sync', 'Do not download built artifacts to CF_OUT_DIR')
     .option('--skip-repo-sync', 'Do not sync the repo to the remote node before building')
     .option('--keep-vm', 'Do not destroy the build VM if the build is cancelled (also: CF_KEEP_VM=1)')
     .option('--upload-concurrency <n>', 'Parallel SFTP connections for repo upload (overrides CF_UPLOAD_CONCURRENCY)')
     .option('--download-concurrency <n>', 'Parallel SFTP connections for artifact download (overrides CF_DOWNLOAD_CONCURRENCY)')
-    .action(async (names: string[], opts: BuildCommandOptions) => {
-        const env = loadEnv()
-        const uploadConcurrency = opts.uploadConcurrency ? parseInt(opts.uploadConcurrency, 10) : undefined
-        const downloadConcurrency = opts.downloadConcurrency ? parseInt(opts.downloadConcurrency, 10) : undefined
-        if (names.length === 1) {
-            const recipe = await loadRecipe(names[0]!)
-            await runBuild(env, recipe, {
-                syncBack: shouldSyncBack(env, opts),
-                skipRepoSync: opts.skipRepoSync,
-                keepVm: opts.keepVm || env.CF_KEEP_VM,
-                uploadConcurrency,
-                downloadConcurrency,
-            })
-            return
-        }
-        const recipes = await Promise.all(names.map(n => loadRecipe(n)))
-        const passed: string[] = []
-        const failed: { name: string; error: string }[] = []
-        for (const recipe of recipes) {
-            try {
-                await runBuild(env, recipe, { syncBack: false, skipRepoSync: opts.skipRepoSync, keepVm: opts.keepVm || env.CF_KEEP_VM, uploadConcurrency, downloadConcurrency })
-                passed.push(recipe.name)
-            } catch (err) {
-                const msg = redactSensitive(err instanceof Error ? err.message : String(err))
-                log.err(`${recipe.name}: ${msg}`)
-                failed.push({ name: recipe.name, error: msg })
-            }
-        }
-        if (passed.length > 0 && shouldSyncBack(env, opts)) await syncArtifactsBack(env, downloadConcurrency)
-        console.log('')
-        log.ok(`${passed.length} succeeded: ${passed.join(', ') || 'none'}`)
-        if (failed.length > 0) {
-            log.err(`${failed.length} failed: ${failed.map(f => f.name).join(', ')}`)
-            process.exit(1)
-        }
-    })
+    .option('--prefetch-concurrency <n>', 'Parallel ISO/asset prefetches on the remote node (default 3)')
+    .option('--ci', 'Force line-oriented output for non-TTY environments (auto-detected from CI env or non-TTY stderr)')
+    .action((names: string[], opts: BuildCommandOptions) => buildAction(names, opts))
 
 program
     .command('build-all')
-    .description(
-        'Build all recipes sequentially; continues on failure and prints a summary'
-    )
+    .description('Alias for `cf build` with no names — build every recipe in the repo')
     .option('--skip-artifact-sync', 'Do not download built artifacts to CF_OUT_DIR')
     .option('--upload-concurrency <n>', 'Parallel SFTP connections for repo upload (overrides CF_UPLOAD_CONCURRENCY)')
     .option('--download-concurrency <n>', 'Parallel SFTP connections for artifact download (overrides CF_DOWNLOAD_CONCURRENCY)')
-    .action(async (opts: BuildCommandOptions) => {
-        const env = loadEnv()
-        const uploadConcurrency = opts.uploadConcurrency ? parseInt(opts.uploadConcurrency, 10) : undefined
-        const downloadConcurrency = opts.downloadConcurrency ? parseInt(opts.downloadConcurrency, 10) : undefined
-        const recipes = await listRecipes()
-        if (recipes.length === 0) return log.warn('No recipes found in builds/')
-
-        const syncBack = shouldSyncBack(env, opts)
-
-        await syncRepoToRemote(env, uploadConcurrency)
-
-        log.step(`prefetching ISOs and assets in parallel (${recipes.length} recipes)`)
-        const prefetchTracker = new MultiDownloadProgress()
-        const prefetchResults = await Promise.allSettled(
-            recipes.map(r => prefetchRecipeAssets(env, r, prefetchTracker))
-        )
-
-        const passed: string[] = []
-        const failed: { name: string; error: string }[] = []
-
-        for (let i = 0; i < recipes.length; i++) {
-            const recipe = recipes[i]!
-            const prefetch = prefetchResults[i]!
-            if (prefetch.status === 'rejected') {
-                const msg = redactSensitive(
-                    prefetch.reason instanceof Error
-                        ? prefetch.reason.message
-                        : String(prefetch.reason)
-                )
-                log.err(`${recipe.name}: prefetch failed — ${msg}`)
-                failed.push({ name: recipe.name, error: `prefetch: ${msg}` })
-                continue
-            }
-            try {
-                await runBuild(env, recipe, { syncBack: false, skipRepoSync: true, skipPrefetch: true })
-                passed.push(recipe.name)
-            } catch (err) {
-                const msg = redactSensitive(
-                    err instanceof Error ? err.message : String(err)
-                )
-                log.err(`${recipe.name}: ${msg}`)
-                failed.push({ name: recipe.name, error: msg })
-            }
-        }
-
-        if (passed.length > 0) {
-            if (!syncBack) {
-                log.step(`skip syncing artifacts back`)
-            } else {
-                await syncArtifactsBack(env, downloadConcurrency)
-            }
-        }
-
-        console.log('')
-        log.ok(`${passed.length} succeeded: ${passed.join(', ') || 'none'}`)
-        if (failed.length > 0) {
-            log.err(
-                `${failed.length} failed: ${failed.map(f => f.name).join(', ')}`
-            )
-            process.exit(1)
-        }
-    })
+    .option('--prefetch-concurrency <n>', 'Parallel ISO/asset prefetches on the remote node (default 3)')
+    .option('--ci', 'Force line-oriented output for non-TTY environments')
+    .action((opts: BuildCommandOptions) => buildAction([], opts))
 
 program
     .command('update [names...]')

@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process'
+import pRetry from 'p-retry'
 import type { Env } from './env.ts'
 import type { RecipeInfo } from './config.ts'
-import { log } from './log.ts'
 import { shellQuote } from './util.ts'
 import {
     captureRemote,
@@ -9,8 +9,7 @@ import {
     remoteStreaming,
     remoteWgetCapture,
 } from './build/remote.ts'
-import { MultiDownloadProgress } from './build/wget-progress.ts'
-import { sftpUpload, sftpDownload } from './build/sftp.ts'
+import { sftpUpload, sftpDownload, type OnProgress, type OnPhase } from './build/sftp.ts'
 import {
     buildPackerVars,
     buildRemoteEnv,
@@ -20,39 +19,45 @@ import {
     selectBridge,
 } from './build/packer.ts'
 
-const REPO_ROOT = new URL('../', import.meta.url).pathname
+export const REPO_ROOT = new URL('../', import.meta.url).pathname
 
 const fileExists = (path: string): Promise<boolean> => Bun.file(path).exists()
 
-type RunBuildOptions = {
-    syncBack?: boolean
-    skipRepoSync?: boolean
-    skipPrefetch?: boolean
-    keepVm?: boolean
-    uploadConcurrency?: number
-    downloadConcurrency?: number
+export type SyncRepoOptions = {
+    concurrency?: number
+    onProgress?: OnProgress
+    onPhase?: OnPhase
 }
 
-const shouldSyncBack = (env: Env, options?: RunBuildOptions): boolean =>
-    !!(options?.syncBack ?? !env.CF_SKIP_SYNC_BACK) && !!env.CF_OUT_DIR
-
-export const syncRepoToRemote = async (env: Env, concurrency?: number): Promise<void> => {
+export const syncRepoToRemote = async (
+    env: Env,
+    opts: SyncRepoOptions = {}
+): Promise<void> => {
     const remoteWorkDir = buildRemoteWorkDir(env)
     await captureRemote(
         env.SSH_TARGET,
         `mkdir -p ${shellQuote(remoteWorkDir)} ${shellQuote(buildRemoteOutDir(env))} ${shellQuote(buildRemoteTmpDir(env))}`
     )
-    log.step(`sync repo to ${env.SSH_TARGET}:${remoteWorkDir}`)
     await sftpUpload(env.SSH_TARGET, REPO_ROOT, remoteWorkDir, {
         excludes: ['.git', 'node_modules', 'out'],
         delete: true,
-        concurrency: concurrency ?? env.CF_UPLOAD_CONCURRENCY,
+        concurrency: opts.concurrency ?? env.CF_UPLOAD_CONCURRENCY,
+        onProgress: opts.onProgress,
+        onPhase: opts.onPhase,
     })
 }
 
-export const syncArtifactsBack = async (env: Env, concurrency?: number): Promise<void> => {
-    log.step(`sync artifacts back`)
-    await sftpDownload(env.SSH_TARGET, buildRemoteOutDir(env), env.CF_OUT_DIR, concurrency ?? env.CF_DOWNLOAD_CONCURRENCY)
+export type SyncArtifactsOptions = { concurrency?: number; onProgress?: OnProgress }
+
+// Pulls everything in the remote out-dir back to local. Used for batched pulls.
+export const syncArtifactsBack = async (
+    env: Env,
+    opts: SyncArtifactsOptions = {}
+): Promise<void> => {
+    await sftpDownload(env.SSH_TARGET, buildRemoteOutDir(env), env.CF_OUT_DIR, {
+        concurrency: opts.concurrency ?? env.CF_DOWNLOAD_CONCURRENCY,
+        onProgress: opts.onProgress,
+    })
 }
 
 const resolveBuildGateway = async (
@@ -62,132 +67,99 @@ const resolveBuildGateway = async (
 ): Promise<string> => {
     if (!useBridgeAddress) {
         if (!env.CF_BUILD_GW) {
-            throw new Error(
-                `CF_BUILD_GW is required for ISO installer builds on ${bridge}.`
-            )
+            throw new Error(`CF_BUILD_GW is required for ISO installer builds on ${bridge}.`)
         }
         return env.CF_BUILD_GW
     }
-
     const out = await captureRemote(
         env.SSH_TARGET,
         `ip -4 -o addr show dev ${shellQuote(bridge)}`
     )
     const match = out.match(/\binet\s+(\d+\.\d+\.\d+\.\d+)\//)
     if (!match) {
-        throw new Error(
-            `Could not determine IPv4 address for bridge ${bridge}.`
-        )
+        throw new Error(`Could not determine IPv4 address for bridge ${bridge}.`)
     }
     return match[1]!
 }
 
-export const prefetchRecipeAssets = async (
+// ── Phase 1: prefetch ─────────────────────────────────────────────────────────
+
+export type PrefetchProgress = (slot: string, line: string) => void
+
+const remoteFileExists = async (env: Env, path: string): Promise<boolean> => {
+    const out = await captureRemote(
+        env.SSH_TARGET,
+        `[ -f ${shellQuote(path)} ] && echo 1 || echo 0`
+    )
+    return out.trim() === '1'
+}
+
+export const prefetchPhase = async (
     env: Env,
     recipe: RecipeInfo,
-    tracker?: MultiDownloadProgress
+    onLine?: PrefetchProgress
 ): Promise<void> => {
     const remoteWorkDir = buildRemoteWorkDir(env)
 
     if (recipe.isoUrl && recipe.isoTargetPath) {
-        log.step(`ensure ISO cache: ${recipe.isoTargetPath}`)
         await captureRemote(
             env.SSH_TARGET,
             `mkdir -p ${shellQuote(recipe.isoTargetPath.replace(/\/[^/]+$/, ''))}`
         )
-        const isoCached =
-            (
-                await captureRemote(
-                    env.SSH_TARGET,
-                    `[ -f ${shellQuote(recipe.isoTargetPath)} ] && echo 1 || echo 0`
-                )
-            ).trim() === '1'
-        if (!isoCached) {
+        if (!(await remoteFileExists(env, recipe.isoTargetPath))) {
             const tmpPath = recipe.isoTargetPath + '.tmp'
             const wgetCmd = `wget -q --show-progress --progress=bar:force:noscroll -O ${shellQuote(tmpPath)} ${shellQuote(recipe.isoUrl)} && mv ${shellQuote(tmpPath)} ${shellQuote(recipe.isoTargetPath)}`
-            const slot = tracker?.addSlot(recipe.name)
-            try {
-                await remoteWgetCapture(env.SSH_TARGET, wgetCmd, line => slot?.onLine(line))
-                slot?.finish()
-            } catch (err) {
-                slot?.fail()
-                throw err
-            }
+            await remoteWgetCapture(env.SSH_TARGET, wgetCmd, line =>
+                onLine?.('iso', line)
+            )
         }
     }
 
     if (recipe.name.startsWith('windows-')) {
-        if (!tracker) log.step('pre-fetch Cloudbase-Init MSI on remote host')
         const msiDest = `${remoteWorkDir}/builds/_shared/CloudbaseInitSetup_x64.msi`
-        const msiCached =
-            (
-                await captureRemote(
-                    env.SSH_TARGET,
-                    `[ -f ${shellQuote(msiDest)} ] && echo 1 || echo 0`
-                )
-            ).trim() === '1'
-        if (!msiCached) {
+        if (!(await remoteFileExists(env, msiDest))) {
+            // GitHub API can flake; retry the URL fetch + download.
             const curlAndWget = `url=$(curl -s https://api.github.com/repos/cloudbase/cloudbase-init/releases/latest | python3 -c "import sys,json; r=json.load(sys.stdin); print(next(a['browser_download_url'] for a in r['assets'] if 'x64' in a['name'] and a['name'].endswith('.msi')))") && wget -q --show-progress --progress=bar:force:noscroll -O ${shellQuote(msiDest)} "$url"`
-            const slotLabel = recipe.name.replace('windows-server-', 'win-') + ' msi'
-            const slot = tracker?.addSlot(slotLabel)
-            try {
-                await remoteWgetCapture(env.SSH_TARGET, curlAndWget, line => slot?.onLine(line))
-                slot?.finish()
-            } catch (err) {
-                slot?.fail()
-                throw err
-            }
+            await pRetry(
+                () =>
+                    remoteWgetCapture(env.SSH_TARGET, curlAndWget, line =>
+                        onLine?.('msi', line)
+                    ),
+                { retries: 3, minTimeout: 1000, factor: 2 }
+            )
         }
 
         const virtioIsoDest = '/var/lib/vz/template/iso/packer-virtio-win.iso'
-        const virtioIsoUrl = 'https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/stable-virtio/virtio-win.iso'
-        const virtioCached =
-            (
-                await captureRemote(
-                    env.SSH_TARGET,
-                    `[ -f ${shellQuote(virtioIsoDest)} ] && echo 1 || echo 0`
-                )
-            ).trim() === '1'
-        if (!virtioCached) {
+        const virtioIsoUrl =
+            'https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/stable-virtio/virtio-win.iso'
+        if (!(await remoteFileExists(env, virtioIsoDest))) {
             const wgetCmd = `wget -q --show-progress --progress=bar:force:noscroll -O ${shellQuote(virtioIsoDest)} ${shellQuote(virtioIsoUrl)}`
-            const slot = tracker?.addSlot('virtio-win iso')
-            try {
-                await remoteWgetCapture(env.SSH_TARGET, wgetCmd, line => slot?.onLine(line))
-                slot?.finish()
-            } catch (err) {
-                slot?.fail()
-                throw err
-            }
+            await remoteWgetCapture(env.SSH_TARGET, wgetCmd, line =>
+                onLine?.('virtio', line)
+            )
         }
     }
 }
 
-export const runBuild = async (
+// ── Phase 2: packer build ────────────────────────────────────────────────────
+
+export type BuildPhaseOptions = { keepVm?: boolean }
+
+export const buildPhase = async (
     env: Env,
     recipe: RecipeInfo,
-    options?: RunBuildOptions
+    options: BuildPhaseOptions = {},
+    onLine?: (line: string) => void
 ): Promise<void> => {
     const remoteWorkDir = buildRemoteWorkDir(env)
     const remoteOutDir = buildRemoteOutDir(env)
     const remoteTmpDir = buildRemoteTmpDir(env)
-    const hasPreseed = await fileExists(
-        `${REPO_ROOT}builds/${recipe.name}/http/preseed.cfg`
-    )
-    const hasAutoinstall = await fileExists(
-        `${REPO_ROOT}builds/${recipe.name}/http/user-data`
-    )
-    const hasKickstart = await fileExists(
-        `${REPO_ROOT}builds/${recipe.name}/http/ks.cfg`
-    )
+    const hasPreseed = await fileExists(`${REPO_ROOT}builds/${recipe.name}/http/preseed.cfg`)
+    const hasAutoinstall = await fileExists(`${REPO_ROOT}builds/${recipe.name}/http/user-data`)
+    const hasKickstart = await fileExists(`${REPO_ROOT}builds/${recipe.name}/http/ks.cfg`)
     const needsStaticIp = hasPreseed || hasAutoinstall || hasKickstart
     const useInstallerNatBridge = hasPreseed || hasAutoinstall || hasKickstart
-    const buildBridge = selectBridge(
-        env,
-        recipe.name,
-        hasPreseed,
-        hasAutoinstall,
-        hasKickstart
-    )
+    const buildBridge = selectBridge(env, recipe.name, hasPreseed, hasAutoinstall, hasKickstart)
 
     if (needsStaticIp && !env.CF_BUILD_IP) {
         throw new Error(
@@ -200,22 +172,7 @@ export const runBuild = async (
         ? await resolveBuildGateway(env, buildBridge, useInstallerNatBridge)
         : ''
 
-    await captureRemote(
-        env.SSH_TARGET,
-        `mkdir -p ${shellQuote(remoteWorkDir)} ${shellQuote(remoteOutDir)} ${shellQuote(remoteTmpDir)}`
-    )
-
-    if (!options?.skipRepoSync) {
-        log.step(`sync repo to ${env.SSH_TARGET}:${remoteWorkDir}`)
-        await sftpUpload(env.SSH_TARGET, REPO_ROOT, remoteWorkDir, {
-            excludes: ['.git', 'node_modules', 'out'],
-            delete: true,
-            concurrency: options?.uploadConcurrency ?? env.CF_UPLOAD_CONCURRENCY,
-        })
-    }
-
     if (recipe.buildVmid) {
-        log.step(`remove stale VM ${recipe.buildVmid}`)
         await captureRemote(
             env.SSH_TARGET,
             `qm stop ${recipe.buildVmid} --skiplock 1 >/dev/null 2>&1 || true; ` +
@@ -224,11 +181,6 @@ export const runBuild = async (
         )
     }
 
-    if (!options?.skipPrefetch) {
-        await prefetchRecipeAssets(env, recipe, new MultiDownloadProgress())
-    }
-
-    log.step(`inject placeholders for ${recipe.name}`)
     const injectEnv = [
         `RUNNER_TEMP=${shellQuote(remoteTmpDir)}`,
         `CF_BUILD_IP=${shellQuote(env.CF_BUILD_IP ?? '')}`,
@@ -244,15 +196,13 @@ export const runBuild = async (
 
     const recipeHcl = `${remoteWorkDir}/builds/${recipe.name}.pkr.hcl`
 
-    log.step(`packer init ${recipe.name}`)
-    await remoteStreaming(env.SSH_TARGET, `packer init ${recipeHcl}`)
+    await remoteStreaming(env.SSH_TARGET, `packer init ${recipeHcl}`, onLine)
 
-    log.step(`packer build ${recipe.name}`)
     const packerArgs = [
         'packer',
         'build',
         '-force',
-        ...(options?.keepVm ? ['-on-error=abort'] : []),
+        ...(options.keepVm ? ['-on-error=abort'] : []),
         '-var-file',
         varsFile,
         ...buildPackerVars(env, recipe, needsStaticIp, buildBridge, buildGw),
@@ -261,7 +211,7 @@ export const runBuild = async (
     const remoteEnv = buildRemoteEnv(env, remoteOutDir, remoteTmpDir, recipe.arch, recipe.group ?? '')
 
     const unregisterVmCleanup =
-        recipe.buildVmid && !options?.keepVm
+        recipe.buildVmid && !options.keepVm
             ? registerCleanup(() => {
                   process.stderr.write(
                       `\ncancelled — destroying build VM ${recipe.buildVmid}\n`
@@ -277,17 +227,54 @@ export const runBuild = async (
     try {
         await remoteStreaming(
             env.SSH_TARGET,
-            `${remoteEnv} ${packerArgs.join(' ')}`
+            `${remoteEnv} ${packerArgs.join(' ')}`,
+            onLine
         )
     } finally {
         unregisterVmCleanup?.()
     }
+}
 
-    if (shouldSyncBack(env, options)) {
-        await syncArtifactsBack(env, options?.downloadConcurrency)
-    } else if (!options?.skipRepoSync) {
-        log.step(`skip syncing artifacts back`)
+// ── Phase 3: per-recipe artifact pull ────────────────────────────────────────
+
+export type SyncPhaseOptions = { concurrency?: number; onProgress?: OnProgress }
+
+// Pulls just this recipe's artifacts from the remote out-dir. Matches by the
+// recipe name prefix so a parallel run for another recipe isn't accidentally
+// downloaded.
+export const syncPhase = async (
+    env: Env,
+    recipe: RecipeInfo,
+    opts: SyncPhaseOptions = {}
+): Promise<void> => {
+    const remoteOutDir = buildRemoteOutDir(env)
+    const listOut = await captureRemote(
+        env.SSH_TARGET,
+        `ls -1 ${shellQuote(remoteOutDir)} 2>/dev/null || true`
+    )
+    const matching = listOut
+        .split('\n')
+        .map(s => s.trim())
+        .filter(name => name.startsWith(recipe.name + '-') || name.startsWith(recipe.name + '.'))
+    if (matching.length === 0) return
+
+    const { mkdirSync } = await import('node:fs')
+    mkdirSync(env.CF_OUT_DIR, { recursive: true })
+
+    // Pull individual files with scp via SFTP — but sftpDownload walks a dir.
+    // Use sftpDownload against the out-dir but with file allow-list filter.
+    // Simpler: stage matching files into a per-recipe tmpdir then download.
+    const stage = `${buildRemoteTmpDir(env)}/sync-${recipe.name}-${Date.now()}`
+    await captureRemote(
+        env.SSH_TARGET,
+        `mkdir -p ${shellQuote(stage)} && cd ${shellQuote(remoteOutDir)} && for f in ${matching.map(shellQuote).join(' ')}; do ln -f "$f" ${shellQuote(stage)}/"$f"; done`
+    )
+    try {
+        await sftpDownload(env.SSH_TARGET, stage, env.CF_OUT_DIR, {
+            concurrency: opts.concurrency ?? env.CF_DOWNLOAD_CONCURRENCY,
+            onProgress: opts.onProgress,
+        })
+    } finally {
+        await captureRemote(env.SSH_TARGET, `rm -rf ${shellQuote(stage)}`).catch(() => {})
     }
-
-    log.ok(`build ${recipe.name} completed`)
 }

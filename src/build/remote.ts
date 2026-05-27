@@ -41,8 +41,11 @@ export const captureRemote = async (
     }
 }
 
-export const remoteStreaming = (target: string, cmd: string): Promise<void> =>
-    streaming('ssh', [target, cmd])
+export const remoteStreaming = (
+    target: string,
+    cmd: string,
+    onLine?: (line: string) => void
+): Promise<void> => streaming('ssh', [target, cmd], onLine)
 
 // Allocates a PTY so remote programs (e.g. wget) detect a terminal and show
 // their native progress bar rather than falling back to dot-style output.
@@ -91,9 +94,37 @@ export const remoteWgetCapture = async (
     }
 }
 
-export const streaming = async (cmd: string, args: string[]): Promise<void> => {
+export const streaming = async (
+    cmd: string,
+    args: string[],
+    onLine?: (line: string) => void
+): Promise<void> => {
     try {
-        await execa(cmd, args, { stdio: 'inherit' })
+        if (!onLine) {
+            await execa(cmd, args, { stdio: 'inherit' })
+            return
+        }
+        const proc = execa(cmd, args, {
+            stdin: 'inherit',
+            stdout: 'pipe',
+            stderr: 'pipe',
+        })
+        activeProcs.add(proc as unknown as KillableProc)
+        let buf = ''
+        const onChunk = (chunk: Buffer): void => {
+            buf += chunk.toString()
+            const parts = buf.split(/\r?\n/)
+            buf = parts.pop() ?? ''
+            for (const part of parts) if (part) onLine(part)
+        }
+        proc.stdout?.on('data', onChunk)
+        proc.stderr?.on('data', onChunk)
+        try {
+            await proc
+            if (buf) onLine(buf)
+        } finally {
+            activeProcs.delete(proc as unknown as KillableProc)
+        }
     } catch (err) {
         if (err instanceof ExecaError && err.code === 'ENOENT') {
             throw new Error(

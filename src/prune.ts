@@ -67,7 +67,7 @@ export const runClean = async (env: Env): Promise<void> => {
     const isos = lines(
         await ssh(
             env.SSH_TARGET,
-            `find ${ISO_STORE_DIR} -maxdepth 1 \\( -name 'packer*.iso' -o -regextype posix-extended -regex '.*\/[0-9a-f]{40}\\.iso' \\) 2>/dev/null || true`
+            `find ${ISO_STORE_DIR} -maxdepth 1 \\( -name 'packer*.iso' -o -name 'packer*.iso.tmp' -o -regextype posix-extended -regex '.*\/[0-9a-f]{40}\\.iso' \\) 2>/dev/null || true`
         )
     )
 
@@ -142,7 +142,7 @@ export const runPrune = async (
     const packerIsos = lines(
         await ssh(
             env.SSH_TARGET,
-            `find ${ISO_STORE_DIR} -maxdepth 1 \\( -name 'packer*.iso' -o -regextype posix-extended -regex '.*\/[0-9a-f]{40}\\.iso' \\) 2>/dev/null || true`
+            `find ${ISO_STORE_DIR} -maxdepth 1 \\( -name 'packer*.iso' -o -name 'packer*.iso.tmp' -o -regextype posix-extended -regex '.*\/[0-9a-f]{40}\\.iso' \\) 2>/dev/null || true`
         )
     )
     await remove(env, packerIsos, dryRun)

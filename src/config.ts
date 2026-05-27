@@ -14,6 +14,10 @@ export interface RecipeInfo {
     isoUrl?: string
     /** Resolved local path for the boot ISO on the Proxmox node */
     isoTargetPath?: string
+    /** URL of the distro's published checksum file (e.g. CHECKSUM, SHA256SUMS) */
+    isoChecksumUrl?: string
+    /** Regex string matching the ISO filename inside the checksum file */
+    isoFilenameRe?: string
     /** Architecture tag from `# arch: ...` comment; defaults to "amd64" */
     arch: string
     /** Group id from `# group: ...` comment */
@@ -81,6 +85,8 @@ export const loadRecipe = async (
         buildVmid: parseMetaInt(raw, 'build_vmid'),
         isoUrl: parseIsoUrl(raw),
         isoTargetPath: parseIsoTargetPath(raw),
+        isoChecksumUrl: parseMeta(raw, 'iso_checksum_url'),
+        isoFilenameRe: parseMeta(raw, 'iso_filename_re'),
         arch: parseMeta(raw, 'arch') ?? 'amd64',
         group: parseMeta(raw, 'group'),
     }

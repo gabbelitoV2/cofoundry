@@ -3,6 +3,8 @@
 # build_vmid: 4000
 # iso_url: https://cdimage.debian.org/cdimage/archive/11.11.0/amd64/iso-cd/debian-11.11.0-amd64-netinst.iso
 # iso_target_path: ${var.iso_cache_dir}/packer-debian-11.11.0-amd64-netinst.iso
+# iso_checksum_url: https://cdimage.debian.org/cdimage/archive/latest-11/amd64/iso-cd/SHA256SUMS
+# iso_filename_re: debian-11\.\d+\.\d+-amd64-netinst\.iso
 
 packer {
   required_plugins {

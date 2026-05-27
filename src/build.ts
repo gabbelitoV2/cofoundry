@@ -26,7 +26,7 @@ const fileExists = (path: string): Promise<boolean> => Bun.file(path).exists()
 
 type RunBuildOptions = {
     syncBack?: boolean
-    skipSync?: boolean
+    skipRepoSync?: boolean
     skipPrefetch?: boolean
     keepVm?: boolean
 }
@@ -100,7 +100,8 @@ export const prefetchRecipeAssets = async (
                 )
             ).trim() === '1'
         if (!isoCached) {
-            const wgetCmd = `wget -q --show-progress --progress=bar:force:noscroll -O ${shellQuote(recipe.isoTargetPath)} ${shellQuote(recipe.isoUrl)}`
+            const tmpPath = recipe.isoTargetPath + '.tmp'
+            const wgetCmd = `wget -q --show-progress --progress=bar:force:noscroll -O ${shellQuote(tmpPath)} ${shellQuote(recipe.isoUrl)} && mv ${shellQuote(tmpPath)} ${shellQuote(recipe.isoTargetPath)}`
             const slot = tracker?.addSlot(recipe.name)
             try {
                 await remoteWgetCapture(env.SSH_TARGET, wgetCmd, line => slot?.onLine(line))
@@ -201,7 +202,7 @@ export const runBuild = async (
         `mkdir -p ${shellQuote(remoteWorkDir)} ${shellQuote(remoteOutDir)} ${shellQuote(remoteTmpDir)}`
     )
 
-    if (!options?.skipSync) {
+    if (!options?.skipRepoSync) {
         log.step(`sync repo to ${env.SSH_TARGET}:${remoteWorkDir}`)
         await sftpUpload(env.SSH_TARGET, REPO_ROOT, remoteWorkDir, {
             excludes: ['.git', 'node_modules', 'out'],
@@ -278,10 +279,10 @@ export const runBuild = async (
         unregisterVmCleanup?.()
     }
 
-    if (!shouldSyncBack(env, options)) {
-        log.step(`skip syncing artifacts back`)
-    } else {
+    if (shouldSyncBack(env, options)) {
         await syncArtifactsBack(env)
+    } else if (!options?.skipRepoSync) {
+        log.step(`skip syncing artifacts back`)
     }
 
     log.ok(`build ${recipe.name} completed`)

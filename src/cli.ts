@@ -5,19 +5,20 @@ import { prefetchRecipeAssets, runBuild, syncArtifactsBack, syncRepoToRemote } f
 import { MultiDownloadProgress } from './build/wget-progress.ts'
 import { runClean, runPrune } from './prune.ts'
 import { checkRecipes, SYNTHETIC_RECIPES, saveChecksums } from './upstream.ts'
+import { resolveIsoUpdate, applyIsoUpdate } from './update.ts'
 import { buildManifest } from './manifest.ts'
 import { type Env, loadEnv } from './env.ts'
 import { log } from './log.ts'
 import { redactSensitive } from './util.ts'
 
 type BuildCommandOptions = {
-    skipSyncBack?: boolean
-    skipSync?: boolean
+    skipArtifactSync?: boolean
+    skipRepoSync?: boolean
     keepVm?: boolean
 }
 
 const shouldSyncBack = (env: Env, opts: BuildCommandOptions): boolean =>
-    !opts.skipSyncBack && !env.CF_SKIP_SYNC_BACK
+    !opts.skipArtifactSync && !env.CF_SKIP_SYNC_BACK
 
 const program = new Command()
 program.name('cf').description('Proxmox template builder').version('0.0.1')
@@ -35,8 +36,8 @@ program
 program
     .command('build <names...>')
     .description('Build one or more template artifacts sequentially')
-    .option('--skip-sync-back', 'Do not download built artifacts to CF_OUT_DIR')
-    .option('--skip-sync', 'Do not sync the repo to the remote node before building')
+    .option('--skip-artifact-sync', 'Do not download built artifacts to CF_OUT_DIR')
+    .option('--skip-repo-sync', 'Do not sync the repo to the remote node before building')
     .option('--keep-vm', 'Do not destroy the build VM if the build is cancelled (also: CF_KEEP_VM=1)')
     .action(async (names: string[], opts: BuildCommandOptions) => {
         const env = loadEnv()
@@ -44,7 +45,7 @@ program
             const recipe = await loadRecipe(names[0]!)
             await runBuild(env, recipe, {
                 syncBack: shouldSyncBack(env, opts),
-                skipSync: opts.skipSync,
+                skipRepoSync: opts.skipRepoSync,
                 keepVm: opts.keepVm || env.CF_KEEP_VM,
             })
             return
@@ -54,7 +55,7 @@ program
         const failed: { name: string; error: string }[] = []
         for (const recipe of recipes) {
             try {
-                await runBuild(env, recipe, { syncBack: false, skipSync: opts.skipSync, keepVm: opts.keepVm || env.CF_KEEP_VM })
+                await runBuild(env, recipe, { syncBack: false, skipRepoSync: opts.skipRepoSync, keepVm: opts.keepVm || env.CF_KEEP_VM })
                 passed.push(recipe.name)
             } catch (err) {
                 const msg = redactSensitive(err instanceof Error ? err.message : String(err))
@@ -76,7 +77,7 @@ program
     .description(
         'Build all recipes sequentially; continues on failure and prints a summary'
     )
-    .option('--skip-sync-back', 'Do not download built artifacts to CF_OUT_DIR')
+    .option('--skip-artifact-sync', 'Do not download built artifacts to CF_OUT_DIR')
     .action(async (opts: BuildCommandOptions) => {
         const env = loadEnv()
         const recipes = await listRecipes()
@@ -109,7 +110,7 @@ program
                 continue
             }
             try {
-                await runBuild(env, recipe, { syncBack: false, skipSync: true, skipPrefetch: true })
+                await runBuild(env, recipe, { syncBack: false, skipRepoSync: true, skipPrefetch: true })
                 passed.push(recipe.name)
             } catch (err) {
                 const msg = redactSensitive(
@@ -134,6 +135,48 @@ program
             log.err(
                 `${failed.length} failed: ${failed.map(f => f.name).join(', ')}`
             )
+            process.exit(1)
+        }
+    })
+
+program
+    .command('update [names...]')
+    .description(
+        'Fetch upstream checksum files and update iso_url, iso_checksum, and iso_file in HCL recipes'
+    )
+    .action(async (names: string[]) => {
+        const recipes = names.length > 0
+            ? await Promise.all(names.map(n => loadRecipe(n)))
+            : await listRecipes()
+        const updatable = recipes.filter(r => r.isoChecksumUrl && r.isoFilenameRe)
+        if (updatable.length === 0) return log.warn('No recipes with iso_checksum_url found')
+
+        const updated: string[] = []
+        const failed: { name: string; error: string }[] = []
+
+        for (const recipe of updatable) {
+            try {
+                const iso = await resolveIsoUpdate(recipe)
+                if (!iso) continue
+                const changed = await applyIsoUpdate(recipe, iso)
+                if (changed) {
+                    log.ok(`${recipe.name}: updated → ${iso.filename}`)
+                    updated.push(recipe.name)
+                } else {
+                    log.info(`${recipe.name}: already up to date`)
+                }
+            } catch (err) {
+                const msg = err instanceof Error ? err.message : String(err)
+                log.err(`${recipe.name}: ${msg}`)
+                failed.push({ name: recipe.name, error: msg })
+            }
+        }
+
+        console.log('')
+        if (updated.length > 0) log.ok(`updated: ${updated.join(', ')}`)
+        else log.info('nothing changed')
+        if (failed.length > 0) {
+            log.err(`failed: ${failed.map(f => f.name).join(', ')}`)
             process.exit(1)
         }
     })

@@ -1,8 +1,10 @@
 # display: Debian 13 (Trixie)
 # group: debian
 # build_vmid: 4002
-# iso_url: https://cdimage.debian.org/cdimage/release/13.5.0/amd64/iso-cd/debian-13.5.0-amd64-netinst.iso
+# iso_url: https://cdimage.debian.org/cdimage/release/current/amd64/iso-cd/debian-13.5.0-amd64-netinst.iso
 # iso_target_path: ${var.iso_cache_dir}/packer-debian-13.5.0-amd64-netinst.iso
+# iso_checksum_url: https://cdimage.debian.org/cdimage/release/current/amd64/iso-cd/SHA256SUMS
+# iso_filename_re: debian-13\.\d+\.\d+-amd64-netinst\.iso
 
 packer {
   required_plugins {

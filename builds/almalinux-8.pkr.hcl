@@ -2,7 +2,9 @@
 # group: almalinux
 # build_vmid: 6000
 # iso_url: https://repo.almalinux.org/almalinux/8/isos/x86_64/AlmaLinux-8.10-x86_64-minimal.iso
-# iso_target_path: ${var.iso_cache_dir}/packer-almalinux-8.10-x86_64-minimal.iso
+# iso_target_path: ${var.iso_cache_dir}/packer-AlmaLinux-8.10-x86_64-minimal.iso
+# iso_checksum_url: https://repo.almalinux.org/almalinux/8/isos/x86_64/CHECKSUM
+# iso_filename_re: AlmaLinux-8\.\d+-x86_64-minimal\.iso
 
 packer {
   required_plugins {
@@ -127,7 +129,7 @@ source "proxmox-iso" "almalinux-8" {
 
   boot_iso {
     type         = "ide"
-    iso_file     = "${var.proxmox_iso_storage_pool}:iso/packer-almalinux-8.10-x86_64-minimal.iso"
+    iso_file     = "${var.proxmox_iso_storage_pool}:iso/packer-AlmaLinux-8.10-x86_64-minimal.iso"
     iso_checksum = "sha256:e524329700abe47ce1f509bed7e2d3c68b336a54c712daa1b492b2429a64d419"
     unmount      = true
   }

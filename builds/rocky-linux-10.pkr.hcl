@@ -2,8 +2,9 @@
 # group: rocky-linux
 # build_vmid: 5002
 # iso_url: https://download.rockylinux.org/pub/rocky/10/isos/x86_64/Rocky-10.1-x86_64-minimal.iso
-# iso_target_path: ${var.iso_cache_dir}/packer-rocky-10.1-x86_64-minimal.iso
-
+# iso_target_path: ${var.iso_cache_dir}/packer-Rocky-10.1-x86_64-minimal.iso
+# iso_checksum_url: https://download.rockylinux.org/pub/rocky/10/isos/x86_64/CHECKSUM
+# iso_filename_re: Rocky-10\.\d+-x86_64-minimal\.iso
 packer {
   required_plugins {
     proxmox = {
@@ -127,7 +128,7 @@ source "proxmox-iso" "rocky-linux-10" {
 
   boot_iso {
     type         = "ide"
-    iso_file     = "${var.proxmox_iso_storage_pool}:iso/packer-rocky-10.1-x86_64-minimal.iso"
+    iso_file     = "${var.proxmox_iso_storage_pool}:iso/packer-Rocky-10.1-x86_64-minimal.iso"
     iso_checksum = "sha256:5aafc2c86e606428cd7c5802b0d28c220f34c181a57eefff2cc6f65214714499"
     unmount      = true
   }

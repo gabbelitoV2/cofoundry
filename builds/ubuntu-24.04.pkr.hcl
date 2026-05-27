@@ -3,6 +3,8 @@
 # build_vmid: 1003
 # iso_url: https://releases.ubuntu.com/24.04/ubuntu-24.04.4-live-server-amd64.iso
 # iso_target_path: ${var.iso_cache_dir}/packer-ubuntu-24.04.4-live-server-amd64.iso
+# iso_checksum_url: https://releases.ubuntu.com/24.04/SHA256SUMS
+# iso_filename_re: ubuntu-24\.04(\.\d+)?-live-server-amd64\.iso
 
 packer {
   required_plugins {

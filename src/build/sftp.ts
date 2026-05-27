@@ -43,7 +43,8 @@ const fmtElapsed = (ms: number): string => {
     return `${minutes}m${seconds}s`
 }
 
-type DownloadProgress = {
+type TransferProgress = {
+    direction: '↑' | '↓'
     totalBytes: number
     totalFiles: number
     doneBytes: number
@@ -55,7 +56,7 @@ type DownloadProgress = {
     lastLoggedMs: number
 }
 
-const buildDownloadProgressLine = (progress: DownloadProgress): string => {
+const buildProgressLine = (progress: TransferProgress): string => {
     const pct =
         progress.totalBytes > 0
             ? Math.round((progress.doneBytes / progress.totalBytes) * 100)
@@ -66,7 +67,7 @@ const buildDownloadProgressLine = (progress: DownloadProgress): string => {
     const name = progress.currentFile.split('/').pop()!.slice(0, 28)
 
     return [
-        `${pc.cyan('↓')} ${renderBar(pct)}`,
+        `${pc.cyan(progress.direction)} ${renderBar(pct)}`,
         `${String(pct).padStart(3)}%`,
         amount.padEnd(18),
         `${fmtBytes(speed)}/s`.padEnd(12),
@@ -76,21 +77,25 @@ const buildDownloadProgressLine = (progress: DownloadProgress): string => {
     ].join('  ')
 }
 
-const writeDownloadProgress = (
-    progress: DownloadProgress,
-    force = false
-): void => {
+const writeProgress = (progress: TransferProgress, force = false): void => {
     const now = Date.now()
     const pct =
         progress.totalBytes > 0
             ? Math.round((progress.doneBytes / progress.totalBytes) * 100)
             : 100
-    const line = `  ${buildDownloadProgressLine(progress)}`
+    let line = `  ${buildProgressLine(progress)}`
 
     if (isTTY) {
         if (!force && now - progress.lastRenderMs < 100) return
         progress.lastRenderMs = now
-        process.stderr.write(`\r${line}`)
+        const cols = process.stderr.columns || 80
+        const visibleLen = line.replace(/\x1b\[[0-9;]*m/g, '').length
+        if (visibleLen > cols - 1) {
+            line = line.slice(0, line.lastIndexOf('  ')) // drop filename first
+            const v2 = line.replace(/\x1b\[[0-9;]*m/g, '').length
+            if (v2 > cols - 1) line = line.slice(0, cols - 1) // hard cap
+        }
+        process.stderr.write(`\r\x1b[K${line}`)
         return
     }
 
@@ -156,6 +161,7 @@ interface LocalFile {
     localPath: string
     relPath: string // always forward-slash, relative to upload root
     size: number
+    mtimeMs: number
     mode: number
 }
 
@@ -163,6 +169,7 @@ interface RemoteFile {
     remotePath: string
     relPath: string
     size: number
+    mtimeMs: number
 }
 
 function matchesExclude(relPath: string, excludes: string[]): boolean {
@@ -190,6 +197,7 @@ async function walkLocal(
                 localPath: full,
                 relPath: rel,
                 size: s.size,
+                mtimeMs: s.mtimeMs,
                 mode: s.mode,
             })
         }
@@ -210,10 +218,24 @@ const walkRemote = async (
         if (entry.type === 'd') {
             results.push(...(await walkRemote(client, remotePath, base)))
         } else {
-            results.push({ remotePath, relPath, size: entry.size })
+            results.push({ remotePath, relPath, size: entry.size, mtimeMs: entry.modifyTime })
         }
     }
     return results
+}
+
+// Preserve local mtime on the remote file so future runs can diff by mtime+size.
+// ssh2-sftp-client doesn't expose setstat publicly; reach into the underlying
+// ssh2 sftp stream. mtime is in seconds (Unix timestamp) per the SFTP spec.
+function setRemoteMtime(client: SftpClient, remotePath: string, mtimeMs: number): Promise<void> {
+    return new Promise((resolve, reject) => {
+        const mtime = Math.floor(mtimeMs / 1000)
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        ;(client as any).sftp.setstat(remotePath, { mtime, atime: mtime }, (err: Error | null) => {
+            if (err) reject(err)
+            else resolve()
+        })
+    })
 }
 
 // ── upload ───────────────────────────────────────────────────────────────────
@@ -222,63 +244,108 @@ export async function sftpUpload(
     target: string,
     localDir: string,
     remoteDir: string,
-    opts: { excludes?: string[]; delete?: boolean } = {}
+    opts: { excludes?: string[]; delete?: boolean; concurrency?: number } = {}
 ): Promise<void> {
     const excludes = opts.excludes ?? []
-    const files = await walkLocal(localDir, localDir, excludes)
-    const totalBytes = files.reduce((s, f) => s + f.size, 0)
+    const concurrency = opts.concurrency ?? 4
 
-    const client = await connect(target)
-    try {
-        await client.mkdir(remoteDir, true)
+    // One setup connection: mkdir, diff against remote, prune, pre-create dirs.
+    const [files, setupClient] = await Promise.all([
+        walkLocal(localDir, localDir, excludes),
+        connect(target),
+    ])
 
-        let doneBytes = 0
-        const startMs = Date.now()
-        const madeDir = new Set<string>()
+    await setupClient.mkdir(remoteDir, true)
+    const remoteFiles = await walkRemote(setupClient, remoteDir, remoteDir).catch(
+        () => [] as RemoteFile[]
+    )
 
-        const renderProgress = isTTY
-            ? (relPath: string) => {
-                  const pct =
-                      totalBytes > 0
-                          ? Math.round((doneBytes / totalBytes) * 100)
-                          : 100
-                  const elapsed = (Date.now() - startMs) / 1000
-                  const speed = elapsed > 0.1 ? doneBytes / elapsed : 0
-                  const name = relPath.split('/').pop()!.slice(0, 22)
-                  process.stderr.write(
-                      `\r\x1b[K  ${renderBar(pct)} ${String(pct).padStart(3)}%  ${(fmtBytes(speed) + '/s').padEnd(12)}  ${name}`
-                  )
-              }
-            : () => {}
-
-        for (const file of files) {
-            const remotePath = posix.join(remoteDir, file.relPath)
-            const remoteParent = posix.dirname(remotePath)
-            if (!madeDir.has(remoteParent)) {
-                await client.mkdir(remoteParent, true)
-                madeDir.add(remoteParent)
-            }
-
-            const fileStart = doneBytes
-            await client.fastPut(file.localPath, remotePath, {
-                step: (transferred: number) => {
-                    doneBytes = fileStart + transferred
-                    renderProgress(file.relPath)
-                },
-            })
-            await client.chmod(remotePath, file.mode & 0o7777)
-            doneBytes = fileStart + file.size
-        }
-
-        if (opts.delete) {
-            const localRels = new Set(files.map(f => f.relPath))
-            await pruneRemote(client, remoteDir, remoteDir, localRels, excludes)
-        }
-
-        if (isTTY) process.stderr.write('\r\x1b[K')
-    } finally {
-        await client.end()
+    if (opts.delete) {
+        const localRels = new Set(files.map(f => f.relPath))
+        await pruneRemote(setupClient, remoteDir, remoteDir, localRels, excludes)
     }
+
+    // Pre-create all subdirectories so parallel workers don't race on mkdir.
+    const neededDirs = new Set<string>()
+    for (const file of files) {
+        const parent = posix.dirname(posix.join(remoteDir, file.relPath))
+        if (parent !== remoteDir) neededDirs.add(parent)
+    }
+    for (const dir of neededDirs) {
+        await setupClient.mkdir(dir, true)
+    }
+
+    await setupClient.end()
+
+    // Skip files where remote size AND mtime (truncated to seconds) both match.
+    // mtime is preserved on upload so this is equivalent to rsync's default behaviour.
+    const remoteMap = new Map(remoteFiles.map(f => [f.relPath, f]))
+    const toUpload = files.filter(f => {
+        const r = remoteMap.get(f.relPath)
+        return !r || r.size !== f.size || Math.floor(r.mtimeMs / 1000) !== Math.floor(f.mtimeMs / 1000)
+    })
+
+    if (toUpload.length === 0) {
+        if (isTTY) process.stderr.write('\r\x1b[K')
+        return
+    }
+
+    const fileBytes = new Array<number>(toUpload.length).fill(0)
+    const progress: TransferProgress = {
+        direction: '↑',
+        totalBytes: toUpload.reduce((s, f) => s + f.size, 0),
+        totalFiles: toUpload.length,
+        doneBytes: 0,
+        doneFiles: 0,
+        currentFile: toUpload[0]!.relPath,
+        startMs: Date.now(),
+        lastRenderMs: 0,
+        lastLoggedPct: -10,
+        lastLoggedMs: 0,
+    }
+
+    writeProgress(progress, true)
+
+    const uploadFile = async (client: SftpClient, idx: number): Promise<void> => {
+        const file = toUpload[idx]!
+        const remotePath = posix.join(remoteDir, file.relPath)
+
+        await client.fastPut(file.localPath, remotePath, {
+            step: (transferred: number) => {
+                fileBytes[idx] = transferred
+                progress.doneBytes = fileBytes.reduce((a, b) => a + b, 0)
+                progress.currentFile = file.relPath
+                writeProgress(progress)
+            },
+        })
+        await client.chmod(remotePath, file.mode & 0o7777)
+        await setRemoteMtime(client, remotePath, file.mtimeMs)
+
+        fileBytes[idx] = file.size
+        progress.doneBytes = fileBytes.reduce((a, b) => a + b, 0)
+        progress.doneFiles++
+        writeProgress(progress, true)
+    }
+
+    const poolSize = Math.min(concurrency, toUpload.length)
+    const clients = await Promise.all(
+        Array.from({ length: poolSize }, () => connect(target))
+    )
+
+    try {
+        let next = 0
+        await Promise.all(
+            clients.map(async client => {
+                while (next < toUpload.length) {
+                    await uploadFile(client, next++)
+                }
+            })
+        )
+    } finally {
+        await Promise.all(clients.map(c => c.end().catch(() => {})))
+    }
+
+    if (isTTY) process.stderr.write('\n')
 }
 
 async function pruneRemote(
@@ -312,64 +379,90 @@ async function pruneRemote(
 export async function sftpDownload(
     target: string,
     remoteDir: string,
-    localDir: string
+    localDir: string,
+    concurrency = 4
 ): Promise<void> {
     mkdirSync(localDir, { recursive: true })
 
-    const client = await connect(target)
-    try {
-        const files = await walkRemote(client, remoteDir, remoteDir)
-        const progress: DownloadProgress = {
-            totalBytes: files.reduce((sum, file) => sum + file.size, 0),
-            totalFiles: files.length,
-            doneBytes: 0,
-            doneFiles: 0,
-            currentFile: files[0]?.relPath ?? '.',
-            startMs: Date.now(),
-            lastRenderMs: 0,
-            lastLoggedPct: -10,
-            lastLoggedMs: 0,
-        }
+    // Use one connection just for the directory listing, then close it.
+    const lister = await connect(target)
+    const files = await walkRemote(lister, remoteDir, remoteDir).finally(() =>
+        lister.end()
+    )
 
-        writeDownloadProgress(progress, true)
+    if (files.length === 0) return
 
-        for (const file of files) {
-            const localPath = join(localDir, file.relPath)
-            mkdirSync(dirname(localPath), { recursive: true })
+    // Per-file byte counters; index matches files[]. JS is single-threaded so
+    // concurrent async callbacks updating these are safe without a mutex.
+    const fileBytes = new Array<number>(files.length).fill(0)
 
-            const fileStream = createWriteStream(localPath)
-            const meter = new PassThrough()
-            const fileDone = finished(fileStream)
-            const fileStart = progress.doneBytes
-            let transferred = 0
-
-            progress.currentFile = file.relPath
-            meter.on('data', chunk => {
-                transferred += chunk.length
-                progress.currentFile = file.relPath
-                progress.doneBytes = fileStart + transferred
-                writeDownloadProgress(progress)
-            })
-
-            meter.pipe(fileStream)
-
-            try {
-                await client.get(file.remotePath, meter)
-                await fileDone
-            } catch (err) {
-                meter.destroy()
-                fileStream.destroy()
-                throw err
-            }
-
-            progress.currentFile = file.relPath
-            progress.doneBytes = fileStart + file.size
-            progress.doneFiles++
-            writeDownloadProgress(progress, true)
-        }
-
-        if (isTTY) process.stderr.write('\n')
-    } finally {
-        await client.end()
+    const progress: TransferProgress = {
+        direction: '↓',
+        totalBytes: files.reduce((sum, f) => sum + f.size, 0),
+        totalFiles: files.length,
+        doneBytes: 0,
+        doneFiles: 0,
+        currentFile: files[0]!.relPath,
+        startMs: Date.now(),
+        lastRenderMs: 0,
+        lastLoggedPct: -10,
+        lastLoggedMs: 0,
     }
+
+    writeProgress(progress, true)
+
+    const downloadFile = async (client: SftpClient, idx: number): Promise<void> => {
+        const file = files[idx]!
+        const localPath = join(localDir, file.relPath)
+        mkdirSync(dirname(localPath), { recursive: true })
+
+        const fileStream = createWriteStream(localPath)
+        const meter = new PassThrough()
+        const fileDone = finished(fileStream)
+
+        meter.on('data', (chunk: Buffer) => {
+            fileBytes[idx] = (fileBytes[idx] ?? 0) + chunk.length
+            progress.doneBytes = fileBytes.reduce((a, b) => a + b, 0)
+            progress.currentFile = file.relPath
+            writeProgress(progress)
+        })
+
+        meter.pipe(fileStream)
+
+        try {
+            await client.get(file.remotePath, meter)
+            await fileDone
+        } catch (err) {
+            meter.destroy()
+            fileStream.destroy()
+            throw err
+        }
+
+        // Normalize to exact size in case of any chunk-counting drift
+        fileBytes[idx] = file.size
+        progress.doneBytes = fileBytes.reduce((a, b) => a + b, 0)
+        progress.doneFiles++
+        writeProgress(progress, true)
+    }
+
+    // Open a pool of connections, then fan out files across workers
+    const poolSize = Math.min(concurrency, files.length)
+    const clients = await Promise.all(
+        Array.from({ length: poolSize }, () => connect(target))
+    )
+
+    try {
+        let next = 0
+        await Promise.all(
+            clients.map(async client => {
+                while (next < files.length) {
+                    await downloadFile(client, next++)
+                }
+            })
+        )
+    } finally {
+        await Promise.all(clients.map(c => c.end().catch(() => {})))
+    }
+
+    if (isTTY) process.stderr.write('\n')
 }

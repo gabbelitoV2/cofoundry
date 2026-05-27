@@ -15,6 +15,7 @@
 #   CF_BUILT_VMID / CF_RECIPE_NAME / CF_RECIPE_DISPLAY
 #
 # Optional: CF_UPLOAD_CMD, CF_PUBLIC_URL_TMPL, CF_KEEP_VM
+#   CF_UPLOAD_CMD / CF_PUBLIC_URL_TMPL support {{file}}, {{name}}, {{arch}}, {{sha256}}.
 
 set -euo pipefail
 
@@ -83,12 +84,16 @@ SIZE=$(wc -c <"$LOCAL_FILE" | tr -d ' ')
 PUBLIC_URL=""
 if [ -n "${CF_PUBLIC_URL_TMPL:-}" ]; then
   PUBLIC_URL="${CF_PUBLIC_URL_TMPL//\{\{name\}\}/$CF_RECIPE_NAME}"
+  PUBLIC_URL="${PUBLIC_URL//\{\{arch\}\}/$CF_ARCH}"
+  PUBLIC_URL="${PUBLIC_URL//\{\{sha256\}\}/$SHA256}"
 fi
 
 if [ -n "${CF_UPLOAD_CMD:-}" ]; then
   echo "==> uploading"
   CMD="${CF_UPLOAD_CMD//\{\{file\}\}/$LOCAL_FILE}"
   CMD="${CMD//\{\{name\}\}/$CF_RECIPE_NAME}"
+  CMD="${CMD//\{\{arch\}\}/$CF_ARCH}"
+  CMD="${CMD//\{\{sha256\}\}/$SHA256}"
   bash -c "$CMD"
 fi
 

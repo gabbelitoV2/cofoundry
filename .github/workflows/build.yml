@@ -17,6 +17,8 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
@@ -52,6 +54,9 @@ jobs:
       # inject-placeholders.sh generates an ephemeral SSH key (Linux) or
       # WinRM password (Windows), patches recipe files, and writes a vars file.
       # packer init + packer build are invoked by `cf build`.
+      #
+      # CF_UPLOAD_CMD pushes the artifact to R2 at a content-addressed path,
+      # so each build is immutable and rollback is "revert registry.json".
       - name: Build template
         run: bun run cf build ${{ inputs.recipe }}
         env:
@@ -65,12 +70,61 @@ jobs:
           CF_STORAGE: ${{ secrets.CF_STORAGE }}
           CF_ISO_STORAGE: ${{ secrets.CF_ISO_STORAGE }}
           CF_BRIDGE: ${{ secrets.CF_BRIDGE }}
-          CF_UPLOAD_CMD: ${{ secrets.CF_UPLOAD_CMD }}
-          CF_PUBLIC_URL_TMPL: ${{ secrets.CF_PUBLIC_URL_TMPL }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          CF_UPLOAD_CMD: >-
+            aws --endpoint-url ${{ secrets.R2_ENDPOINT }}
+            s3 cp {{file}}
+            s3://${{ secrets.R2_BUCKET }}/templates/{{name}}-{{arch}}/{{sha256}}.vma.zst
+          CF_PUBLIC_URL_TMPL: ${{ secrets.CF_PUBLIC_BASE_URL }}/templates/{{name}}-{{arch}}/{{sha256}}.vma.zst
+
+      # ── Smoke-test artifact ────────────────────────────────────────────────
+      # Restores the just-built archive to a scratch VMID on the PVE node,
+      # boots it, waits for the guest agent, then destroys it. Catches corrupt
+      # vzdump output, broken cloud-init, kernel panics, missing guest agent
+      # before `cf publish` makes the build consumer-visible.
+      - name: Smoke-test artifact
+        run: bun run cf verify ${{ inputs.recipe }}
+        env:
+          SSH_TARGET: ${{ secrets.SSH_TARGET }}
+          PVE_HOST: ${{ secrets.PVE_HOST }}
+          PVE_PORT: ${{ secrets.PVE_PORT }}
+          PVE_NODE: ${{ secrets.PVE_NODE }}
+          PVE_TOKEN_ID: ${{ secrets.PVE_TOKEN_ID }}
+          PVE_TOKEN_SECRET: ${{ secrets.PVE_TOKEN_SECRET }}
+          CF_STORAGE: ${{ secrets.CF_STORAGE }}
 
       # ── Publish manifest ───────────────────────────────────────────────────
       - name: Publish manifest
         run: bun run cf publish
+
+      # ── Commit registry.json back to main ─────────────────────────────────
+      # Canonical history: `git log out/registry.json` is the audit log of
+      # every published version. Rollback = revert the commit.
+      - name: Commit registry.json
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          file_pattern: out/registry.json
+          commit_message: "chore: publish ${{ inputs.recipe }} build"
+          commit_user_name: github-actions[bot]
+          commit_user_email: 41898282+github-actions[bot]@users.noreply.github.com
+
+      # ── Mirror registry.json to R2 ─────────────────────────────────────────
+      # Single fetch origin for consumers. Short TTL so rollbacks propagate
+      # quickly.
+      - name: Mirror registry.json to R2
+        run: |
+          aws --endpoint-url "$R2_ENDPOINT" s3 cp \
+            out/registry.json "s3://$R2_BUCKET/registry.json" \
+            --cache-control "public, max-age=60" \
+            --content-type "application/json"
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
 
       # ── Reclaim disk on the node ──────────────────────────────────────────
       # Folds the old weekly cleanup cron into the build pipeline.
@@ -84,6 +138,26 @@ jobs:
           PVE_NODE: ${{ secrets.PVE_NODE }}
           PVE_TOKEN_ID: ${{ secrets.PVE_TOKEN_ID }}
           PVE_TOKEN_SECRET: ${{ secrets.PVE_TOKEN_SECRET }}
+
+      # ── Prune old R2 objects ──────────────────────────────────────────────
+      # Keep last 5 per template. The R2 lifecycle rule (configured out-of-band)
+      # provides a broader 60-day safety net for orphaned recipes.
+      - name: Prune R2 templates
+        if: always()
+        run: bun run cf prune --r2 --keep 5
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          # cf prune still loads Env which requires PVE_* even with --r2.
+          PVE_HOST: ${{ secrets.PVE_HOST }}
+          PVE_PORT: ${{ secrets.PVE_PORT }}
+          PVE_NODE: ${{ secrets.PVE_NODE }}
+          PVE_TOKEN_ID: ${{ secrets.PVE_TOKEN_ID }}
+          PVE_TOKEN_SECRET: ${{ secrets.PVE_TOKEN_SECRET }}
+          SSH_TARGET: ${{ secrets.SSH_TARGET }}
 
       # ── Upload artifact ────────────────────────────────────────────────────
       - uses: actions/upload-artifact@v4

@@ -3,6 +3,96 @@ import type { Env } from './env.ts'
 import { log } from './log.ts'
 import { shellQuote } from './util.ts'
 
+export interface PruneR2Options {
+    keep: number
+    dryRun: boolean
+}
+
+interface R2Object {
+    Key: string
+    LastModified: string
+    Size: number
+}
+
+const awsS3 = async (endpoint: string, args: string[]): Promise<string> => {
+    const { stdout } = await execa(
+        'aws',
+        ['--endpoint-url', endpoint, 's3api', ...args],
+        { stdin: 'inherit', stderr: 'inherit' }
+    )
+    return stdout
+}
+
+/**
+ * Per-template "keep newest N" prune over R2. The R2 lifecycle rule handles
+ * age-based expiration of orphaned recipes; this keeps the per-recipe window
+ * tight regardless of recipe lifetime.
+ */
+export const runPruneR2 = async ({
+    keep,
+    dryRun,
+}: PruneR2Options): Promise<void> => {
+    const endpoint = process.env.R2_ENDPOINT
+    const bucket = process.env.R2_BUCKET
+    if (!endpoint) throw new Error('R2_ENDPOINT is required for --r2 prune')
+    if (!bucket) throw new Error('R2_BUCKET is required for --r2 prune')
+
+    if (dryRun) log.warn('--dry-run: no objects will be deleted')
+
+    log.step(`listing s3://${bucket}/templates/`)
+    const raw = await awsS3(endpoint, [
+        'list-objects-v2',
+        '--bucket',
+        bucket,
+        '--prefix',
+        'templates/',
+    ])
+    const parsed = raw.trim() ? JSON.parse(raw) : { Contents: [] }
+    const objects: R2Object[] = parsed.Contents ?? []
+
+    // Group by the per-template prefix (templates/<name>-<arch>/).
+    const groups = new Map<string, R2Object[]>()
+    for (const obj of objects) {
+        if (!obj.Key.endsWith('.vma.zst')) continue
+        const m = obj.Key.match(/^(templates\/[^/]+)\//)
+        if (!m) continue
+        const prefix = m[1]!
+        if (!groups.has(prefix)) groups.set(prefix, [])
+        groups.get(prefix)!.push(obj)
+    }
+
+    let totalDeleted = 0
+    for (const [prefix, items] of groups) {
+        items.sort((a, b) => b.LastModified.localeCompare(a.LastModified))
+        const stale = items.slice(keep)
+        if (stale.length === 0) {
+            log.info(`${prefix}: ${items.length} object(s), within keep=${keep}`)
+            continue
+        }
+        const verb = dryRun ? 'would delete' : 'deleting'
+        log.ok(`${prefix}: ${items.length} object(s), ${verb} ${stale.length}`)
+        for (const obj of stale) {
+            log.info(`  ${obj.Key}  (${obj.LastModified})`)
+            if (!dryRun) {
+                await awsS3(endpoint, [
+                    'delete-object',
+                    '--bucket',
+                    bucket,
+                    '--key',
+                    obj.Key,
+                ])
+            }
+        }
+        totalDeleted += stale.length
+    }
+
+    log.ok(
+        dryRun
+            ? `R2 prune dry-run: ${totalDeleted} object(s) would be deleted across ${groups.size} template(s)`
+            : `R2 prune: deleted ${totalDeleted} object(s) across ${groups.size} template(s)`
+    )
+}
+
 const REMOTE_WORK_DIR = '/tmp/cofoundry'
 const ISO_STORE_DIR = '/var/lib/vz/template/iso'
 const DOWNLOADED_ISO_DIR = '/root/downloaded_iso_path'

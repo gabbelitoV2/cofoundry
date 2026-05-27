@@ -3,7 +3,9 @@ import { Command } from 'commander'
 import { listRecipes, loadRecipe } from './config.ts'
 import { prefetchRecipeAssets, runBuild, syncArtifactsBack, syncRepoToRemote } from './build.ts'
 import { MultiDownloadProgress } from './build/wget-progress.ts'
-import { runClean, runPrune } from './prune.ts'
+import { runClean, runPrune, runPruneR2 } from './prune.ts'
+import { runVerify } from './verify.ts'
+import { runBootstrap } from './bootstrap.ts'
 import { checkRecipes, SYNTHETIC_RECIPES, saveChecksums } from './upstream.ts'
 import { resolveIsoUpdate, applyIsoUpdate } from './update.ts'
 import { buildManifest } from './manifest.ts'
@@ -15,6 +17,8 @@ type BuildCommandOptions = {
     skipArtifactSync?: boolean
     skipRepoSync?: boolean
     keepVm?: boolean
+    uploadConcurrency?: string
+    downloadConcurrency?: string
 }
 
 const shouldSyncBack = (env: Env, opts: BuildCommandOptions): boolean =>
@@ -39,14 +43,20 @@ program
     .option('--skip-artifact-sync', 'Do not download built artifacts to CF_OUT_DIR')
     .option('--skip-repo-sync', 'Do not sync the repo to the remote node before building')
     .option('--keep-vm', 'Do not destroy the build VM if the build is cancelled (also: CF_KEEP_VM=1)')
+    .option('--upload-concurrency <n>', 'Parallel SFTP connections for repo upload (overrides CF_UPLOAD_CONCURRENCY)')
+    .option('--download-concurrency <n>', 'Parallel SFTP connections for artifact download (overrides CF_DOWNLOAD_CONCURRENCY)')
     .action(async (names: string[], opts: BuildCommandOptions) => {
         const env = loadEnv()
+        const uploadConcurrency = opts.uploadConcurrency ? parseInt(opts.uploadConcurrency, 10) : undefined
+        const downloadConcurrency = opts.downloadConcurrency ? parseInt(opts.downloadConcurrency, 10) : undefined
         if (names.length === 1) {
             const recipe = await loadRecipe(names[0]!)
             await runBuild(env, recipe, {
                 syncBack: shouldSyncBack(env, opts),
                 skipRepoSync: opts.skipRepoSync,
                 keepVm: opts.keepVm || env.CF_KEEP_VM,
+                uploadConcurrency,
+                downloadConcurrency,
             })
             return
         }
@@ -55,7 +65,7 @@ program
         const failed: { name: string; error: string }[] = []
         for (const recipe of recipes) {
             try {
-                await runBuild(env, recipe, { syncBack: false, skipRepoSync: opts.skipRepoSync, keepVm: opts.keepVm || env.CF_KEEP_VM })
+                await runBuild(env, recipe, { syncBack: false, skipRepoSync: opts.skipRepoSync, keepVm: opts.keepVm || env.CF_KEEP_VM, uploadConcurrency, downloadConcurrency })
                 passed.push(recipe.name)
             } catch (err) {
                 const msg = redactSensitive(err instanceof Error ? err.message : String(err))
@@ -63,7 +73,7 @@ program
                 failed.push({ name: recipe.name, error: msg })
             }
         }
-        if (passed.length > 0 && shouldSyncBack(env, opts)) await syncArtifactsBack(env)
+        if (passed.length > 0 && shouldSyncBack(env, opts)) await syncArtifactsBack(env, downloadConcurrency)
         console.log('')
         log.ok(`${passed.length} succeeded: ${passed.join(', ') || 'none'}`)
         if (failed.length > 0) {
@@ -78,14 +88,18 @@ program
         'Build all recipes sequentially; continues on failure and prints a summary'
     )
     .option('--skip-artifact-sync', 'Do not download built artifacts to CF_OUT_DIR')
+    .option('--upload-concurrency <n>', 'Parallel SFTP connections for repo upload (overrides CF_UPLOAD_CONCURRENCY)')
+    .option('--download-concurrency <n>', 'Parallel SFTP connections for artifact download (overrides CF_DOWNLOAD_CONCURRENCY)')
     .action(async (opts: BuildCommandOptions) => {
         const env = loadEnv()
+        const uploadConcurrency = opts.uploadConcurrency ? parseInt(opts.uploadConcurrency, 10) : undefined
+        const downloadConcurrency = opts.downloadConcurrency ? parseInt(opts.downloadConcurrency, 10) : undefined
         const recipes = await listRecipes()
         if (recipes.length === 0) return log.warn('No recipes found in builds/')
 
         const syncBack = shouldSyncBack(env, opts)
 
-        await syncRepoToRemote(env)
+        await syncRepoToRemote(env, uploadConcurrency)
 
         log.step(`prefetching ISOs and assets in parallel (${recipes.length} recipes)`)
         const prefetchTracker = new MultiDownloadProgress()
@@ -125,7 +139,7 @@ program
             if (!syncBack) {
                 log.step(`skip syncing artifacts back`)
             } else {
-                await syncArtifactsBack(env)
+                await syncArtifactsBack(env, downloadConcurrency)
             }
         }
 
@@ -250,12 +264,41 @@ program
     )
     .option('--days <n>', 'Treat files older than N days as stale', '30')
     .option('--dry-run', 'Enumerate targets without deleting', false)
-    .action(async (opts: { days: string; dryRun: boolean }) => {
+    .option('--r2', 'Prune R2 templates/ objects instead of node files')
+    .option('--keep <n>', 'With --r2: keep newest N per template prefix', '5')
+    .action(async (opts: { days: string; dryRun: boolean; r2?: boolean; keep: string }) => {
         const env = loadEnv()
+        if (opts.r2) {
+            await runPruneR2({
+                keep: parseInt(opts.keep, 10),
+                dryRun: Boolean(opts.dryRun),
+            })
+            return
+        }
         await runPrune(env, {
             days: parseInt(opts.days, 10),
             dryRun: Boolean(opts.dryRun),
         })
+    })
+
+program
+    .command('bootstrap')
+    .description(
+        'Interactively provision a fresh Proxmox node: API token, packer, awscli, iso-cache, vmbr1/dnsmasq, MASQUERADE, tmpfs. Idempotent — safe to re-run.'
+    )
+    .action(async () => {
+        await runBootstrap()
+    })
+
+program
+    .command('verify <name>')
+    .description(
+        'Smoke-test a built artifact: qmrestore it on the PVE node, boot, wait for guest agent, then destroy.'
+    )
+    .action(async (name: string) => {
+        const env = loadEnv()
+        const recipe = await loadRecipe(name)
+        await runVerify(env, recipe)
     })
 
 program

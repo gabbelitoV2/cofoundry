@@ -8,6 +8,30 @@ In production, GitHub Actions runs the pipeline automatically — you only need 
 
 ## Part 1 — Proxmox node
 
+### Automated (recommended)
+
+```sh
+# one-time, from your workstation:
+bun run cf bootstrap
+```
+
+Answer the prompts (target host, what kinds of recipes you'll build, tmpfs
+size if asked). The command probes the node, shows you a checklist of what
+it will change, asks for confirmation, then applies. The new API token
+secret is shown at the end with an offer to append it to `.env`. Safe to
+re-run — already-done steps are detected and skipped.
+
+Prerequisites: passwordless SSH into the node as root (`ssh-copy-id
+root@<pve-host>`).
+
+The remaining steps in this section are preserved as a manual fallback —
+useful for partial runs, debugging, or environments where you'd rather see
+exactly what's being changed. `cf bootstrap` does all of them for you.
+
+---
+
+### Manual steps (reference)
+
 SSH into the node and run these commands.
 
 ### 1. Create an API token
@@ -31,7 +55,19 @@ echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] \
 apt-get update && apt-get install -y packer
 ```
 
-### 3. Create the ISO cache directory
+### 3. Install `awscli` (for R2 upload)
+
+> Skip if you're not uploading artifacts to R2 / S3.
+
+The vzdump post-processor runs `CF_UPLOAD_CMD` on the node, so the `aws` binary must exist there:
+
+```sh
+apt-get install -y awscli
+```
+
+`cf build` forwards `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, and `AWS_DEFAULT_REGION` from your local env (or repo secrets in CI) into the remote Packer environment automatically — no config files needed on the node.
+
+### 4. Create the ISO cache directory
 
 ```sh
 mkdir -p /var/lib/cofoundry/iso-cache
@@ -39,7 +75,7 @@ mkdir -p /var/lib/cofoundry/iso-cache
 
 The first build for each recipe downloads its ISO here automatically. Subsequent builds skip the download.
 
-### 4. NAT bridge for Windows builds
+### 5. NAT bridge for Windows builds
 
 > Skip if you only plan to build Linux recipes.
 
@@ -87,13 +123,13 @@ dhcp-host=02:50:4b:52:57:00,10.0.0.100
 systemctl restart dnsmasq
 ```
 
-### 5. NAT for Debian netinstall builds
+### 6. NAT for Debian netinstall builds
 
 > Only needed for `debian-*` preseed recipes (ISO install). Not needed for cloud-image recipes like `ubuntu-24.04`.
 
 The Debian installer needs a static IP to reach apt mirrors. The build VM gets `10.0.0.50` — a private address that only needs to be reachable from the node, not the internet.
 
-> If you completed §4, the vmbr1 MASQUERADE rule already covers `10.0.0.0/24` (which includes `10.0.0.50`) and IP forwarding is already enabled. Skip everything below and just set the env vars.
+> If you completed §5, the vmbr1 MASQUERADE rule already covers `10.0.0.0/24` (which includes `10.0.0.50`) and IP forwarding is already enabled. Skip everything below and just set the env vars.
 
 **Enable IP forwarding:**
 
@@ -132,7 +168,7 @@ CF_BUILD_IP=10.0.0.50
 CF_BUILD_GW=<node-vmbr0-ip>
 ```
 
-### 6. tmpfs size (Windows builds only)
+### 7. tmpfs size (Windows builds only)
 
 Packer's working directory lives in `/tmp/cofoundry/` on a RAM-backed tmpfs. Windows Server 2025 produces a ~5.7 GB artifact that needs to fit there.
 
@@ -150,7 +186,7 @@ tmpfs /tmp tmpfs defaults,size=16G 0 0
 mount -o remount /tmp
 ```
 
-### 7. Weekly cleanup cron
+### 8. Weekly cleanup cron
 
 Prevents ISOs, dump files, and orphaned VMs from accumulating over time.
 Everything the old inline shell script did now lives in `cf prune`, so the
@@ -199,10 +235,46 @@ Go to **Settings → Secrets and variables → Actions** and add:
 | `SSH_PRIVATE_KEY` | Contents of `~/.ssh/cofoundry_ci` (the private key file) |
 | `TS_OAUTH_CLIENT_ID` | Tailscale OAuth client ID (if node is on Tailscale) |
 | `TS_OAUTH_SECRET` | Tailscale OAuth secret (if node is on Tailscale) |
-| `CF_BUILD_IP` | `10.0.0.50` (if building Debian preseed recipes — see Part 1 §5) |
+| `CF_BUILD_IP` | `10.0.0.50` (if building Debian preseed recipes — see Part 1 §6) |
 | `CF_BUILD_GW` | Your node's vmbr0 IP (if building Debian preseed recipes) |
-| `CF_UPLOAD_CMD` | CDN upload command, e.g. `aws s3 cp {{file}} s3://...` (if using CDN) |
-| `CF_PUBLIC_URL_TMPL` | Public URL template for the manifest (if using CDN) |
+| `R2_ACCOUNT_ID` | Cloudflare account ID (used to derive the R2 endpoint) |
+| `R2_ENDPOINT` | `https://<R2_ACCOUNT_ID>.r2.cloudflarestorage.com` |
+| `R2_BUCKET` | R2 bucket name, e.g. `cofoundry-templates` |
+| `R2_ACCESS_KEY_ID` | R2 API token access key |
+| `R2_SECRET_ACCESS_KEY` | R2 API token secret |
+| `CF_PUBLIC_BASE_URL` | Public base URL bound to the bucket, e.g. `https://templates.example.com` |
+
+> Legacy `CF_UPLOAD_CMD` / `CF_PUBLIC_URL_TMPL` are still honored by the post-processor for local runs, but the workflow now sets them automatically from the R2 secrets above.
+
+---
+
+## Part 2.5 — Cloudflare R2 bucket
+
+### 1. Create the bucket
+
+In the Cloudflare dashboard: **R2 → Create bucket**, name it (e.g. `cofoundry-templates`), default region.
+
+### 2. Bind a custom domain
+
+**R2 → Bucket → Settings → Custom Domains → Connect Domain.** Use a subdomain you control, e.g. `templates.example.com`. This is the value for `CF_PUBLIC_BASE_URL`. Final artifact URLs look like:
+
+```
+https://templates.example.com/templates/<name>-<arch>/<sha256>.vma.zst
+https://templates.example.com/registry.json
+```
+
+### 3. Create an R2 API token
+
+**R2 → Manage R2 API Tokens → Create API token.** Scope: object read/write on the bucket. Save the access key id + secret as `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY`. The S3 endpoint shown on that page is your `R2_ENDPOINT`.
+
+### 4. Configure a lifecycle rule (safety net)
+
+**R2 → Bucket → Settings → Object Lifecycle Rules → Add rule:** prefix `templates/`, delete after 60 days. This catches orphans whose recipe was deleted. The build pipeline also runs `cf prune --r2 --keep 5` for tight per-recipe windows.
+
+### 5. Path scheme
+
+- Artifacts: `s3://<bucket>/templates/<name>-<arch>/<sha256>.vma.zst` — content-addressed, immutable.
+- Registry: `s3://<bucket>/registry.json` — short TTL (60s), one canonical pointer file. `git log out/registry.json` is the audit log; rollback = `git revert` the commit, CI re-mirrors.
 
 ---
 

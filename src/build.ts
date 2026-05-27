@@ -29,12 +29,14 @@ type RunBuildOptions = {
     skipRepoSync?: boolean
     skipPrefetch?: boolean
     keepVm?: boolean
+    uploadConcurrency?: number
+    downloadConcurrency?: number
 }
 
 const shouldSyncBack = (env: Env, options?: RunBuildOptions): boolean =>
     options?.syncBack ?? !env.CF_SKIP_SYNC_BACK
 
-export const syncRepoToRemote = async (env: Env): Promise<void> => {
+export const syncRepoToRemote = async (env: Env, concurrency?: number): Promise<void> => {
     const remoteWorkDir = buildRemoteWorkDir(env)
     await captureRemote(
         env.SSH_TARGET,
@@ -44,12 +46,13 @@ export const syncRepoToRemote = async (env: Env): Promise<void> => {
     await sftpUpload(env.SSH_TARGET, REPO_ROOT, remoteWorkDir, {
         excludes: ['.git', 'node_modules', 'out'],
         delete: true,
+        concurrency: concurrency ?? env.CF_UPLOAD_CONCURRENCY,
     })
 }
 
-export const syncArtifactsBack = async (env: Env): Promise<void> => {
+export const syncArtifactsBack = async (env: Env, concurrency?: number): Promise<void> => {
     log.step(`sync artifacts back`)
-    await sftpDownload(env.SSH_TARGET, buildRemoteOutDir(env), env.CF_OUT_DIR)
+    await sftpDownload(env.SSH_TARGET, buildRemoteOutDir(env), env.CF_OUT_DIR, concurrency ?? env.CF_DOWNLOAD_CONCURRENCY)
 }
 
 const resolveBuildGateway = async (
@@ -207,6 +210,7 @@ export const runBuild = async (
         await sftpUpload(env.SSH_TARGET, REPO_ROOT, remoteWorkDir, {
             excludes: ['.git', 'node_modules', 'out'],
             delete: true,
+            concurrency: options?.uploadConcurrency ?? env.CF_UPLOAD_CONCURRENCY,
         })
     }
 
@@ -280,7 +284,7 @@ export const runBuild = async (
     }
 
     if (shouldSyncBack(env, options)) {
-        await syncArtifactsBack(env)
+        await syncArtifactsBack(env, options?.downloadConcurrency)
     } else if (!options?.skipRepoSync) {
         log.step(`skip syncing artifacts back`)
     }

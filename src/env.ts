@@ -11,7 +11,7 @@ const EnvSchema = z.object({
     SSH_TARGET: z.string().min(1),
     PVE_DUMP_DIR: z.string().default('/var/lib/vz/dump'),
 
-    CF_OUT_DIR: z.string().default('./out'),
+    CF_OUT_DIR: z.string().default(''),
     CF_SKIP_SYNC_BACK: z
         .preprocess(v => v === '1' || v === 'true' || v === true, z.boolean())
         .default(false),

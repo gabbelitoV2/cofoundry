@@ -80,12 +80,14 @@ fi
 echo "==> hashing"
 SHA256=$(sha256sum "$LOCAL_FILE" | awk '{print $1}')
 SIZE=$(wc -c <"$LOCAL_FILE" | tr -d ' ')
+UPLOAD_FILENAME="${CF_RECIPE_NAME}-${CF_ARCH}-${SHA256}.vma.zst"
 
 PUBLIC_URL=""
 if [ -n "${CF_PUBLIC_URL_TMPL:-}" ]; then
   PUBLIC_URL="${CF_PUBLIC_URL_TMPL//\{\{name\}\}/$CF_RECIPE_NAME}"
   PUBLIC_URL="${PUBLIC_URL//\{\{arch\}\}/$CF_ARCH}"
   PUBLIC_URL="${PUBLIC_URL//\{\{sha256\}\}/$SHA256}"
+  PUBLIC_URL="${PUBLIC_URL//\{\{filename\}\}/$UPLOAD_FILENAME}"
 fi
 
 if [ -n "${CF_UPLOAD_CMD:-}" ]; then
@@ -94,6 +96,7 @@ if [ -n "${CF_UPLOAD_CMD:-}" ]; then
   CMD="${CMD//\{\{name\}\}/$CF_RECIPE_NAME}"
   CMD="${CMD//\{\{arch\}\}/$CF_ARCH}"
   CMD="${CMD//\{\{sha256\}\}/$SHA256}"
+  CMD="${CMD//\{\{filename\}\}/$UPLOAD_FILENAME}"
   bash -c "$CMD"
 fi
 

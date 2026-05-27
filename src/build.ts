@@ -34,7 +34,7 @@ type RunBuildOptions = {
 }
 
 const shouldSyncBack = (env: Env, options?: RunBuildOptions): boolean =>
-    options?.syncBack ?? !env.CF_SKIP_SYNC_BACK
+    !!(options?.syncBack ?? !env.CF_SKIP_SYNC_BACK) && !!env.CF_OUT_DIR
 
 export const syncRepoToRemote = async (env: Env, concurrency?: number): Promise<void> => {
     const remoteWorkDir = buildRemoteWorkDir(env)

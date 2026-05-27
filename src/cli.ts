@@ -22,7 +22,7 @@ type BuildCommandOptions = {
 }
 
 const shouldSyncBack = (env: Env, opts: BuildCommandOptions): boolean =>
-    !opts.skipArtifactSync && !env.CF_SKIP_SYNC_BACK
+    !opts.skipArtifactSync && !env.CF_SKIP_SYNC_BACK && !!env.CF_OUT_DIR
 
 const program = new Command()
 program.name('cf').description('Proxmox template builder').version('0.0.1')

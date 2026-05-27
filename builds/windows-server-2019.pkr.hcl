@@ -152,6 +152,10 @@ build {
     script = "${path.root}/windows-server-2019/scripts/Install.ps1"
   }
 
+  provisioner "windows-restart" {
+    restart_timeout = "15m"
+  }
+
   provisioner "powershell" {
     script = "${path.root}/windows-server-2019/scripts/WU.ps1"
   }

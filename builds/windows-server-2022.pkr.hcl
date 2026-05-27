@@ -157,6 +157,10 @@ build {
     script = "${path.root}/windows-server-2022/scripts/Install.ps1"
   }
 
+  provisioner "windows-restart" {
+    restart_timeout = "15m"
+  }
+
   provisioner "powershell" {
     script = "${path.root}/windows-server-2022/scripts/WU.ps1"
   }

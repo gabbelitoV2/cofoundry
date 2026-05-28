@@ -161,14 +161,16 @@ const runRecipe = async (
 
     // ── build ──
     handle.setPhase(phaseTitle('build', ctx.buildQ))
+    let buildStartedAt: number | undefined
     try {
         await ctx.buildQ.add(async () => {
             handle.setPhase('build')
-            await buildPhase(env, recipe, { keepVm: opts.keepVm }, line => {
+            const result = await buildPhase(env, recipe, { keepVm: opts.keepVm }, line => {
                 const trimmed = line.trim()
                 if (!trimmed) return
                 handle.log(opts.verbose ? trimmed : trimmed.slice(0, 200))
             })
+            buildStartedAt = result.startedAt
         })
     } catch (err) {
         throw recordFailure(ctx, recipe, err, handle)
@@ -187,6 +189,7 @@ const runRecipe = async (
             handle.setPhase('sync')
             await syncPhase(env, recipe, {
                 concurrency: opts.downloadConcurrency,
+                since: buildStartedAt,
                 onProgress: ev => {
                     handle.setProgress(
                         formatTransferStatus(

@@ -102,7 +102,9 @@ fi
 
 echo "==> writing sidecar"
 SIDECAR="$CF_OUT_DIR/${CF_RECIPE_NAME}-${CF_ARCH}.json"
-cat >"$SIDECAR" <<JSON
+# Write to .tmp then rename so a partial/crashed write can't leave a sidecar
+# whose sha256 disagrees with the artifact next to it.
+cat >"$SIDECAR.tmp" <<JSON
 {
   "name": "${CF_RECIPE_NAME}-${CF_ARCH}",
   "display": "$CF_RECIPE_DISPLAY",
@@ -115,6 +117,17 @@ cat >"$SIDECAR" <<JSON
   "built_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 }
 JSON
+mv "$SIDECAR.tmp" "$SIDECAR"
+
+if [ -n "${CF_SIDECAR_UPLOAD_CMD:-}" ]; then
+  echo "==> uploading sidecar"
+  SCMD="${CF_SIDECAR_UPLOAD_CMD//\{\{file\}\}/$SIDECAR}"
+  SCMD="${SCMD//\{\{name\}\}/$CF_RECIPE_NAME}"
+  SCMD="${SCMD//\{\{arch\}\}/$CF_ARCH}"
+  SCMD="${SCMD//\{\{sha256\}\}/$SHA256}"
+  SCMD="${SCMD//\{\{filename\}\}/${CF_RECIPE_NAME}-${CF_ARCH}-${SHA256}.json}"
+  bash -c "$SCMD"
+fi
 
 trap - EXIT
 echo "==> done: $SIDECAR"

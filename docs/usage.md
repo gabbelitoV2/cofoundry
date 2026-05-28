@@ -8,11 +8,11 @@ cf build windows-server-2025
 cf build debian-12 --skip-sync-back
 ```
 
-The first run for a recipe downloads the ISO to the node's cache automatically. Subsequent builds skip the download. Output lands in `./out/`:
+The first run for a recipe downloads the ISO to the node's cache automatically. Subsequent builds skip the download. Output lands in `./dist/`:
 
 ```
-out/debian-12.vma.zst       # artifact
-out/debian-12.json          # sidecar (name, sha256, size, url, built_at)
+dist/debian-12.vma.zst       # artifact
+dist/debian-12.json          # sidecar (name, sha256, size, url, built_at)
 ```
 
 ## List available recipes
@@ -46,10 +46,11 @@ Commit `upstream-checksums.json` so CI can track changes across runs.
 
 ## Publish a manifest
 
-Aggregates all `./out/*.json` sidecars into a single `./out/images.json` for consumption by [downloader](https://github.com/ConvoyPanel/downloader).
+Aggregates `./dist/*.json` sidecars into `./registry.json` at the repo root, for consumption by [downloader](https://github.com/ConvoyPanel/downloader). In CI, use `cf publish --r2` to source sidecars from R2 instead (artifacts are never synced back to the runner).
 
 ```sh
-cf publish
+cf publish        # local: dist/*.json → registry.json
+cf publish --r2   # CI: lists newest sidecar per template in R2
 ```
 
 ## Cleanup

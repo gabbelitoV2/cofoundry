@@ -15,15 +15,17 @@ const stageFixtures = async (): Promise<string> => {
 }
 
 describe('buildManifest', () => {
-    let outDir: string
+    let sourceDir: string
+    let outPath: string
 
     beforeEach(async () => {
-        outDir = await stageFixtures()
+        sourceDir = await stageFixtures()
+        outPath = join(sourceDir, 'registry.json')
     })
 
     test('writes registry.json with schema_version "1" and a generated_at timestamp', async () => {
-        const path = await buildManifest(outDir)
-        expect(path).toBe(join(outDir, 'registry.json'))
+        const path = await buildManifest(sourceDir, outPath)
+        expect(path).toBe(outPath)
 
         const manifest = JSON.parse(await readFile(path, 'utf8'))
         expect(manifest.schema_version).toBe('1')
@@ -34,8 +36,8 @@ describe('buildManifest', () => {
     })
 
     test('organizes templates into groups with sorted names', async () => {
-        await buildManifest(outDir)
-        const manifest = JSON.parse(await readFile(join(outDir, 'registry.json'), 'utf8'))
+        await buildManifest(sourceDir, outPath)
+        const manifest = JSON.parse(await readFile(outPath, 'utf8'))
 
         expect(Array.isArray(manifest.groups)).toBe(true)
 
@@ -44,8 +46,8 @@ describe('buildManifest', () => {
     })
 
     test('assigns correct group display names from registry.groups.json', async () => {
-        await buildManifest(outDir)
-        const manifest = JSON.parse(await readFile(join(outDir, 'registry.json'), 'utf8'))
+        await buildManifest(sourceDir, outPath)
+        const manifest = JSON.parse(await readFile(outPath, 'utf8'))
 
         const debian = manifest.groups.find((g: any) => g.id === 'debian')
         expect(debian?.display_name).toBe('Debian')
@@ -55,10 +57,8 @@ describe('buildManifest', () => {
     })
 
     test('preserves sidecar fields verbatim', async () => {
-        await buildManifest(outDir)
-        const manifest = JSON.parse(
-            await readFile(join(outDir, 'registry.json'), 'utf8')
-        )
+        await buildManifest(sourceDir, outPath)
+        const manifest = JSON.parse(await readFile(outPath, 'utf8'))
         const allTemplates = manifest.groups.flatMap((g: any) => g.templates)
         const debian = allTemplates.find((t: any) => t.name === 'debian-12-amd64')
         expect(debian).toMatchObject({
@@ -73,11 +73,9 @@ describe('buildManifest', () => {
     })
 
     test('does not include a pre-existing registry.json as a template', async () => {
-        await buildManifest(outDir) // creates registry.json
-        await buildManifest(outDir) // second pass should ignore it
-        const manifest = JSON.parse(
-            await readFile(join(outDir, 'registry.json'), 'utf8')
-        )
+        await buildManifest(sourceDir, outPath) // creates registry.json in source
+        await buildManifest(sourceDir, outPath) // second pass should ignore it
+        const manifest = JSON.parse(await readFile(outPath, 'utf8'))
         const allTemplates = manifest.groups.flatMap((g: any) => g.templates)
         expect(allTemplates).toHaveLength(2)
         expect(
@@ -86,6 +84,6 @@ describe('buildManifest', () => {
     })
 
     afterEach(async () => {
-        await rm(outDir, { recursive: true, force: true })
+        await rm(sourceDir, { recursive: true, force: true })
     })
 })

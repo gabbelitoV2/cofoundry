@@ -274,7 +274,7 @@ https://templates.example.com/registry.json
 ### 5. Path scheme
 
 - Artifacts: `s3://<bucket>/templates/<name>-<arch>/<sha256>.vma.zst` — content-addressed, immutable.
-- Registry: `s3://<bucket>/registry.json` — short TTL (60s), one canonical pointer file. `git log out/registry.json` is the audit log; rollback = `git revert` the commit, CI re-mirrors.
+- Registry: `s3://<bucket>/registry.json` — short TTL (60s), one canonical pointer file. `git log registry.json` is the audit log; rollback = `git revert` the commit, CI re-mirrors.
 
 ---
 

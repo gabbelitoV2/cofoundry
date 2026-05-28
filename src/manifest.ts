@@ -1,6 +1,7 @@
-import { readdir, readFile, writeFile } from 'node:fs/promises'
-import { basename, join } from 'node:path'
+import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises'
+import { basename, dirname, join } from 'node:path'
 import byteSize from 'byte-size'
+import { execa } from 'execa'
 import { log } from './log.ts'
 import type { Registry, Group, Template } from './registry/schema.ts'
 
@@ -24,22 +25,15 @@ interface GroupDef {
 
 const GROUPS_FILE = new URL('../registry.groups.json', import.meta.url).pathname
 
-export const buildManifest = async (outDir: string): Promise<string> => {
-    const groupDefs: GroupDef[] = JSON.parse(await readFile(GROUPS_FILE, 'utf8'))
-    const groupDefMap = new Map(groupDefs.map(g => [g.id, g]))
+const loadGroupDefs = async (): Promise<Map<string, GroupDef>> => {
+    const defs: GroupDef[] = JSON.parse(await readFile(GROUPS_FILE, 'utf8'))
+    return new Map(defs.map(g => [g.id, g]))
+}
 
-    const entries = await readdir(outDir)
-    const sidecars: Sidecar[] = []
-    for (const entry of entries) {
-        if (!entry.endsWith('.json') || entry === 'registry.json') continue
-        const path = join(outDir, entry)
-        const raw = await readFile(path, 'utf8')
-        const parsed = JSON.parse(raw) as Sidecar
-        sidecars.push(parsed)
-        log.info(
-            `  + ${basename(entry, '.json')}  ${parsed.sha256.slice(0, 12)}…  ${byteSize(parsed.size)}`
-        )
-    }
+const assembleRegistry = (
+    sidecars: Sidecar[],
+    groupDefs: Map<string, GroupDef>
+): Registry => {
     sidecars.sort((a, b) => a.name.localeCompare(b.name))
 
     const groupMap = new Map<string, Template[]>()
@@ -60,25 +54,128 @@ export const buildManifest = async (outDir: string): Promise<string> => {
 
     const groups: Group[] = []
     for (const [id, templates] of groupMap) {
-        const def = groupDefMap.get(id)
+        const def = groupDefs.get(id)
         groups.push({
             id,
-            display_name: def?.display_name ?? id.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase()),
+            display_name:
+                def?.display_name ??
+                id.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase()),
             description: def?.description ?? null,
             templates,
         })
     }
 
-    const registry: Registry = {
+    return {
         schema_version: '1',
         name: 'Cofoundry Templates',
         description: 'Proxmox VM templates built with Cofoundry',
         generated_at: new Date().toISOString(),
         groups,
     }
+}
 
-    const outPath = join(outDir, 'registry.json')
+const writeRegistry = async (outPath: string, registry: Registry): Promise<string> => {
+    const parent = dirname(outPath)
+    if (parent && parent !== '.') await mkdir(parent, { recursive: true })
     await writeFile(outPath, JSON.stringify(registry, null, 2) + '\n')
-    log.ok(`wrote ${outPath} (${sidecars.length} templates in ${groups.length} groups)`)
+    const templateCount = registry.groups.reduce((n, g) => n + g.templates.length, 0)
+    log.ok(`wrote ${outPath} (${templateCount} templates in ${registry.groups.length} groups)`)
     return outPath
+}
+
+export const buildManifest = async (
+    sourceDir: string,
+    outPath: string
+): Promise<string> => {
+    const groupDefs = await loadGroupDefs()
+
+    const entries = await readdir(sourceDir)
+    const sidecars: Sidecar[] = []
+    for (const entry of entries) {
+        if (!entry.endsWith('.json') || entry === 'registry.json') continue
+        const path = join(sourceDir, entry)
+        const raw = await readFile(path, 'utf8')
+        const parsed = JSON.parse(raw) as Sidecar
+        sidecars.push(parsed)
+        log.info(
+            `  + ${basename(entry, '.json')}  ${parsed.sha256.slice(0, 12)}…  ${byteSize(parsed.size)}`
+        )
+    }
+
+    return writeRegistry(outPath, assembleRegistry(sidecars, groupDefs))
+}
+
+interface R2Object {
+    Key: string
+    LastModified: string
+    Size: number
+}
+
+const awsS3api = async (endpoint: string, args: string[]): Promise<string> => {
+    const { stdout } = await execa(
+        'aws',
+        ['--endpoint-url', endpoint, 's3api', ...args],
+        { stderr: 'inherit' }
+    )
+    return stdout
+}
+
+const awsS3Get = async (
+    endpoint: string,
+    bucket: string,
+    key: string
+): Promise<string> => {
+    const { stdout } = await execa(
+        'aws',
+        ['--endpoint-url', endpoint, 's3', 'cp', `s3://${bucket}/${key}`, '-'],
+        { stderr: 'inherit' }
+    )
+    return stdout
+}
+
+/**
+ * Aggregate sidecar JSONs from R2 into a registry. For each `templates/<name>-<arch>/`
+ * prefix, takes the newest `.json` — the registry should advertise the current
+ * artifact per template, not the full history.
+ */
+export const buildManifestFromR2 = async (outPath: string): Promise<string> => {
+    const endpoint = process.env.R2_ENDPOINT
+    const bucket = process.env.R2_BUCKET
+    if (!endpoint) throw new Error('R2_ENDPOINT is required for --r2 publish')
+    if (!bucket) throw new Error('R2_BUCKET is required for --r2 publish')
+
+    log.step(`listing s3://${bucket}/templates/`)
+    const raw = await awsS3api(endpoint, [
+        'list-objects-v2',
+        '--bucket',
+        bucket,
+        '--prefix',
+        'templates/',
+    ])
+    const parsed = raw.trim() ? JSON.parse(raw) : { Contents: [] }
+    const objects: R2Object[] = parsed.Contents ?? []
+
+    // Pick newest .json per per-template prefix.
+    const newest = new Map<string, R2Object>()
+    for (const obj of objects) {
+        if (!obj.Key.endsWith('.json')) continue
+        const m = obj.Key.match(/^(templates\/[^/]+)\//)
+        if (!m) continue
+        const prefix = m[1]!
+        const cur = newest.get(prefix)
+        if (!cur || obj.LastModified > cur.LastModified) newest.set(prefix, obj)
+    }
+
+    const groupDefs = await loadGroupDefs()
+    const sidecars: Sidecar[] = []
+    for (const [prefix, obj] of newest) {
+        const body = await awsS3Get(endpoint, bucket, obj.Key)
+        const parsedSidecar = JSON.parse(body) as Sidecar
+        sidecars.push(parsedSidecar)
+        log.info(
+            `  + ${prefix.replace(/^templates\//, '')}  ${parsedSidecar.sha256.slice(0, 12)}…  ${byteSize(parsedSidecar.size)}`
+        )
+    }
+
+    return writeRegistry(outPath, assembleRegistry(sidecars, groupDefs))
 }

@@ -145,15 +145,34 @@ export const prefetchPhase = async (
 
 export type BuildPhaseOptions = { keepVm?: boolean }
 
+export type BuildPhaseResult = {
+    /** Remote epoch (seconds) captured before packer ran. Used by syncPhase
+     *  to filter out stale artifacts left by prior runs. */
+    startedAt: number
+}
+
 export const buildPhase = async (
     env: Env,
     recipe: RecipeInfo,
     options: BuildPhaseOptions = {},
     onLine?: (line: string) => void
-): Promise<void> => {
+): Promise<BuildPhaseResult> => {
     const remoteWorkDir = buildRemoteWorkDir(env)
     const remoteOutDir = buildRemoteOutDir(env)
     const remoteTmpDir = buildRemoteTmpDir(env)
+
+    // Pre-clean prior artifacts for this recipe so a partial/aborted build
+    // can't leave stale `.vma.zst` or `.json` that syncPhase then pulls down.
+    // Also capture the remote build-start epoch for the mtime gate below.
+    const stalePrefix = `${remoteOutDir}/${recipe.name}-${recipe.arch}`
+    const startedAtRaw = await captureRemote(
+        env.SSH_TARGET,
+        `rm -f ${shellQuote(stalePrefix + '.vma.zst')} ${shellQuote(stalePrefix + '.json')} ${shellQuote(stalePrefix + '.json.tmp')} && date +%s`
+    )
+    const startedAt = Number.parseInt(startedAtRaw.trim(), 10)
+    if (!Number.isFinite(startedAt)) {
+        throw new Error(`could not parse remote epoch: ${startedAtRaw}`)
+    }
     const hasPreseed = await fileExists(`${REPO_ROOT}builds/${recipe.name}/http/preseed.cfg`)
     const hasAutoinstall = await fileExists(`${REPO_ROOT}builds/${recipe.name}/http/user-data`)
     const hasKickstart = await fileExists(`${REPO_ROOT}builds/${recipe.name}/http/ks.cfg`)
@@ -233,11 +252,19 @@ export const buildPhase = async (
     } finally {
         unregisterVmCleanup?.()
     }
+
+    return { startedAt }
 }
 
 // ── Phase 3: per-recipe artifact pull ────────────────────────────────────────
 
-export type SyncPhaseOptions = { concurrency?: number; onProgress?: OnProgress }
+export type SyncPhaseOptions = {
+    concurrency?: number
+    onProgress?: OnProgress
+    /** Only pull files with mtime >= this remote epoch (seconds). Filters out
+     *  stale artifacts from prior runs that the current build didn't rewrite. */
+    since?: number
+}
 
 // Pulls just this recipe's artifacts from the remote out-dir. Matches by the
 // recipe name prefix so a parallel run for another recipe isn't accidentally
@@ -248,14 +275,33 @@ export const syncPhase = async (
     opts: SyncPhaseOptions = {}
 ): Promise<void> => {
     const remoteOutDir = buildRemoteOutDir(env)
+    // `%T@` is the file's mtime in epoch seconds (with fractional part).
     const listOut = await captureRemote(
         env.SSH_TARGET,
-        `ls -1 ${shellQuote(remoteOutDir)} 2>/dev/null || true`
+        `find ${shellQuote(remoteOutDir)} -maxdepth 1 -type f -printf '%T@ %f\\n' 2>/dev/null || true`
     )
+    // Slack window: tolerate small clock skew or sub-second rounding between
+    // the `date +%s` we captured and the file's mtime as reported by find.
+    const sinceSlack = 2
+    const minMtime = opts.since !== undefined ? opts.since - sinceSlack : 0
     const matching = listOut
         .split('\n')
         .map(s => s.trim())
-        .filter(name => name.startsWith(recipe.name + '-') || name.startsWith(recipe.name + '.'))
+        .filter(Boolean)
+        .map(line => {
+            const sp = line.indexOf(' ')
+            if (sp < 0) return null
+            const mtime = Number.parseFloat(line.slice(0, sp))
+            const name = line.slice(sp + 1)
+            return Number.isFinite(mtime) ? { name, mtime } : null
+        })
+        .filter((x): x is { name: string; mtime: number } => x !== null)
+        .filter(
+            ({ name, mtime }) =>
+                (name.startsWith(recipe.name + '-') || name.startsWith(recipe.name + '.')) &&
+                mtime >= minMtime
+        )
+        .map(x => x.name)
     if (matching.length === 0) return
 
     const { mkdirSync } = await import('node:fs')

@@ -11,7 +11,7 @@ const EnvSchema = z.object({
     SSH_TARGET: z.string().min(1),
     PVE_DUMP_DIR: z.string().default('/var/lib/vz/dump'),
 
-    CF_OUT_DIR: z.string().default(''),
+    CF_OUT_DIR: z.string().default('./dist'),
     CF_SKIP_SYNC_BACK: z
         .preprocess(v => v === '1' || v === 'true' || v === true, z.boolean())
         .default(false),
@@ -26,11 +26,11 @@ const EnvSchema = z.object({
     CF_BUILD_GW: z.string().optional(),
     CF_BUILD_DNS: z.string().default('1.1.1.1'),
 
-    // Parallel SFTP connections for syncing the repo up to the node (default 4).
-    CF_UPLOAD_CONCURRENCY: z.coerce.number().int().min(1).default(4),
+    // Parallel SFTP connections for syncing the repo up to the node (default 8).
+    CF_UPLOAD_CONCURRENCY: z.coerce.number().int().min(1).default(8),
 
-    // Parallel SFTP connections for syncing artifacts back down (default 4).
-    CF_DOWNLOAD_CONCURRENCY: z.coerce.number().int().min(1).default(4),
+    // Parallel SFTP connections for syncing artifacts back down (default 8).
+    CF_DOWNLOAD_CONCURRENCY: z.coerce.number().int().min(1).default(8),
 
     // If set, skip destroying the build VM on abort (useful for debugging failed builds).
     CF_KEEP_VM: z

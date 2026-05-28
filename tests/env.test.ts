@@ -51,7 +51,7 @@ describe('loadEnv', () => {
         expect(env.PVE_HOST).toBe('pve.example.com')
         expect(env.PVE_PORT).toBe(8006)
         expect(env.PVE_DUMP_DIR).toBe('/var/lib/vz/dump')
-        expect(env.CF_OUT_DIR).toBe('./out')
+        expect(env.CF_OUT_DIR).toBe('./dist')
         expect(env.CF_BRIDGE).toBe('vmbr0')
         expect(env.CF_WIN_BRIDGE).toBe('vmbr1')
         expect(env.CF_STORAGE).toBe('local')

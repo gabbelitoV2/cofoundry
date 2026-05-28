@@ -50,46 +50,79 @@ export const runPruneR2 = async ({
     const parsed = raw.trim() ? JSON.parse(raw) : { Contents: [] }
     const objects: R2Object[] = parsed.Contents ?? []
 
-    // Group by the per-template prefix (templates/<name>-<arch>/).
-    const groups = new Map<string, R2Object[]>()
+    // Group .vma.zst by per-template prefix (templates/<name>-<arch>/).
+    // Sidecars are handled as siblings: each <sha>.vma.zst pairs with <sha>.json
+    // at the same prefix. Pruning the artifact also prunes its sidecar so the
+    // registry can never advertise a sha whose artifact has been deleted.
+    const artifactGroups = new Map<string, R2Object[]>()
+    const sidecarKeys = new Set<string>()
     for (const obj of objects) {
-        if (!obj.Key.endsWith('.vma.zst')) continue
-        const m = obj.Key.match(/^(templates\/[^/]+)\//)
-        if (!m) continue
-        const prefix = m[1]!
-        if (!groups.has(prefix)) groups.set(prefix, [])
-        groups.get(prefix)!.push(obj)
+        if (obj.Key.endsWith('.vma.zst')) {
+            const m = obj.Key.match(/^(templates\/[^/]+)\//)
+            if (!m) continue
+            const prefix = m[1]!
+            if (!artifactGroups.has(prefix)) artifactGroups.set(prefix, [])
+            artifactGroups.get(prefix)!.push(obj)
+        } else if (obj.Key.endsWith('.json')) {
+            sidecarKeys.add(obj.Key)
+        }
     }
 
-    let totalDeleted = 0
-    for (const [prefix, items] of groups) {
+    const deletions: string[] = []
+    const liveArtifactKeys = new Set<string>()
+
+    for (const [prefix, items] of artifactGroups) {
         items.sort((a, b) => b.LastModified.localeCompare(a.LastModified))
+        const live = items.slice(0, keep)
         const stale = items.slice(keep)
+        for (const obj of live) liveArtifactKeys.add(obj.Key)
         if (stale.length === 0) {
-            log.info(`${prefix}: ${items.length} object(s), within keep=${keep}`)
+            log.info(`${prefix}: ${items.length} artifact(s), within keep=${keep}`)
             continue
         }
         const verb = dryRun ? 'would delete' : 'deleting'
-        log.ok(`${prefix}: ${items.length} object(s), ${verb} ${stale.length}`)
+        log.ok(`${prefix}: ${items.length} artifact(s), ${verb} ${stale.length}`)
         for (const obj of stale) {
             log.info(`  ${obj.Key}  (${obj.LastModified})`)
-            if (!dryRun) {
-                await awsS3(endpoint, [
-                    'delete-object',
-                    '--bucket',
-                    bucket,
-                    '--key',
-                    obj.Key,
-                ])
+            deletions.push(obj.Key)
+            const sidecar = obj.Key.replace(/\.vma\.zst$/, '.json')
+            if (sidecarKeys.has(sidecar)) {
+                log.info(`  ${sidecar}  (paired sidecar)`)
+                deletions.push(sidecar)
             }
         }
-        totalDeleted += stale.length
+    }
+
+    // Orphan sidecars: a `.json` whose paired `.vma.zst` is neither live nor
+    // already queued for deletion. Covers prior runs that deleted artifacts
+    // without their sidecars, plus failed/partial uploads.
+    const queuedForDeletion = new Set(deletions)
+    const orphans: string[] = []
+    for (const key of sidecarKeys) {
+        const artifact = key.replace(/\.json$/, '.vma.zst')
+        if (liveArtifactKeys.has(artifact)) continue
+        if (queuedForDeletion.has(key)) continue
+        orphans.push(key)
+    }
+    if (orphans.length > 0) {
+        const verb = dryRun ? 'would delete' : 'deleting'
+        log.ok(`orphan sidecars: ${verb} ${orphans.length}`)
+        for (const key of orphans) {
+            log.info(`  ${key}`)
+            deletions.push(key)
+        }
+    }
+
+    if (!dryRun) {
+        for (const key of deletions) {
+            await awsS3(endpoint, ['delete-object', '--bucket', bucket, '--key', key])
+        }
     }
 
     log.ok(
         dryRun
-            ? `R2 prune dry-run: ${totalDeleted} object(s) would be deleted across ${groups.size} template(s)`
-            : `R2 prune: deleted ${totalDeleted} object(s) across ${groups.size} template(s)`
+            ? `R2 prune dry-run: ${deletions.length} object(s) would be deleted across ${artifactGroups.size} template(s)`
+            : `R2 prune: deleted ${deletions.length} object(s) across ${artifactGroups.size} template(s)`
     )
 }
 

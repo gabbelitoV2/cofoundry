@@ -126,17 +126,27 @@ const walkRemote = async (
     return results
 }
 
-// Preserve local mtime on remote so future runs can diff by mtime+size.
+// Preserve local mode + mtime on remote so future runs can diff by mtime+size.
 // ssh2-sftp-client doesn't expose setstat publicly; reach into the underlying
 // ssh2 sftp stream. mtime is in seconds (Unix timestamp) per the SFTP spec.
-function setRemoteMtime(client: SftpClient, remotePath: string, mtimeMs: number): Promise<void> {
+// One setstat call carries both mode and mtime, saving a round-trip per file.
+function setRemoteStat(
+    client: SftpClient,
+    remotePath: string,
+    mode: number,
+    mtimeMs: number
+): Promise<void> {
     return new Promise((resolve, reject) => {
         const mtime = Math.floor(mtimeMs / 1000)
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        ;(client as any).sftp.setstat(remotePath, { mtime, atime: mtime }, (err: Error | null) => {
-            if (err) reject(err)
-            else resolve()
-        })
+        ;(client as any).sftp.setstat(
+            remotePath,
+            { mode: mode & 0o7777, mtime, atime: mtime },
+            (err: Error | null) => {
+                if (err) reject(err)
+                else resolve()
+            }
+        )
     })
 }
 
@@ -251,8 +261,7 @@ export async function sftpUpload(
                         emit()
                     },
                 })
-                await client.chmod(remotePath, file.mode & 0o7777)
-                await setRemoteMtime(client, remotePath, file.mtimeMs)
+                await setRemoteStat(client, remotePath, file.mode, file.mtimeMs)
                 fileBytes[idx] = file.size
                 doneFiles++
                 emit()

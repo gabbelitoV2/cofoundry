@@ -45,9 +45,11 @@ type State = {
     phase: string
     progress?: string
     logs: string[]
-    // Set when the task transitions out of "queued" — measures actual work
-    // time, not total time since the task was created.
-    workStartMs?: number
+    // Active-time accounting: timer only advances while the task is out of a
+    // queued phase. `activeSinceMs` is set on entry to a working phase and
+    // cleared on entry to a queued phase, flushing elapsed into `activeMs`.
+    activeMs: number
+    activeSinceMs?: number
     endMs?: number
     result?: 'ok' | 'fail'
     error?: string
@@ -83,6 +85,7 @@ class LiveRenderer implements Renderer {
             name,
             phase: 'queued',
             logs: [],
+            activeMs: 0,
         }
         this.tasks.set(name, state)
         this.order.push(name)
@@ -93,10 +96,12 @@ class LiveRenderer implements Renderer {
                 // build phase ends, packer logs aren't useful under a sync row.
                 state.progress = undefined
                 state.logs.length = 0
-                // First non-queued phase = work begins. Start the timer here
-                // so queue time isn't counted.
-                if (state.workStartMs === undefined && !/\bqueued\b/.test(phase)) {
-                    state.workStartMs = Date.now()
+                const queued = /\bqueued\b/.test(phase)
+                if (queued && state.activeSinceMs !== undefined) {
+                    state.activeMs += Date.now() - state.activeSinceMs
+                    state.activeSinceMs = undefined
+                } else if (!queued && state.activeSinceMs === undefined) {
+                    state.activeSinceMs = Date.now()
                 }
             },
             setProgress: progress => {
@@ -107,11 +112,19 @@ class LiveRenderer implements Renderer {
                 if (state.logs.length > this.logCapacity) state.logs.shift()
             },
             succeed: () => {
+                if (state.activeSinceMs !== undefined) {
+                    state.activeMs += Date.now() - state.activeSinceMs
+                    state.activeSinceMs = undefined
+                }
                 state.endMs = Date.now()
                 state.result = 'ok'
                 state.progress = undefined
             },
             fail: err => {
+                if (state.activeSinceMs !== undefined) {
+                    state.activeMs += Date.now() - state.activeSinceMs
+                    state.activeSinceMs = undefined
+                }
                 state.endMs = Date.now()
                 state.result = 'fail'
                 state.error = err
@@ -135,11 +148,12 @@ class LiveRenderer implements Renderer {
                       ? pc.red(figures.cross)
                       : pc.cyan(frame)
             const status = s.progress ? `${s.phase} · ${s.progress}` : s.phase
-            // Hide the timer while still queued — work hasn't started yet.
+            // Show accumulated active time; freeze while queued (timer is a
+            // sum of completed work segments only).
+            const elapsed =
+                s.activeMs + (s.activeSinceMs !== undefined ? Date.now() - s.activeSinceMs : 0)
             const timer =
-                s.workStartMs === undefined
-                    ? ''
-                    : ` ${pc.dim(`[${formatDuration((s.endMs ?? Date.now()) - s.workStartMs)}]`)}`
+                elapsed === 0 ? '' : ` ${pc.dim(`[${formatDuration(elapsed)}]`)}`
             const head = `${icon} ${pc.bold(s.name)} ${pc.dim('·')} ${status}${timer}`
             out.push(cliTruncate(head, cols))
             for (const log of s.logs) {

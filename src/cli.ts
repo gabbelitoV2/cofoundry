@@ -7,7 +7,7 @@ import { runVerify } from './verify.ts'
 import { runBootstrap } from './bootstrap.ts'
 import { checkRecipes, SYNTHETIC_RECIPES, saveChecksums } from './upstream.ts'
 import { resolveIsoUpdate, applyIsoUpdate } from './update.ts'
-import { buildManifest } from './manifest.ts'
+import { buildManifest, buildManifestFromR2 } from './manifest.ts'
 import { type Env, loadEnv } from './env.ts'
 import { log } from './log.ts'
 import { redactSensitive } from './util.ts'
@@ -25,7 +25,7 @@ type BuildCommandOptions = {
 }
 
 const shouldSyncBack = (env: Env, opts: BuildCommandOptions): boolean =>
-    !opts.skipArtifactSync && !env.CF_SKIP_SYNC_BACK && !!env.CF_OUT_DIR
+    !opts.skipArtifactSync && !env.CF_SKIP_SYNC_BACK
 
 const parseNum = (s?: string): number | undefined =>
     s !== undefined ? parseInt(s, 10) : undefined
@@ -250,10 +250,19 @@ program
 
 program
     .command('publish')
-    .description('Aggregate sidecar JSONs in CF_OUT_DIR into registry.json')
-    .action(async () => {
-        const env = loadEnv()
-        await buildManifest(env.CF_OUT_DIR)
+    .description(
+        'Aggregate sidecar JSONs into registry.json at the repo root. By default reads sidecars from CF_OUT_DIR; with --r2, lists them in R2 (newest per template) — required in CI where artifacts are not synced back.'
+    )
+    .option('--r2', 'Source sidecars from R2 instead of CF_OUT_DIR')
+    .option('--source-dir <dir>', 'Sidecar source dir for local mode (default: CF_OUT_DIR)')
+    .option('--out <path>', 'Where to write registry.json', 'registry.json')
+    .action(async (opts: { r2?: boolean; sourceDir?: string; out: string }) => {
+        if (opts.r2) {
+            await buildManifestFromR2(opts.out)
+            return
+        }
+        const sourceDir = opts.sourceDir || process.env.CF_OUT_DIR || './dist'
+        await buildManifest(sourceDir, opts.out)
     })
 
 program.parseAsync(process.argv).catch(err => {

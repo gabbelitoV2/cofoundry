@@ -83,10 +83,23 @@ Write-Step "enable services"
 Set-Service -Name cloudbase-init -StartupType Automatic -ErrorAction SilentlyContinue
 Set-Service -Name QEMU-GA -StartupType Automatic -ErrorAction SilentlyContinue
 
+Write-Step "pin WinRM Basic/unencrypted via Group Policy registry"
+# KB4052623 / Defender platform updates (platform 4.18.26040+) reset the
+# WinRM service-level AllowUnencrypted and Basic auth settings after each boot.
+# Values written to the Policies hive take precedence over the service-level
+# WSMAN\Service keys and are not touched by Defender, so this survives every
+# subsequent reboot without needing a startup task.
+$wmPolicyPath = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WinRM\Service"
+New-Item -Path $wmPolicyPath -Force | Out-Null
+Set-ItemProperty -Path $wmPolicyPath -Name "AllowBasic"       -Value 1 -Type DWord -Force
+Set-ItemProperty -Path $wmPolicyPath -Name "AllowUnencrypted" -Value 1 -Type DWord -Force
+# Immediately re-apply so the current session sees the new policy values.
+winrm set winrm/config/service @{AllowUnencrypted="true"} 2>&1 | Out-Null
+winrm set winrm/config/service/auth @{Basic="true"} 2>&1 | Out-Null
+
 Write-Step "register WinRM keepalive startup task"
-# Defender platform updates (KB4052623 / platform 4.18.26040+) reset WinRM
-# AllowUnencrypted and Basic auth on reboot. Re-apply on every boot so Packer
-# can reconnect after each windows-restart provisioner cycle.
+# Belt-and-suspenders: run the winrm set commands at every subsequent startup
+# as well, in case a future Defender version learns to clear the Policies hive.
 $winrmFixPath = "C:\Windows\System32\packer-winrm-keepalive.ps1"
 @'
 winrm set winrm/config/service @{AllowUnencrypted="true"} 2>&1 | Out-Null

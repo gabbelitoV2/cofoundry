@@ -63,9 +63,14 @@ Write-Step "re-enable system-managed pagefile"
 $cs = Get-CimInstance -ClassName Win32_ComputerSystem
 Set-CimInstance -InputObject $cs -Property @{ AutomaticManagedPagefile = $true }
 
-Write-Step "remove Packer WinRM keepalive task"
+Write-Step "remove Packer WinRM keepalive task and policy pins"
 Unregister-ScheduledTask -TaskName "PackerWinRMKeepalive" -Confirm:$false -ErrorAction SilentlyContinue
 Remove-Item "C:\Windows\System32\packer-winrm-keepalive.ps1" -Force -ErrorAction SilentlyContinue
+# Remove the Group Policy registry keys that pinned Basic auth / AllowUnencrypted
+# during the build so the sysprep'd template ships with WinRM in its secure default state.
+Remove-Item -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WinRM\Service" -Force -ErrorAction SilentlyContinue
+winrm set winrm/config/service @{AllowUnencrypted="false"} 2>&1 | Out-Null
+winrm set winrm/config/service/auth @{Basic="false"} 2>&1 | Out-Null
 
 Write-Step "sysprep and shutdown"
 $p = Start-Process -FilePath "C:\Windows\System32\Sysprep\Sysprep.exe" `

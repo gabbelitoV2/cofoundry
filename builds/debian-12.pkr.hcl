@@ -228,6 +228,12 @@ build {
     ]
   }
 
+  provisioner "shell" {
+    expect_disconnect = true
+    skip_clean        = true
+    inline            = ["sudo bash -c 'rm -f /etc/sudoers.d/packer /etc/sudoers.d/wheel; userdel --remove --force packer' || true"]
+  }
+
   post-processor "shell-local" {
     environment_vars = [
       "CF_BUILT_VMID=${local.build_vmid}",

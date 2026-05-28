@@ -28,13 +28,39 @@ export type PipelineResult = {
     failed: { name: string; error: string }[]
 }
 
-// p-queue positional hint. `pending` is in-flight, `size` is waiting.
-const queueAhead = (q: PQueue): number =>
-    Math.max(0, q.pending + q.size - q.concurrency)
-
-const phaseTitle = (phase: string, q: PQueue): string => {
-    const ahead = queueAhead(q)
-    return ahead > 0 ? `${phase} · queued (${ahead} ahead)` : phase
+// Submit work to a p-queue and keep `handle`'s phase label accurate while it
+// waits. `phase` is the active label (e.g. "build"); while queued, we render
+// "phase · queued (N ahead)" and re-render on each queue advance so the count
+// ticks down. The inner task body sets the plain phase label when it actually
+// starts running.
+const runQueued = async <T>(
+    q: PQueue,
+    phase: string,
+    handle: TaskHandle,
+    work: () => Promise<T>
+): Promise<T> => {
+    let started = false
+    const render = (): void => {
+        if (started) return
+        // After .add(), q.pending + q.size includes this job, so subtract self.
+        const ahead = Math.max(0, q.pending + q.size - 1)
+        handle.setPhase(ahead > 0 ? `${phase} · queued (${ahead} ahead)` : phase)
+    }
+    const onNext = (): void => render()
+    q.on('next', onNext)
+    const promise = q.add(async () => {
+        started = true
+        handle.setPhase(phase)
+        return await work()
+    })
+    render()
+    try {
+        // p-queue's add returns T | void to accommodate timeouts; we don't
+        // configure any, so the value is always T.
+        return (await promise) as T
+    } finally {
+        q.off('next', onNext)
+    }
 }
 
 export const runPipeline = async (
@@ -146,10 +172,8 @@ const runRecipe = async (
     const handle = renderer.task(recipe.name)
 
     // ── prefetch ──
-    handle.setPhase(phaseTitle('prefetch', ctx.prefetchQ))
     try {
-        await ctx.prefetchQ.add(async () => {
-            handle.setPhase('prefetch')
+        await runQueued(ctx.prefetchQ, 'prefetch', handle, async () => {
             await prefetchPhase(env, recipe, (slot, line) => {
                 const p = parseWgetLine(line)
                 if (p) handle.setProgress(formatWgetStatus(slot, p))
@@ -160,11 +184,9 @@ const runRecipe = async (
     }
 
     // ── build ──
-    handle.setPhase(phaseTitle('build', ctx.buildQ))
     let buildStartedAt: number | undefined
     try {
-        await ctx.buildQ.add(async () => {
-            handle.setPhase('build')
+        await runQueued(ctx.buildQ, 'build', handle, async () => {
             const result = await buildPhase(
                 env,
                 recipe,
@@ -188,10 +210,8 @@ const runRecipe = async (
     }
 
     // ── sync ──
-    handle.setPhase(phaseTitle('sync', ctx.syncQ))
     try {
-        await ctx.syncQ.add(async () => {
-            handle.setPhase('sync')
+        await runQueued(ctx.syncQ, 'sync', handle, async () => {
             await syncPhase(env, recipe, {
                 concurrency: opts.downloadConcurrency,
                 since: buildStartedAt,

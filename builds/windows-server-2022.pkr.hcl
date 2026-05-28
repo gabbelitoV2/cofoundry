@@ -48,6 +48,8 @@ variable "winrm_password" {
 }
 
 variable "build_ip" { type = string }
+variable "build_gw" { type = string }
+variable "build_dns" { type = string }
 variable "build_mac" { type = string }
 
 locals {

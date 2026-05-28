@@ -12,7 +12,13 @@ import { shellQuote } from '../util.ts'
 // Layout:
 //   IP  = 10.0.0.<100 + slotIndex>     for slotIndex in [0, SLOT_COUNT)
 //   MAC = 02:50:4B:00:00:<slot byte>
-//   Reservation file: /etc/dnsmasq.d/cofoundry-slot-<NN>.conf
+//   Reservation file: /etc/dnsmasq.d/cofoundry-hosts.d/slot-<NN>
+//
+// Reservations live in a dhcp-hostsfile= directory (configured by bootstrap)
+// because `dhcp-host=` lines in regular /etc/dnsmasq.d/*.conf files are only
+// parsed at dnsmasq startup — SIGHUP does not re-read them, so adding a
+// reservation at build time would silently fall through to the dynamic pool.
+// Files in a dhcp-hostsfile dir are re-read on SIGHUP.
 //
 // Free-slot discovery is `flock`-serialised on the node so concurrent
 // `cf build` invocations can't pick the same slot.
@@ -23,8 +29,9 @@ const SLOT_COUNT = 50
 export const BUILD_BRIDGE_GATEWAY = `${SUBNET_PREFIX}.1`
 const LOCK_DIR = '/var/lib/cofoundry'
 const LOCK_FILE = `${LOCK_DIR}/netslot.lock`
-const SNIPPET_DIR = '/etc/dnsmasq.d'
-const SNIPPET_PREFIX = 'cofoundry-slot-'
+const SNIPPET_DIR = '/etc/dnsmasq.d/cofoundry-hosts.d'
+const SNIPPET_PREFIX = 'slot-'
+const LEASES_FILE = '/var/lib/misc/dnsmasq.leases'
 
 export type BuildSlot = {
     ip: string
@@ -43,7 +50,7 @@ const slotMac = (slotIndex: number): string => {
 }
 
 const snippetPath = (slotIndex: number): string =>
-    `${SNIPPET_DIR}/${SNIPPET_PREFIX}${String(slotIndex).padStart(2, '0')}.conf`
+    `${SNIPPET_DIR}/${SNIPPET_PREFIX}${String(slotIndex).padStart(2, '0')}`
 
 // Reload dnsmasq atomically — SIGHUP makes it re-read /etc/dnsmasq.d/* and
 // honour new static reservations without disturbing in-flight leases held by
@@ -56,15 +63,14 @@ export const allocateBuildSlot = async (env: Env): Promise<BuildSlot> => {
     // first free index, write the new snippet, reload dnsmasq, print the index.
     const script = `
 set -e
-mkdir -p ${shellQuote(LOCK_DIR)}
+mkdir -p ${shellQuote(LOCK_DIR)} ${shellQuote(SNIPPET_DIR)}
 exec 9>${shellQuote(LOCK_FILE)}
 flock 9
 used=" "
-for f in ${shellQuote(SNIPPET_DIR)}/${SNIPPET_PREFIX}*.conf; do
+for f in ${shellQuote(SNIPPET_DIR)}/${SNIPPET_PREFIX}*; do
     [ -e "$f" ] || continue
     base=\${f##*/}
     n=\${base#${SNIPPET_PREFIX}}
-    n=\${n%.conf}
     used="$used$n "
 done
 pick=""
@@ -85,7 +91,13 @@ pad=$(printf '%02d' "$pick")
 ip="${SUBNET_PREFIX}.$(( ${SLOT_BASE} + pick ))"
 byte=$(printf '%02x' "$(( ${SLOT_BASE} + pick ))")
 mac="02:50:4b:00:00:$byte"
-printf 'dhcp-host=%s,%s\\n' "$mac" "$ip" > ${shellQuote(SNIPPET_DIR)}/${SNIPPET_PREFIX}"$pad".conf
+printf '%s,%s\\n' "$mac" "$ip" > ${shellQuote(SNIPPET_DIR)}/${SNIPPET_PREFIX}"$pad"
+# Purge any stale lease holding the reserved IP or matching the reserved MAC,
+# so a previous build's lease can't squat on the slot. dnsmasq re-reads the
+# leases file on SIGHUP.
+if [ -f ${shellQuote(LEASES_FILE)} ]; then
+    awk -v ip="$ip" -v mac="$mac" '$2 != mac && $3 != ip' ${shellQuote(LEASES_FILE)} > ${shellQuote(LEASES_FILE)}.tmp && mv ${shellQuote(LEASES_FILE)}.tmp ${shellQuote(LEASES_FILE)}
+fi
 ${reloadDnsmasqCmd}
 echo "$pick"
 `

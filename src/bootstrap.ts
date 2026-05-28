@@ -244,16 +244,19 @@ const stepDnsmasq: Step = {
 }
 
 // Per-build static reservations (10.0.0.100-149) are written by
-// src/build/netslot.ts at build time as /etc/dnsmasq.d/cofoundry-slot-NN.conf.
-// dnsmasq merges everything under /etc/dnsmasq.d at startup / SIGHUP, so this
-// base config only needs the bridge binding, gateway/DNS options, and a small
-// dynamic range as a sanity fallback (build VMs use the static reservations).
+// src/build/netslot.ts at build time into /etc/dnsmasq.d/cofoundry-hosts.d/.
+// That directory is loaded via dhcp-hostsfile= rather than as regular config
+// files, because dnsmasq only honours SIGHUP for entries loaded that way —
+// `dhcp-host=` lines in /etc/dnsmasq.d/*.conf are parsed once at startup and
+// never re-read, which silently breaks per-build reservations.
+const DNSMASQ_HOSTS_DIR = '/etc/dnsmasq.d/cofoundry-hosts.d'
 const DNSMASQ_CONF = `interface=vmbr1
 bind-interfaces
 dhcp-range=10.0.0.200,10.0.0.250,12h
 dhcp-option=3,10.0.0.1
 dhcp-option=6,8.8.8.8
 dhcp-option=option:router,10.0.0.1
+dhcp-hostsfile=${DNSMASQ_HOSTS_DIR}
 `
 
 const stepDnsmasqConf: Step = {
@@ -261,10 +264,21 @@ const stepDnsmasqConf: Step = {
     label: 'write /etc/dnsmasq.d/vmbr1-nat.conf',
     inScope: plan => plan.needBuildNet,
     probe: async plan =>
-        (await sshOk(plan.target, '[ -f /etc/dnsmasq.d/vmbr1-nat.conf ]'))
+        (await sshOk(
+            plan.target,
+            `grep -qxF 'dhcp-hostsfile=${DNSMASQ_HOSTS_DIR}' /etc/dnsmasq.d/vmbr1-nat.conf 2>/dev/null`
+        ))
             ? { done: true, note: 'config already present' }
             : { done: false },
     apply: async plan => {
+        // Hosts dir must exist before dnsmasq starts or it errors out.
+        // Also sweep any legacy /etc/dnsmasq.d/cofoundry-slot-*.conf snippets
+        // from the pre-dhcp-hostsfile layout so they don't linger as stale
+        // static reservations.
+        await remoteStreaming(
+            plan.target,
+            `mkdir -p ${DNSMASQ_HOSTS_DIR} && rm -f /etc/dnsmasq.d/cofoundry-slot-*.conf`
+        )
         await writeRemoteFile(
             plan.target,
             '/etc/dnsmasq.d/vmbr1-nat.conf',

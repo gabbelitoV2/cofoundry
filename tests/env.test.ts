@@ -16,7 +16,7 @@ const VARS_TO_RESET = [
     'CF_OUT_DIR',
     'CF_SKIP_SYNC_BACK',
     'CF_BRIDGE',
-    'CF_WIN_BRIDGE',
+    'CF_BUILD_BRIDGE',
     'CF_STORAGE',
     'CF_ISO_STORAGE',
     'CF_BUILD_DNS',
@@ -51,7 +51,7 @@ describe('loadEnv', () => {
         expect(env.PVE_DUMP_DIR).toBe('/var/lib/vz/dump')
         expect(env.CF_OUT_DIR).toBe('./dist')
         expect(env.CF_BRIDGE).toBe('vmbr0')
-        expect(env.CF_WIN_BRIDGE).toBe('vmbr1')
+        expect(env.CF_BUILD_BRIDGE).toBe('vmbr1')
         expect(env.CF_STORAGE).toBe('local')
         expect(env.CF_ISO_STORAGE).toBe('local')
         expect(env.CF_BUILD_DNS).toBe('1.1.1.1')

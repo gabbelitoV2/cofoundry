@@ -15,8 +15,11 @@ const EnvSchema = z.object({
     CF_SKIP_SYNC_BACK: z
         .preprocess(v => v === '1' || v === 'true' || v === true, z.boolean())
         .default(false),
+    // Bridge for cloud-image recipes (DHCP via guest agent).
     CF_BRIDGE: z.string().default('vmbr0'),
-    CF_WIN_BRIDGE: z.string().default('vmbr1'),
+    // NAT bridge for ISO-installer + Windows builds. Per-build dnsmasq
+    // reservations are written under /etc/dnsmasq.d/cofoundry-slot-*.conf.
+    CF_BUILD_BRIDGE: z.string().default('vmbr1'),
     CF_STORAGE: z.string().default('local'),
     CF_ISO_STORAGE: z.string().default('local'),
 

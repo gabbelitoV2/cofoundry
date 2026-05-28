@@ -99,15 +99,15 @@ export const selectBridge = (
     hasAutoinstall: boolean,
     hasKickstart: boolean
 ): string => {
-    // ISO installers need early boot networking before the guest agent is
-    // available, so reuse the NAT bridge that already exists for Windows.
+    // ISO installers + Windows can't use guest-agent IP discovery, so they run
+    // on the NAT bridge with a per-build dnsmasq reservation (see netslot.ts).
     if (
         recipeName.startsWith('windows-') ||
         hasPreseed ||
         hasAutoinstall ||
         hasKickstart
     ) {
-        return env.CF_WIN_BRIDGE
+        return env.CF_BUILD_BRIDGE
     }
     return env.CF_BRIDGE
 }

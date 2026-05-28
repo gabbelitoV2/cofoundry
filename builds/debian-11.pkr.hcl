@@ -192,6 +192,15 @@ build {
   }
 
   provisioner "file" {
+    source      = "${path.root}/_shared/cloud-init-cleanup.sh"
+    destination = "/tmp/cloud-init-cleanup.sh"
+  }
+
+  provisioner "shell" {
+    inline = ["sudo bash /tmp/cloud-init-cleanup.sh"]
+  }
+
+  provisioner "file" {
     source      = "${path.root}/_shared/cloud-init/99-pve.cfg"
     destination = "/tmp/99-pve.cfg"
   }

@@ -17,9 +17,34 @@ function Zero-FreeSpace($DriveLetter) {
   }
 }
 
-Write-Step "cleanup component store and logs"
+Write-Step "stop Windows Update service and purge download cache"
+Stop-Service -Name wuauserv -Force -ErrorAction SilentlyContinue
+Get-ChildItem -Path "C:\Windows\SoftwareDistribution\Download" -Force -ErrorAction SilentlyContinue |
+  Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+
+Write-Step "purge log and cache directories"
+$prunePaths = @(
+  "C:\Windows\Logs\CBS",
+  "C:\Windows\Panther",
+  "C:\ProgramData\Microsoft\Windows\WER",
+  "C:\Windows\Prefetch",
+  "C:\Windows\ServiceProfiles\NetworkService\AppData\Local\Microsoft\Windows\DeliveryOptimization\Cache"
+)
+foreach ($p in $prunePaths) {
+  if (Test-Path $p) {
+    Get-ChildItem -Path $p -Force -ErrorAction SilentlyContinue |
+      Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+  }
+}
+
+Write-Step "empty recycle bin"
+Clear-RecycleBin -Force -ErrorAction SilentlyContinue
+
+Write-Step "cleanup component store"
 Start-Process -FilePath "dism.exe" `
   -ArgumentList "/Online", "/Cleanup-Image", "/StartComponentCleanup", "/ResetBase" -Wait
+
+Write-Step "clear temp directories and event logs"
 Get-ChildItem -Path "C:\Windows\Temp", "$env:TEMP" -Force -ErrorAction SilentlyContinue |
   Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
 $ErrorActionPreference = "SilentlyContinue"
@@ -29,6 +54,14 @@ $ErrorActionPreference = "Stop"
 Write-Step "zero free space"
 Zero-FreeSpace "C"
 Optimize-Volume -DriveLetter C -ReTrim -ErrorAction SilentlyContinue
+
+Write-Step "re-enable system-managed pagefile"
+# PreFinalize.ps1 + the windows-restart before this script freed pagefile.sys
+# so the zero pass above could compress that space. Restore the default
+# "automatically manage" setting so the cloned VM recreates pagefile.sys at
+# the correct size on first boot.
+$cs = Get-CimInstance -ClassName Win32_ComputerSystem
+Set-CimInstance -InputObject $cs -Property @{ AutomaticManagedPagefile = $true }
 
 Write-Step "remove Packer WinRM keepalive task"
 Unregister-ScheduledTask -TaskName "PackerWinRMKeepalive" -Confirm:$false -ErrorAction SilentlyContinue

@@ -118,7 +118,7 @@ source "proxmox-iso" "windows-server-2025" {
     unmount      = true
   }
 
-  # VirtIO drivers ISO (provides virtio-win-guest-tools.exe for TemplatePrep.ps1)
+  # VirtIO drivers ISO (provides virtio-win-guest-tools.exe for Install.ps1)
   additional_iso_files {
     type         = "ide"
     iso_file     = "${var.proxmox_iso_storage_pool}:iso/packer-virtio-win.iso"
@@ -156,7 +156,7 @@ build {
   sources = ["source.proxmox-iso.windows-server-2025"]
 
   provisioner "powershell" {
-    script = "${path.root}/windows-server-2025/scripts/Install.ps1"
+    script = "${path.root}/_shared/windows/Install.ps1"
   }
   provisioner "windows-restart" {
     restart_timeout = "30m"
@@ -164,7 +164,7 @@ build {
 
   provisioner "powershell" {
     pause_before = "30s"
-    script       = "${path.root}/windows-server-2025/scripts/WU.ps1"
+    script       = "${path.root}/_shared/windows/WU.ps1"
   }
   provisioner "windows-restart" {
     restart_timeout = "90m"
@@ -172,7 +172,7 @@ build {
 
   provisioner "powershell" {
     pause_before = "30s"
-    script       = "${path.root}/windows-server-2025/scripts/WU.ps1"
+    script       = "${path.root}/_shared/windows/WU.ps1"
   }
   provisioner "windows-restart" {
     restart_timeout = "90m"
@@ -180,14 +180,21 @@ build {
 
   provisioner "powershell" {
     pause_before = "30s"
-    script       = "${path.root}/windows-server-2025/scripts/WU.ps1"
+    script       = "${path.root}/_shared/windows/WU.ps1"
   }
   provisioner "windows-restart" {
     restart_timeout = "90m"
   }
 
   provisioner "powershell" {
-    script = "${path.root}/windows-server-2025/scripts/Finalize.ps1"
+    script = "${path.root}/_shared/windows/PreFinalize.ps1"
+  }
+  provisioner "windows-restart" {
+    restart_timeout = "15m"
+  }
+
+  provisioner "powershell" {
+    script = "${path.root}/_shared/windows/Finalize.ps1"
   }
 
   post-processor "shell-local" {

@@ -176,6 +176,9 @@ build {
     inline = [
       "echo '==> Waiting for cloud-init to finish'",
       "if command -v cloud-init >/dev/null 2>&1; then sudo cloud-init status --wait || true; fi",
+      "echo '==> Updating packages'",
+      "sudo apt-get -y update",
+      "sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get -y upgrade",
       "echo '==> Cleaning up SSH host keys and machine ID'",
       "sudo rm -f /etc/ssh/ssh_host_*",
       "sudo truncate -s 0 /etc/machine-id",
@@ -188,6 +191,15 @@ build {
       "sudo rm -f /etc/cloud/cloud.cfg.d/subiquity-disable-cloudinit-networking.cfg",
       "sudo sync",
     ]
+  }
+
+  provisioner "file" {
+    source      = "${path.root}/_shared/cloud-init-cleanup.sh"
+    destination = "/tmp/cloud-init-cleanup.sh"
+  }
+
+  provisioner "shell" {
+    inline = ["sudo bash /tmp/cloud-init-cleanup.sh"]
   }
 
   provisioner "file" {

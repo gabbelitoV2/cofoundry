@@ -45,7 +45,7 @@ export const syncRepoToRemote = async (
         `mkdir -p ${shellQuote(remoteWorkDir)} ${shellQuote(buildRemoteOutDir(env))} ${shellQuote(buildRemoteTmpDir(env))}`
     )
     await sftpUpload(env.SSH_TARGET, REPO_ROOT, remoteWorkDir, {
-        excludes: ['.git', 'node_modules', 'out'],
+        excludes: ['.git', 'node_modules', 'out', 'dist'],
         delete: true,
         concurrency: opts.concurrency ?? env.CF_UPLOAD_CONCURRENCY,
         onProgress: opts.onProgress,

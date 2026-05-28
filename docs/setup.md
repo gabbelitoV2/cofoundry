@@ -67,13 +67,9 @@ apt-get install -y awscli
 
 `cf build` forwards `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, and `AWS_DEFAULT_REGION` from your local env (or repo secrets in CI) into the remote Packer environment automatically — no config files needed on the node.
 
-### 4. Create the ISO cache directory
+### 4. ISO cache directory
 
-```sh
-mkdir -p /var/lib/cofoundry/iso-cache
-```
-
-The first build for each recipe downloads its ISO here automatically. Subsequent builds skip the download.
+Recipes download their boot ISO into `/var/lib/vz/template/iso` (Proxmox's standard ISO storage — already exists on any node). The first build for each recipe downloads its ISO here automatically; subsequent builds skip the download.
 
 ### 5. NAT bridge for ISO-installer builds
 
@@ -125,25 +121,7 @@ mkdir -p /var/lib/cofoundry
 
 Per-build reservations get written to `/etc/dnsmasq.d/cofoundry-slot-NN.conf` during the build and cleaned up afterward — no manual entries needed.
 
-### 6. tmpfs size (Windows builds only)
-
-Packer's working directory lives in `/tmp/cofoundry/` on a RAM-backed tmpfs. Windows Server 2025 produces a ~5.7 GB artifact that needs to fit there.
-
-```sh
-df -h /tmp
-```
-
-If it's under 8 GB, increase it. Add to `/etc/fstab`:
-
-```
-tmpfs /tmp tmpfs defaults,size=16G 0 0
-```
-
-```sh
-mount -o remount /tmp
-```
-
-### 7. Weekly cleanup cron
+### 6. Weekly cleanup cron
 
 Prevents ISOs, dump files, and orphaned VMs from accumulating over time.
 Everything the old inline shell script did now lives in `cf prune`, so the

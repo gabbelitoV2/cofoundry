@@ -8,11 +8,7 @@ import {
     syncPhase,
 } from '../build.ts'
 import { redactSensitive } from '../util.ts'
-import {
-    formatTransferStatus,
-    parseWgetLine,
-    formatWgetStatus,
-} from './ui.ts'
+import { formatTransferStatus, parseWgetLine, formatWgetStatus } from './ui.ts'
 import { createRenderer, type Renderer, type TaskHandle } from './render.ts'
 
 export type PipelineOptions = {
@@ -108,7 +104,9 @@ const runRepoSync = async (
         })
         handle.succeed()
     } catch (err) {
-        const msg = redactSensitive(err instanceof Error ? err.message : String(err))
+        const msg = redactSensitive(
+            err instanceof Error ? err.message : String(err)
+        )
         handle.fail(msg)
         throw err
     }
@@ -128,7 +126,9 @@ const recordFailure = (
     err: unknown,
     handle: TaskHandle
 ): Error => {
-    const msg = redactSensitive(err instanceof Error ? err.message : String(err))
+    const msg = redactSensitive(
+        err instanceof Error ? err.message : String(err)
+    )
     if (!ctx.failed.some(f => f.name === recipe.name)) {
         ctx.failed.push({ name: recipe.name, error: msg })
     }
@@ -165,11 +165,16 @@ const runRecipe = async (
     try {
         await ctx.buildQ.add(async () => {
             handle.setPhase('build')
-            const result = await buildPhase(env, recipe, { keepVm: opts.keepVm }, line => {
-                const trimmed = line.trim()
-                if (!trimmed) return
-                handle.log(opts.verbose ? trimmed : trimmed.slice(0, 200))
-            })
+            const result = await buildPhase(
+                env,
+                recipe,
+                { keepVm: opts.keepVm },
+                line => {
+                    const trimmed = line.trim()
+                    if (!trimmed) return
+                    handle.log(opts.verbose ? trimmed : trimmed.slice(0, 200))
+                }
+            )
             buildStartedAt = result.startedAt
         })
     } catch (err) {

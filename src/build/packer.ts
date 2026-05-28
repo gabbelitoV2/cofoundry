@@ -11,12 +11,17 @@ export const buildRemoteWorkDir = (env: Env): string =>
 export const buildRemoteTmpDir = (env: Env): string =>
     `${env.PVE_DUMP_DIR}/cofoundry-tmp`
 
+export type BuildNet = {
+    ip: string
+    gw: string
+    mac: string
+}
+
 export const buildPackerVars = (
     env: Env,
-    recipe: RecipeInfo,
-    needsStaticIp: boolean,
+    _recipe: RecipeInfo,
     buildBridge: string,
-    buildGw: string
+    net: BuildNet | null
 ): string[] => {
     const apiUrl = `https://${env.PVE_HOST}:${env.PVE_PORT}/api2/json`
     const vars = [
@@ -35,12 +40,14 @@ export const buildPackerVars = (
         '-var',
         `proxmox_bridge=${buildBridge}`,
     ]
-    if (needsStaticIp) {
+    if (net) {
         vars.push(
             '-var',
-            `build_ip=${env.CF_BUILD_IP ?? ''}`,
+            `build_ip=${net.ip}`,
             '-var',
-            `build_gw=${buildGw}`,
+            `build_gw=${net.gw}`,
+            '-var',
+            `build_mac=${net.mac}`,
             '-var',
             `build_dns=${env.CF_BUILD_DNS}`
         )

@@ -22,18 +22,29 @@ export type OnPhase = (phase: string) => void
 
 // ── SSH connection ───────────────────────────────────────────────────────────
 
-function parseTarget(target: string): { user: string; host: string; port: number } {
+function parseTarget(target: string): {
+    user: string
+    host: string
+    port: number
+} {
     const at = target.lastIndexOf('@')
-    if (at === -1) throw new Error(`Invalid SSH_TARGET "${target}": expected user@host`)
+    if (at === -1)
+        throw new Error(`Invalid SSH_TARGET "${target}": expected user@host`)
     const user = target.slice(0, at)
     const hostPart = target.slice(at + 1)
     const colon = hostPart.lastIndexOf(':')
     return colon === -1
         ? { user, host: hostPart, port: 22 }
-        : { user, host: hostPart.slice(0, colon), port: parseInt(hostPart.slice(colon + 1)) }
+        : {
+              user,
+              host: hostPart.slice(0, colon),
+              port: parseInt(hostPart.slice(colon + 1)),
+          }
 }
 
-const DEFAULT_KEYS = ['id_ed25519', 'id_rsa', 'id_ecdsa'].map(k => join(homedir(), '.ssh', k))
+const DEFAULT_KEYS = ['id_ed25519', 'id_rsa', 'id_ecdsa'].map(k =>
+    join(homedir(), '.ssh', k)
+)
 
 const doConnect = async (target: string): Promise<SftpClient> => {
     const { user, host, port } = parseTarget(target)
@@ -84,7 +95,11 @@ function matchesExclude(relPath: string, excludes: string[]): boolean {
     return excludes.some(ex => parts.some(p => p === ex))
 }
 
-async function walkLocal(dir: string, base: string, excludes: string[]): Promise<LocalFile[]> {
+async function walkLocal(
+    dir: string,
+    base: string,
+    excludes: string[]
+): Promise<LocalFile[]> {
     const results: LocalFile[] = []
     const entries = await readdir(dir, { withFileTypes: true })
     for (const entry of entries) {
@@ -120,7 +135,12 @@ const walkRemote = async (
         if (entry.type === 'd') {
             results.push(...(await walkRemote(client, remotePath, base)))
         } else {
-            results.push({ remotePath, relPath, size: entry.size, mtimeMs: entry.modifyTime })
+            results.push({
+                remotePath,
+                relPath,
+                size: entry.size,
+                mtimeMs: entry.modifyTime,
+            })
         }
     }
     return results
@@ -157,7 +177,9 @@ const withPool = async <T>(
     size: number,
     body: (clients: SftpClient[], queue: PQueue) => Promise<T>
 ): Promise<T> => {
-    const clients = await Promise.all(Array.from({ length: size }, () => connect(target)))
+    const clients = await Promise.all(
+        Array.from({ length: size }, () => connect(target))
+    )
     const queue = new PQueue({ concurrency: size })
     try {
         return await body(clients, queue)
@@ -192,14 +214,22 @@ export async function sftpUpload(
 
     phase(`scanning remote (${files.length} local files)`)
     await setupClient.mkdir(remoteDir, true)
-    const remoteFiles = await walkRemote(setupClient, remoteDir, remoteDir).catch(
-        () => [] as RemoteFile[]
-    )
+    const remoteFiles = await walkRemote(
+        setupClient,
+        remoteDir,
+        remoteDir
+    ).catch(() => [] as RemoteFile[])
 
     if (opts.delete) {
         phase('pruning stale remote files')
         const localRels = new Set(files.map(f => f.relPath))
-        await pruneRemote(setupClient, remoteDir, remoteDir, localRels, excludes)
+        await pruneRemote(
+            setupClient,
+            remoteDir,
+            remoteDir,
+            localRels,
+            excludes
+        )
     }
 
     phase('preparing directories')
@@ -218,7 +248,11 @@ export async function sftpUpload(
     const remoteMap = new Map(remoteFiles.map(f => [f.relPath, f]))
     const toUpload = files.filter(f => {
         const r = remoteMap.get(f.relPath)
-        return !r || r.size !== f.size || Math.floor(r.mtimeMs / 1000) !== Math.floor(f.mtimeMs / 1000)
+        return (
+            !r ||
+            r.size !== f.size ||
+            Math.floor(r.mtimeMs / 1000) !== Math.floor(f.mtimeMs / 1000)
+        )
     })
 
     if (toUpload.length === 0) {
@@ -226,7 +260,9 @@ export async function sftpUpload(
         return
     }
 
-    phase(`uploading ${toUpload.length} file${toUpload.length === 1 ? '' : 's'}`)
+    phase(
+        `uploading ${toUpload.length} file${toUpload.length === 1 ? '' : 's'}`
+    )
 
     const fileBytes = new Array<number>(toUpload.length).fill(0)
     const totalBytes = toUpload.reduce((s, f) => s + f.size, 0)
@@ -308,7 +344,9 @@ export async function sftpDownload(
     mkdirSync(localDir, { recursive: true })
 
     const lister = await connect(target)
-    const files = await walkRemote(lister, remoteDir, remoteDir).finally(() => lister.end())
+    const files = await walkRemote(lister, remoteDir, remoteDir).finally(() =>
+        lister.end()
+    )
 
     if (files.length === 0) return
 

@@ -4,17 +4,15 @@ import { remoteStreaming } from './build/remote.ts'
 import { log } from './log.ts'
 import { addSensitiveValues, shellQuote } from './util.ts'
 
-type Scope = 'linux' | 'windows' | 'debian' | 'all'
+type Scope = 'linux-cloud' | 'with-installers'
 
 type Plan = {
     target: string
     scope: Scope
-    needVmbr1: boolean
-    needDebianNat: boolean
+    needBuildNet: boolean
     needTmpfs: boolean
     tokenName: string
     tmpfsSizeGB: number
-    buildIp: string
 }
 
 type ProbeResult = { done: boolean; note?: string }
@@ -77,11 +75,15 @@ const parseSizeToBytes = (s: string): number => {
     const n = parseInt(m[1]!, 10)
     const unit = (m[2] ?? '').toUpperCase()
     const mult =
-        unit === 'K' ? 1024
-            : unit === 'M' ? 1024 ** 2
-                : unit === 'G' ? 1024 ** 3
-                    : unit === 'T' ? 1024 ** 4
-                        : 1
+        unit === 'K'
+            ? 1024
+            : unit === 'M'
+              ? 1024 ** 2
+              : unit === 'G'
+                ? 1024 ** 3
+                : unit === 'T'
+                  ? 1024 ** 4
+                  : 1
     return n * mult
 }
 
@@ -118,7 +120,7 @@ const stepToken: Step = {
                 `pveum user token add failed: ${r.stderr || r.stdout}`
             )
         }
-        let parsed: { value?: string; 'full-tokenid'?: string } = {}
+        let parsed: { 'value'?: string; 'full-tokenid'?: string } = {}
         try {
             parsed = JSON.parse(r.stdout)
         } catch {
@@ -169,7 +171,10 @@ const stepAwscli: Step = {
             ? { done: true, note: 'aws already installed' }
             : { done: false },
     apply: async plan => {
-        await remoteStreaming(plan.target, `apt-get update && ${APT_INSTALL} awscli`)
+        await remoteStreaming(
+            plan.target,
+            `apt-get update && ${APT_INSTALL} awscli`
+        )
         return { note: 'installed' }
     },
 }
@@ -206,7 +211,7 @@ iface vmbr1 inet static
 const stepVmbr1: Step = {
     id: 'vmbr1',
     label: 'configure vmbr1 NAT bridge',
-    inScope: plan => plan.needVmbr1,
+    inScope: plan => plan.needBuildNet,
     probe: async plan =>
         (await sshOk(
             plan.target,
@@ -215,11 +220,10 @@ const stepVmbr1: Step = {
             ? { done: true, note: 'vmbr1 already in /etc/network/interfaces' }
             : { done: false },
     apply: async plan => {
-        await execa(
-            'ssh',
-            [plan.target, `cat >> /etc/network/interfaces`],
-            { input: VMBR1_STANZA, stderr: 'inherit' }
-        )
+        await execa('ssh', [plan.target, `cat >> /etc/network/interfaces`], {
+            input: VMBR1_STANZA,
+            stderr: 'inherit',
+        })
         await remoteStreaming(plan.target, 'ifup vmbr1')
         return { note: 'created vmbr1 + ifup' }
     },
@@ -228,7 +232,7 @@ const stepVmbr1: Step = {
 const stepDnsmasq: Step = {
     id: 'dnsmasq',
     label: 'install dnsmasq',
-    inScope: plan => plan.needVmbr1,
+    inScope: plan => plan.needBuildNet,
     probe: async plan =>
         (await sshOk(plan.target, 'dpkg -s dnsmasq >/dev/null 2>&1'))
             ? { done: true, note: 'dnsmasq already installed' }
@@ -239,19 +243,23 @@ const stepDnsmasq: Step = {
     },
 }
 
+// Per-build static reservations (10.0.0.100-149) are written by
+// src/build/netslot.ts at build time as /etc/dnsmasq.d/cofoundry-slot-NN.conf.
+// dnsmasq merges everything under /etc/dnsmasq.d at startup / SIGHUP, so this
+// base config only needs the bridge binding, gateway/DNS options, and a small
+// dynamic range as a sanity fallback (build VMs use the static reservations).
 const DNSMASQ_CONF = `interface=vmbr1
 bind-interfaces
-dhcp-range=10.0.0.100,10.0.0.200,12h
+dhcp-range=10.0.0.200,10.0.0.250,12h
 dhcp-option=3,10.0.0.1
 dhcp-option=6,8.8.8.8
 dhcp-option=option:router,10.0.0.1
-dhcp-host=02:50:4b:52:57:00,10.0.0.100
 `
 
 const stepDnsmasqConf: Step = {
     id: 'dnsmasq-conf',
     label: 'write /etc/dnsmasq.d/vmbr1-nat.conf',
-    inScope: plan => plan.needVmbr1,
+    inScope: plan => plan.needBuildNet,
     probe: async plan =>
         (await sshOk(plan.target, '[ -f /etc/dnsmasq.d/vmbr1-nat.conf ]'))
             ? { done: true, note: 'config already present' }
@@ -267,77 +275,17 @@ const stepDnsmasqConf: Step = {
     },
 }
 
-const stepIpForward: Step = {
-    id: 'ip-forward',
-    label: 'enable persistent net.ipv4.ip_forward',
-    // Skip if vmbr1 is in scope — its post-up sets ip_forward and the bridge
-    // is always up, so this is functionally covered.
-    inScope: plan => plan.needDebianNat && !plan.needVmbr1,
-    probe: async plan => {
-        const sysctl = await sshCapture(
-            plan.target,
-            `sysctl -n net.ipv4.ip_forward 2>/dev/null`
-        )
-        const persisted = await sshOk(
-            plan.target,
-            `grep -qE '^\\s*net\\.ipv4\\.ip_forward\\s*=\\s*1' /etc/sysctl.conf /etc/sysctl.d/*.conf 2>/dev/null`
-        )
-        return sysctl.stdout.trim() === '1' && persisted
-            ? { done: true, note: 'ip_forward=1 and persisted' }
-            : { done: false }
-    },
+const stepNetslotDir: Step = {
+    id: 'netslot-dir',
+    label: 'create /var/lib/cofoundry for netslot lock',
+    inScope: plan => plan.needBuildNet,
+    probe: async plan =>
+        (await sshOk(plan.target, '[ -d /var/lib/cofoundry ]'))
+            ? { done: true, note: 'already exists' }
+            : { done: false },
     apply: async plan => {
-        await remoteStreaming(
-            plan.target,
-            `grep -qE '^\\s*net\\.ipv4\\.ip_forward' /etc/sysctl.conf || echo 'net.ipv4.ip_forward=1' >> /etc/sysctl.conf; sysctl -p`
-        )
-        return { note: 'enabled + persisted' }
-    },
-}
-
-const masqRuleMatches = (out: string, ip: string): boolean => {
-    // Matches either the per-IP rule or the broader 10.0.0.0/24 rule that
-    // vmbr1 installs.
-    if (out.includes(`-s ${ip}/32`) && out.includes('-j MASQUERADE')) return true
-    if (out.includes(`-s ${ip} `) && out.includes('-j MASQUERADE')) return true
-    if (out.match(/-s 10\.0\.0\.0\/24.*-j MASQUERADE/)) return true
-    return false
-}
-
-const stepMasq: Step = {
-    id: 'masq',
-    label: 'persist MASQUERADE rule for build VM',
-    inScope: plan => plan.needDebianNat && !plan.needVmbr1,
-    probe: async plan => {
-        const r = await sshCapture(
-            plan.target,
-            `iptables -t nat -S POSTROUTING 2>/dev/null`
-        )
-        const live = r.ok && masqRuleMatches(r.stdout, plan.buildIp)
-        const persisted = await sshOk(
-            plan.target,
-            `[ -f /etc/network/interfaces.d/masquerade-build.conf ]`
-        )
-        return live && persisted
-            ? { done: true, note: 'masq rule live + persisted' }
-            : { done: false }
-    },
-    apply: async plan => {
-        const conf = `iface vmbr0 inet manual
-    post-up   iptables -t nat -A POSTROUTING -s ${plan.buildIp} -j MASQUERADE
-    post-down iptables -t nat -D POSTROUTING -s ${plan.buildIp} -j MASQUERADE
-`
-        await writeRemoteFile(
-            plan.target,
-            '/etc/network/interfaces.d/masquerade-build.conf',
-            conf
-        )
-        // Install live so the current session works without a reboot.
-        await remoteStreaming(
-            plan.target,
-            `iptables -t nat -C POSTROUTING -s ${plan.buildIp} -j MASQUERADE 2>/dev/null || iptables -t nat -A POSTROUTING -s ${plan.buildIp} -j MASQUERADE`
-        )
-        return { note: 'written + applied' }
+        await remoteStreaming(plan.target, 'mkdir -p /var/lib/cofoundry')
+        return { note: 'created' }
     },
 }
 
@@ -384,8 +332,7 @@ const ALL_STEPS: Step[] = [
     stepVmbr1,
     stepDnsmasq,
     stepDnsmasqConf,
-    stepIpForward,
-    stepMasq,
+    stepNetslotDir,
     stepTmpfs,
 ]
 
@@ -393,9 +340,7 @@ const ALL_STEPS: Step[] = [
 
 const ENV_PATH = '.env'
 
-const upsertEnvFile = async (
-    kvs: Record<string, string>
-): Promise<void> => {
+const upsertEnvFile = async (kvs: Record<string, string>): Promise<void> => {
     const file = Bun.file(ENV_PATH)
     let content = ''
     if (await file.exists()) content = await file.text()
@@ -420,9 +365,11 @@ const upsertEnvFile = async (
 // ── interactive flow ──────────────────────────────────────────────────────────
 
 const scopeFlags = (scope: Scope) => ({
-    needVmbr1: scope === 'windows' || scope === 'all',
-    needDebianNat: scope === 'debian' || scope === 'all',
-    needTmpfs: scope === 'windows' || scope === 'all',
+    // The NAT bridge backs every recipe that can't rely on the qemu-guest-agent
+    // for IP discovery — i.e. all ISO installers (Debian/Ubuntu/Alma/Rocky/Windows).
+    // Cloud-image-only builds use the LAN bridge + DHCP and don't need it.
+    needBuildNet: scope === 'with-installers',
+    needTmpfs: scope === 'with-installers',
 })
 
 export const runBootstrap = async (): Promise<void> => {
@@ -437,7 +384,8 @@ export const runBootstrap = async (): Promise<void> => {
     let target = process.env.SSH_TARGET
     if (!target) {
         target = await input({
-            message: 'SSH target for the Proxmox node (e.g. root@pve.example.com)',
+            message:
+                'SSH target for the Proxmox node (e.g. root@pve.example.com)',
             validate: v => v.includes('@') || 'expected user@host',
         })
         log.step(`testing ssh ${target}`)
@@ -467,10 +415,14 @@ export const runBootstrap = async (): Promise<void> => {
     const scope = (await select({
         message: 'What will this node build?',
         choices: [
-            { name: 'Linux only', value: 'linux' as Scope },
-            { name: 'Linux + Windows', value: 'windows' as Scope },
-            { name: 'Linux + Debian preseed', value: 'debian' as Scope },
-            { name: 'Everything', value: 'all' as Scope },
+            {
+                name: 'Cloud-image Linux only (Ubuntu cloud, etc.)',
+                value: 'linux-cloud' as Scope,
+            },
+            {
+                name: 'Anything with an installer (Debian/Alma/Rocky/Ubuntu live/Windows)',
+                value: 'with-installers' as Scope,
+            },
         ],
     })) as Scope
     const flags = scopeFlags(scope)
@@ -484,7 +436,6 @@ export const runBootstrap = async (): Promise<void> => {
         tokenName,
         ...flags,
         tmpfsSizeGB: 16,
-        buildIp: '10.0.0.50',
     })
     if (!tokenProbe.done) {
         tokenName = await input({
@@ -514,21 +465,11 @@ export const runBootstrap = async (): Promise<void> => {
         }
     }
 
-    // 5. Build IP — only if debian NAT is in scope and not set
-    let buildIp = process.env.CF_BUILD_IP ?? '10.0.0.50'
-    if (flags.needDebianNat && !process.env.CF_BUILD_IP) {
-        buildIp = await input({
-            message: 'Build VM IP (CF_BUILD_IP)',
-            default: '10.0.0.50',
-        })
-    }
-
     const plan: Plan = {
         target,
         scope,
         tokenName,
         tmpfsSizeGB,
-        buildIp,
         ...flags,
     }
 
@@ -605,21 +546,10 @@ export const runBootstrap = async (): Promise<void> => {
             default: true,
         })
         if (persist) {
-            const kvs: Record<string, string> = {
+            await upsertEnvFile({
                 PVE_TOKEN_ID: createdTokenId,
                 PVE_TOKEN_SECRET: createdSecret,
-            }
-            if (flags.needDebianNat) kvs.CF_BUILD_IP = buildIp
-            await upsertEnvFile(kvs)
-            log.ok('wrote .env')
-        }
-    } else if (flags.needDebianNat && !process.env.CF_BUILD_IP) {
-        const persist = await confirm({
-            message: `append CF_BUILD_IP=${buildIp} to .env?`,
-            default: true,
-        })
-        if (persist) {
-            await upsertEnvFile({ CF_BUILD_IP: buildIp })
+            })
             log.ok('wrote .env')
         }
     }

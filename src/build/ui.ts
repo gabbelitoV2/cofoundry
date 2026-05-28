@@ -45,7 +45,8 @@ export const formatTransferStatus = (
     currentFile: string,
     startMs: number
 ): string => {
-    const pct = totalBytes > 0 ? Math.round((doneBytes / totalBytes) * 100) : 100
+    const pct =
+        totalBytes > 0 ? Math.round((doneBytes / totalBytes) * 100) : 100
     const elapsedMs = Date.now() - startMs
     const speed = elapsedMs >= 100 ? doneBytes / (elapsedMs / 1000) : 0
     const name = currentFile.split('/').pop()?.slice(0, 32) ?? ''

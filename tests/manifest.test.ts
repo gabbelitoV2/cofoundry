@@ -41,8 +41,13 @@ describe('buildManifest', () => {
 
         expect(Array.isArray(manifest.groups)).toBe(true)
 
-        const allNames = manifest.groups.flatMap((g: any) => g.templates.map((t: any) => t.name))
-        expect(allNames.sort()).toEqual(['almalinux-9-amd64', 'debian-12-amd64'])
+        const allNames = manifest.groups.flatMap((g: any) =>
+            g.templates.map((t: any) => t.name)
+        )
+        expect(allNames.sort()).toEqual([
+            'almalinux-9-amd64',
+            'debian-12-amd64',
+        ])
     })
 
     test('assigns correct group display names from registry.groups.json', async () => {
@@ -60,7 +65,9 @@ describe('buildManifest', () => {
         await buildManifest(sourceDir, outPath)
         const manifest = JSON.parse(await readFile(outPath, 'utf8'))
         const allTemplates = manifest.groups.flatMap((g: any) => g.templates)
-        const debian = allTemplates.find((t: any) => t.name === 'debian-12-amd64')
+        const debian = allTemplates.find(
+            (t: any) => t.name === 'debian-12-amd64'
+        )
         expect(debian).toMatchObject({
             display: 'Debian 12 (Bookworm)',
             arch: 'amd64',

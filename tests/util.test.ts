@@ -20,7 +20,7 @@ describe('redactSensitive', () => {
     test('redacts username (token ID) as well as secret', () => {
         addSensitiveValues('user@pam!mytoken', 'super-secret')
         const msg =
-            "proxmox_username=user@pam!mytoken proxmox_token=super-secret proxmox_node=pve1"
+            'proxmox_username=user@pam!mytoken proxmox_token=super-secret proxmox_node=pve1'
         expect(redactSensitive(msg)).toBe(
             'proxmox_username=[REDACTED] proxmox_token=[REDACTED] proxmox_node=pve1'
         )

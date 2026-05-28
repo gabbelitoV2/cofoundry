@@ -58,6 +58,8 @@ variable "build_dns" {
   default = "1.1.1.1"
 }
 
+variable "build_mac" { type = string }
+
 variable "iso_cache_dir" {
   type    = string
   default = "/var/lib/vz/template/iso"

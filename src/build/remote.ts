@@ -86,7 +86,9 @@ export const remoteWgetCapture = async (
     } catch (err) {
         if (buf.trim()) onLine(buf)
         if (err instanceof ExecaError && err.code === 'ENOENT')
-            throw new Error(`"ssh" not found — is it installed and on your PATH?`)
+            throw new Error(
+                `"ssh" not found — is it installed and on your PATH?`
+            )
         if (err instanceof Error) throw new Error(redactSensitive(err.message))
         throw err
     } finally {

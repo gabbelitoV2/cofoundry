@@ -77,11 +77,15 @@ export const runPruneR2 = async ({
         const stale = items.slice(keep)
         for (const obj of live) liveArtifactKeys.add(obj.Key)
         if (stale.length === 0) {
-            log.info(`${prefix}: ${items.length} artifact(s), within keep=${keep}`)
+            log.info(
+                `${prefix}: ${items.length} artifact(s), within keep=${keep}`
+            )
             continue
         }
         const verb = dryRun ? 'would delete' : 'deleting'
-        log.ok(`${prefix}: ${items.length} artifact(s), ${verb} ${stale.length}`)
+        log.ok(
+            `${prefix}: ${items.length} artifact(s), ${verb} ${stale.length}`
+        )
         for (const obj of stale) {
             log.info(`  ${obj.Key}  (${obj.LastModified})`)
             deletions.push(obj.Key)
@@ -115,7 +119,13 @@ export const runPruneR2 = async ({
 
     if (!dryRun) {
         for (const key of deletions) {
-            await awsS3(endpoint, ['delete-object', '--bucket', bucket, '--key', key])
+            await awsS3(endpoint, [
+                'delete-object',
+                '--bucket',
+                bucket,
+                '--key',
+                key,
+            ])
         }
     }
 

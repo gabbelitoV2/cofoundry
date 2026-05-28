@@ -64,6 +64,8 @@ variable "build_dns" {
   default = "1.1.1.1"
 }
 
+variable "build_mac" { type = string }
+
 variable "packer_ssh_private_key_file" {
   type      = string
   sensitive = true

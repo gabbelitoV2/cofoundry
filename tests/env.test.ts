@@ -19,8 +19,6 @@ const VARS_TO_RESET = [
     'CF_WIN_BRIDGE',
     'CF_STORAGE',
     'CF_ISO_STORAGE',
-    'CF_BUILD_IP',
-    'CF_BUILD_GW',
     'CF_BUILD_DNS',
     'CF_UPLOAD_CMD',
     'CF_PUBLIC_URL_TMPL',
@@ -79,11 +77,5 @@ describe('loadEnv', () => {
     ])('CF_SKIP_SYNC_BACK=%p → %p', (input, expected) => {
         process.env.CF_SKIP_SYNC_BACK = input
         expect(loadEnv().CF_SKIP_SYNC_BACK).toBe(expected)
-    })
-
-    test('CF_BUILD_IP and CF_BUILD_GW are optional', () => {
-        const env = loadEnv()
-        expect(env.CF_BUILD_IP).toBeUndefined()
-        expect(env.CF_BUILD_GW).toBeUndefined()
     })
 })

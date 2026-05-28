@@ -2,6 +2,8 @@
 
 This documents the full debugging journey getting Windows Server builds to work end-to-end under Packer + Proxmox. Kept here so the next person doesn't repeat it.
 
+> **Note (post-refactor):** the hardcoded `10.0.0.100` MAC/IP described in Problem 3 below is no longer how Windows builds work. Each build now gets a unique MAC + IP allocated from a 50-slot pool by `src/build/netslot.ts`, with the dnsmasq reservation written and torn down per-build. Static guarantees from Packer's POV are unchanged (it still sees a known IP up front via `var.build_ip`/`var.build_mac`); the only difference is which IP/MAC. The historical problem entries below are kept for context.
+
 ---
 
 ## Problem 1: Invalid OS type for Windows Server 2019

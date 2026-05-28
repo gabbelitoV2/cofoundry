@@ -36,7 +36,11 @@ export type RendererOptions = {
 }
 
 const formatDuration = (ms: number): string =>
-    prettyMs(ms, { compact: false, secondsDecimalDigits: 0, keepDecimalsOnWholeSeconds: false })
+    prettyMs(ms, {
+        compact: false,
+        secondsDecimalDigits: 0,
+        keepDecimalsOnWholeSeconds: false,
+    })
 
 // ── LiveRenderer (TTY) ───────────────────────────────────────────────────────
 
@@ -135,7 +139,8 @@ class LiveRenderer implements Renderer {
 
     private render(): void {
         const cols = process.stderr.columns || 100
-        const frame = this.spinner.frames[this.frame % this.spinner.frames.length]!
+        const frame =
+            this.spinner.frames[this.frame % this.spinner.frames.length]!
         this.frame++
 
         const out: string[] = []
@@ -151,15 +156,23 @@ class LiveRenderer implements Renderer {
             // Show accumulated active time; freeze while queued (timer is a
             // sum of completed work segments only).
             const elapsed =
-                s.activeMs + (s.activeSinceMs !== undefined ? Date.now() - s.activeSinceMs : 0)
+                s.activeMs +
+                (s.activeSinceMs !== undefined
+                    ? Date.now() - s.activeSinceMs
+                    : 0)
             const timer =
-                elapsed === 0 ? '' : ` ${pc.dim(`[${formatDuration(elapsed)}]`)}`
+                elapsed === 0
+                    ? ''
+                    : ` ${pc.dim(`[${formatDuration(elapsed)}]`)}`
             const head = `${icon} ${pc.bold(s.name)} ${pc.dim('·')} ${status}${timer}`
             out.push(cliTruncate(head, cols))
             for (const log of s.logs) {
                 out.push(cliTruncate(`    ${pc.dim('›')} ${log}`, cols))
             }
-            if (s.error) out.push(cliTruncate(`    ${pc.red(figures.cross)} ${s.error}`, cols))
+            if (s.error)
+                out.push(
+                    cliTruncate(`    ${pc.red(figures.cross)} ${s.error}`, cols)
+                )
         }
         this.write(out.join('\n'))
     }
@@ -194,7 +207,9 @@ class StreamRenderer implements Renderer {
             },
             fail: err => {
                 const d = formatDuration(Date.now() - start)
-                write(`${pc.red(figures.cross)} failed ${pc.dim(`(${d})`)}: ${err}`)
+                write(
+                    `${pc.red(figures.cross)} failed ${pc.dim(`(${d})`)}: ${err}`
+                )
             },
         }
     }

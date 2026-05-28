@@ -18,15 +18,21 @@ const resolveDebianArchiveUrl = async (
     suffix: string
 ): Promise<string> => {
     const indexRes = await fetch(base)
-    if (!indexRes.ok) throw new Error(`Debian archive index → HTTP ${indexRes.status}`)
+    if (!indexRes.ok)
+        throw new Error(`Debian archive index → HTTP ${indexRes.status}`)
     const html = await indexRes.text()
     // Find all N.minor.patch/ directory links in the index
     const versionRe = new RegExp(`href="${major}\\.(\\d+)\\.(\\d+)/"`, 'g')
     let best: { minor: number; patch: number } | undefined
     let m: RegExpExecArray | null
     while ((m = versionRe.exec(html)) !== null) {
-        const minor = parseInt(m[1]!), patch = parseInt(m[2]!)
-        if (!best || minor > best.minor || (minor === best.minor && patch > best.patch))
+        const minor = parseInt(m[1]!),
+            patch = parseInt(m[2]!)
+        if (
+            !best ||
+            minor > best.minor ||
+            (minor === best.minor && patch > best.patch)
+        )
             best = { minor, patch }
     }
     if (!best) throw new Error(`No Debian ${major}.x.y found in archive index`)
@@ -60,14 +66,16 @@ const parseChecksumFile = (
     const bsdRe = /^SHA256 \((.+?)\) = ([0-9a-f]{64})$/gm
     let m: RegExpExecArray | null
     while ((m = bsdRe.exec(content)) !== null) {
-        if (filenameRe.test(m[1]!)) matches.push({ filename: m[1]!, sha256: m[2]! })
+        if (filenameRe.test(m[1]!))
+            matches.push({ filename: m[1]!, sha256: m[2]! })
     }
     if (matches.length > 0) return matches.at(-1)!
 
     // GNU-style: "hash  filename" or "hash *filename" — used by Ubuntu, Debian
     const gnuRe = /^([0-9a-f]{64})\s+\*?(\S+\.iso)$/gm
     while ((m = gnuRe.exec(content)) !== null) {
-        if (filenameRe.test(m[2]!)) matches.push({ filename: m[2]!, sha256: m[1]! })
+        if (filenameRe.test(m[2]!))
+            matches.push({ filename: m[2]!, sha256: m[1]! })
     }
     return matches.at(-1)
 }
@@ -82,7 +90,11 @@ export const resolveIsoUpdate = async (
         throw new Error(
             `no entry matching /${recipe.isoFilenameRe}/ in ${recipe.isoChecksumUrl}`
         )
-    return { filename: match.filename, sha256: match.sha256, isoUrl: baseUrl + match.filename }
+    return {
+        filename: match.filename,
+        sha256: match.sha256,
+        isoUrl: baseUrl + match.filename,
+    }
 }
 
 export const applyIsoUpdate = async (

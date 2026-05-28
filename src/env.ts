@@ -20,10 +20,9 @@ const EnvSchema = z.object({
     CF_STORAGE: z.string().default('local'),
     CF_ISO_STORAGE: z.string().default('local'),
 
-    // Static network config for preseed-based build VMs (e.g. debian-12).
-    // The build VM cannot use DHCP, so these must be set for ISO installer builds.
-    CF_BUILD_IP: z.string().optional(),
-    CF_BUILD_GW: z.string().optional(),
+    // DNS resolver for ISO-installer build VMs. The IP and gateway are now
+    // allocated per-build from the vmbr1 NAT pool (see src/build/netslot.ts),
+    // so they no longer need static config.
     CF_BUILD_DNS: z.string().default('1.1.1.1'),
 
     // Parallel SFTP connections for syncing the repo up to the node (default 8).

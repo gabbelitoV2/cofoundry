@@ -9,7 +9,12 @@ import {
     remoteStreaming,
     remoteWgetCapture,
 } from './build/remote.ts'
-import { sftpUpload, sftpDownload, type OnProgress, type OnPhase } from './build/sftp.ts'
+import {
+    sftpUpload,
+    sftpDownload,
+    type OnProgress,
+    type OnPhase,
+} from './build/sftp.ts'
 import {
     buildPackerVars,
     buildRemoteEnv,
@@ -18,6 +23,7 @@ import {
     buildRemoteWorkDir,
     selectBridge,
 } from './build/packer.ts'
+import { allocateBuildSlot, type BuildSlot } from './build/netslot.ts'
 
 export const REPO_ROOT = new URL('../', import.meta.url).pathname
 
@@ -47,7 +53,10 @@ export const syncRepoToRemote = async (
     })
 }
 
-export type SyncArtifactsOptions = { concurrency?: number; onProgress?: OnProgress }
+export type SyncArtifactsOptions = {
+    concurrency?: number
+    onProgress?: OnProgress
+}
 
 // Pulls everything in the remote out-dir back to local. Used for batched pulls.
 export const syncArtifactsBack = async (
@@ -58,28 +67,6 @@ export const syncArtifactsBack = async (
         concurrency: opts.concurrency ?? env.CF_DOWNLOAD_CONCURRENCY,
         onProgress: opts.onProgress,
     })
-}
-
-const resolveBuildGateway = async (
-    env: Env,
-    bridge: string,
-    useBridgeAddress: boolean
-): Promise<string> => {
-    if (!useBridgeAddress) {
-        if (!env.CF_BUILD_GW) {
-            throw new Error(`CF_BUILD_GW is required for ISO installer builds on ${bridge}.`)
-        }
-        return env.CF_BUILD_GW
-    }
-    const out = await captureRemote(
-        env.SSH_TARGET,
-        `ip -4 -o addr show dev ${shellQuote(bridge)}`
-    )
-    const match = out.match(/\binet\s+(\d+\.\d+\.\d+\.\d+)\//)
-    if (!match) {
-        throw new Error(`Could not determine IPv4 address for bridge ${bridge}.`)
-    }
-    return match[1]!
 }
 
 // ── Phase 1: prefetch ─────────────────────────────────────────────────────────
@@ -173,23 +160,33 @@ export const buildPhase = async (
     if (!Number.isFinite(startedAt)) {
         throw new Error(`could not parse remote epoch: ${startedAtRaw}`)
     }
-    const hasPreseed = await fileExists(`${REPO_ROOT}builds/${recipe.name}/http/preseed.cfg`)
-    const hasAutoinstall = await fileExists(`${REPO_ROOT}builds/${recipe.name}/http/user-data`)
-    const hasKickstart = await fileExists(`${REPO_ROOT}builds/${recipe.name}/http/ks.cfg`)
-    const needsStaticIp = hasPreseed || hasAutoinstall || hasKickstart
-    const useInstallerNatBridge = hasPreseed || hasAutoinstall || hasKickstart
-    const buildBridge = selectBridge(env, recipe.name, hasPreseed, hasAutoinstall, hasKickstart)
+    const hasPreseed = await fileExists(
+        `${REPO_ROOT}builds/${recipe.name}/http/preseed.cfg`
+    )
+    const hasAutoinstall = await fileExists(
+        `${REPO_ROOT}builds/${recipe.name}/http/user-data`
+    )
+    const hasKickstart = await fileExists(
+        `${REPO_ROOT}builds/${recipe.name}/http/ks.cfg`
+    )
+    const isWindows = recipe.name.startsWith('windows-')
+    // Any build that can't rely on the qemu-guest-agent for IP discovery runs
+    // on the NAT bridge with a per-build dnsmasq reservation: ISO installers
+    // (need static network up-front) and Windows (no agent during install).
+    const usesBuildBridge =
+        hasPreseed || hasAutoinstall || hasKickstart || isWindows
+    const buildBridge = selectBridge(
+        env,
+        recipe.name,
+        hasPreseed,
+        hasAutoinstall,
+        hasKickstart
+    )
 
-    if (needsStaticIp && !env.CF_BUILD_IP) {
-        throw new Error(
-            `CF_BUILD_IP is required for ISO installer builds.\n` +
-                `Add CF_BUILD_IP=<free-ip-on-vmbr0> CF_BUILD_GW=<gateway> to .env and retry.`
-        )
+    let slot: BuildSlot | null = null
+    if (usesBuildBridge) {
+        slot = await allocateBuildSlot(env)
     }
-
-    const buildGw = needsStaticIp
-        ? await resolveBuildGateway(env, buildBridge, useInstallerNatBridge)
-        : ''
 
     if (recipe.buildVmid) {
         await captureRemote(
@@ -200,57 +197,78 @@ export const buildPhase = async (
         )
     }
 
-    const injectEnv = [
-        `RUNNER_TEMP=${shellQuote(remoteTmpDir)}`,
-        `CF_BUILD_IP=${shellQuote(env.CF_BUILD_IP ?? '')}`,
-        `CF_BUILD_GW=${shellQuote(buildGw)}`,
-        `CF_BUILD_DNS=${shellQuote(env.CF_BUILD_DNS)}`,
-    ].join(' ')
-    const varsFile = (
-        await captureRemote(
-            env.SSH_TARGET,
-            `cd ${remoteWorkDir} && ${injectEnv} bash scripts/inject-placeholders.sh ${recipe.name}`
-        )
-    ).trim()
-
-    const recipeHcl = `${remoteWorkDir}/builds/${recipe.name}.pkr.hcl`
-
-    await remoteStreaming(env.SSH_TARGET, `packer init ${recipeHcl}`, onLine)
-
-    const packerArgs = [
-        'packer',
-        'build',
-        '-force',
-        ...(options.keepVm ? ['-on-error=abort'] : []),
-        '-var-file',
-        varsFile,
-        ...buildPackerVars(env, recipe, needsStaticIp, buildBridge, buildGw),
-        recipeHcl,
-    ]
-    const remoteEnv = buildRemoteEnv(env, remoteOutDir, remoteTmpDir, recipe.arch, recipe.group ?? '')
-
-    const unregisterVmCleanup =
-        recipe.buildVmid && !options.keepVm
-            ? registerCleanup(() => {
-                  process.stderr.write(
-                      `\ncancelled — destroying build VM ${recipe.buildVmid}\n`
-                  )
-                  const destroyCmd =
-                      `qm stop ${recipe.buildVmid} --skiplock 1 >/dev/null 2>&1 || true; ` +
-                      `qm unlock ${recipe.buildVmid} >/dev/null 2>&1 || true; ` +
-                      `qm destroy ${recipe.buildVmid} --purge 1 --destroy-unreferenced-disks 1 --skiplock 1 >/dev/null 2>&1 || true`
-                  spawnSync('ssh', [env.SSH_TARGET, destroyCmd], { stdio: 'inherit' })
-              })
-            : undefined
-
     try {
+        const injectEnv = [
+            `RUNNER_TEMP=${shellQuote(remoteTmpDir)}`,
+            `CF_BUILD_IP=${shellQuote(slot?.ip ?? '')}`,
+            `CF_BUILD_GW=${shellQuote(slot?.gw ?? '')}`,
+            `CF_BUILD_DNS=${shellQuote(env.CF_BUILD_DNS)}`,
+        ].join(' ')
+        const varsFile = (
+            await captureRemote(
+                env.SSH_TARGET,
+                `cd ${remoteWorkDir} && ${injectEnv} bash scripts/inject-placeholders.sh ${recipe.name}`
+            )
+        ).trim()
+
+        const recipeHcl = `${remoteWorkDir}/builds/${recipe.name}.pkr.hcl`
+
         await remoteStreaming(
             env.SSH_TARGET,
-            `${remoteEnv} ${packerArgs.join(' ')}`,
+            `packer init ${recipeHcl}`,
             onLine
         )
+
+        const packerArgs = [
+            'packer',
+            'build',
+            '-force',
+            ...(options.keepVm ? ['-on-error=abort'] : []),
+            '-var-file',
+            varsFile,
+            ...buildPackerVars(
+                env,
+                recipe,
+                buildBridge,
+                slot ? { ip: slot.ip, gw: slot.gw, mac: slot.mac } : null
+            ),
+            recipeHcl,
+        ]
+        const remoteEnv = buildRemoteEnv(
+            env,
+            remoteOutDir,
+            remoteTmpDir,
+            recipe.arch,
+            recipe.group ?? ''
+        )
+
+        const unregisterVmCleanup =
+            recipe.buildVmid && !options.keepVm
+                ? registerCleanup(() => {
+                      process.stderr.write(
+                          `\ncancelled — destroying build VM ${recipe.buildVmid}\n`
+                      )
+                      const destroyCmd =
+                          `qm stop ${recipe.buildVmid} --skiplock 1 >/dev/null 2>&1 || true; ` +
+                          `qm unlock ${recipe.buildVmid} >/dev/null 2>&1 || true; ` +
+                          `qm destroy ${recipe.buildVmid} --purge 1 --destroy-unreferenced-disks 1 --skiplock 1 >/dev/null 2>&1 || true`
+                      spawnSync('ssh', [env.SSH_TARGET, destroyCmd], {
+                          stdio: 'inherit',
+                      })
+                  })
+                : undefined
+
+        try {
+            await remoteStreaming(
+                env.SSH_TARGET,
+                `${remoteEnv} ${packerArgs.join(' ')}`,
+                onLine
+            )
+        } finally {
+            unregisterVmCleanup?.()
+        }
     } finally {
-        unregisterVmCleanup?.()
+        await slot?.release()
     }
 
     return { startedAt }
@@ -298,7 +316,8 @@ export const syncPhase = async (
         .filter((x): x is { name: string; mtime: number } => x !== null)
         .filter(
             ({ name, mtime }) =>
-                (name.startsWith(recipe.name + '-') || name.startsWith(recipe.name + '.')) &&
+                (name.startsWith(recipe.name + '-') ||
+                    name.startsWith(recipe.name + '.')) &&
                 mtime >= minMtime
         )
         .map(x => x.name)
@@ -321,6 +340,9 @@ export const syncPhase = async (
             onProgress: opts.onProgress,
         })
     } finally {
-        await captureRemote(env.SSH_TARGET, `rm -rf ${shellQuote(stage)}`).catch(() => {})
+        await captureRemote(
+            env.SSH_TARGET,
+            `rm -rf ${shellQuote(stage)}`
+        ).catch(() => {})
     }
 }

@@ -30,7 +30,10 @@ const shouldSyncBack = (env: Env, opts: BuildCommandOptions): boolean =>
 const parseNum = (s?: string): number | undefined =>
     s !== undefined ? parseInt(s, 10) : undefined
 
-const buildAction = async (names: string[], opts: BuildCommandOptions): Promise<void> => {
+const buildAction = async (
+    names: string[],
+    opts: BuildCommandOptions
+): Promise<void> => {
     const env = loadEnv()
     const recipes =
         names.length > 0
@@ -55,7 +58,9 @@ const buildAction = async (names: string[], opts: BuildCommandOptions): Promise<
     console.log('')
     log.ok(`${passed.length} succeeded: ${passed.join(', ') || 'none'}`)
     if (failed.length > 0) {
-        log.err(`${failed.length} failed: ${failed.map(f => f.name).join(', ')}`)
+        log.err(
+            `${failed.length} failed: ${failed.map(f => f.name).join(', ')}`
+        )
         for (const f of failed) log.err(`  ${f.name}: ${f.error}`)
         process.exit(1)
     }
@@ -76,28 +81,79 @@ program
 
 program
     .command('build [names...]')
-    .description('Build one or more template artifacts (no names = all recipes); stage-pipelined')
-    .option('--skip-artifact-sync', 'Do not download built artifacts to CF_OUT_DIR')
-    .option('--skip-repo-sync', 'Do not sync the repo to the remote node before building')
-    .option('--keep-vm', 'Do not destroy the build VM if the build is cancelled (also: CF_KEEP_VM=1)')
-    .option('--upload-concurrency <n>', 'Parallel SFTP connections for repo upload (overrides CF_UPLOAD_CONCURRENCY)')
-    .option('--download-concurrency <n>', 'Parallel SFTP connections for artifact download (overrides CF_DOWNLOAD_CONCURRENCY)')
-    .option('--prefetch-concurrency <n>', 'Parallel ISO/asset prefetches on the remote node (default 3)')
-    .option('--ci', 'Force line-oriented output for non-TTY environments (auto-detected from CI env or non-TTY stderr)')
-    .option('-v, --verbose', 'Stream full logs (no truncation, no overwriting) for debugging or copy-paste')
-    .option('--output-lines <n>', 'Number of recent log lines to show under each task (default 1)')
-    .action((names: string[], opts: BuildCommandOptions) => buildAction(names, opts))
+    .description(
+        'Build one or more template artifacts (no names = all recipes); stage-pipelined'
+    )
+    .option(
+        '--skip-artifact-sync',
+        'Do not download built artifacts to CF_OUT_DIR'
+    )
+    .option(
+        '--skip-repo-sync',
+        'Do not sync the repo to the remote node before building'
+    )
+    .option(
+        '--keep-vm',
+        'Do not destroy the build VM if the build is cancelled (also: CF_KEEP_VM=1)'
+    )
+    .option(
+        '--upload-concurrency <n>',
+        'Parallel SFTP connections for repo upload (overrides CF_UPLOAD_CONCURRENCY)'
+    )
+    .option(
+        '--download-concurrency <n>',
+        'Parallel SFTP connections for artifact download (overrides CF_DOWNLOAD_CONCURRENCY)'
+    )
+    .option(
+        '--prefetch-concurrency <n>',
+        'Parallel ISO/asset prefetches on the remote node (default 3)'
+    )
+    .option(
+        '--ci',
+        'Force line-oriented output for non-TTY environments (auto-detected from CI env or non-TTY stderr)'
+    )
+    .option(
+        '-v, --verbose',
+        'Stream full logs (no truncation, no overwriting) for debugging or copy-paste'
+    )
+    .option(
+        '--output-lines <n>',
+        'Number of recent log lines to show under each task (default 1)'
+    )
+    .action((names: string[], opts: BuildCommandOptions) =>
+        buildAction(names, opts)
+    )
 
 program
     .command('build-all')
-    .description('Alias for `cf build` with no names — build every recipe in the repo')
-    .option('--skip-artifact-sync', 'Do not download built artifacts to CF_OUT_DIR')
-    .option('--upload-concurrency <n>', 'Parallel SFTP connections for repo upload (overrides CF_UPLOAD_CONCURRENCY)')
-    .option('--download-concurrency <n>', 'Parallel SFTP connections for artifact download (overrides CF_DOWNLOAD_CONCURRENCY)')
-    .option('--prefetch-concurrency <n>', 'Parallel ISO/asset prefetches on the remote node (default 3)')
+    .description(
+        'Alias for `cf build` with no names — build every recipe in the repo'
+    )
+    .option(
+        '--skip-artifact-sync',
+        'Do not download built artifacts to CF_OUT_DIR'
+    )
+    .option(
+        '--upload-concurrency <n>',
+        'Parallel SFTP connections for repo upload (overrides CF_UPLOAD_CONCURRENCY)'
+    )
+    .option(
+        '--download-concurrency <n>',
+        'Parallel SFTP connections for artifact download (overrides CF_DOWNLOAD_CONCURRENCY)'
+    )
+    .option(
+        '--prefetch-concurrency <n>',
+        'Parallel ISO/asset prefetches on the remote node (default 3)'
+    )
     .option('--ci', 'Force line-oriented output for non-TTY environments')
-    .option('-v, --verbose', 'Stream full logs (no truncation, no overwriting) for debugging')
-    .option('--output-lines <n>', 'Number of recent log lines to show under each task (default 1)')
+    .option(
+        '-v, --verbose',
+        'Stream full logs (no truncation, no overwriting) for debugging'
+    )
+    .option(
+        '--output-lines <n>',
+        'Number of recent log lines to show under each task (default 1)'
+    )
     .action((opts: BuildCommandOptions) => buildAction([], opts))
 
 program
@@ -106,11 +162,15 @@ program
         'Fetch upstream checksum files and update iso_url, iso_checksum, and iso_file in HCL recipes'
     )
     .action(async (names: string[]) => {
-        const recipes = names.length > 0
-            ? await Promise.all(names.map(n => loadRecipe(n)))
-            : await listRecipes()
-        const updatable = recipes.filter(r => r.isoChecksumUrl && r.isoFilenameRe)
-        if (updatable.length === 0) return log.warn('No recipes with iso_checksum_url found')
+        const recipes =
+            names.length > 0
+                ? await Promise.all(names.map(n => loadRecipe(n)))
+                : await listRecipes()
+        const updatable = recipes.filter(
+            r => r.isoChecksumUrl && r.isoFilenameRe
+        )
+        if (updatable.length === 0)
+            return log.warn('No recipes with iso_checksum_url found')
 
         const updated: string[] = []
         const failed: { name: string; error: string }[] = []
@@ -213,20 +273,27 @@ program
     .option('--dry-run', 'Enumerate targets without deleting', false)
     .option('--r2', 'Prune R2 templates/ objects instead of node files')
     .option('--keep <n>', 'With --r2: keep newest N per template prefix', '5')
-    .action(async (opts: { days: string; dryRun: boolean; r2?: boolean; keep: string }) => {
-        const env = loadEnv()
-        if (opts.r2) {
-            await runPruneR2({
-                keep: parseInt(opts.keep, 10),
+    .action(
+        async (opts: {
+            days: string
+            dryRun: boolean
+            r2?: boolean
+            keep: string
+        }) => {
+            const env = loadEnv()
+            if (opts.r2) {
+                await runPruneR2({
+                    keep: parseInt(opts.keep, 10),
+                    dryRun: Boolean(opts.dryRun),
+                })
+                return
+            }
+            await runPrune(env, {
+                days: parseInt(opts.days, 10),
                 dryRun: Boolean(opts.dryRun),
             })
-            return
         }
-        await runPrune(env, {
-            days: parseInt(opts.days, 10),
-            dryRun: Boolean(opts.dryRun),
-        })
-    })
+    )
 
 program
     .command('bootstrap')
@@ -254,7 +321,10 @@ program
         'Aggregate sidecar JSONs into registry.json at the repo root. By default reads sidecars from CF_OUT_DIR; with --r2, lists them in R2 (newest per template) — required in CI where artifacts are not synced back.'
     )
     .option('--r2', 'Source sidecars from R2 instead of CF_OUT_DIR')
-    .option('--source-dir <dir>', 'Sidecar source dir for local mode (default: CF_OUT_DIR)')
+    .option(
+        '--source-dir <dir>',
+        'Sidecar source dir for local mode (default: CF_OUT_DIR)'
+    )
     .option('--out <path>', 'Where to write registry.json', 'registry.json')
     .action(async (opts: { r2?: boolean; sourceDir?: string; out: string }) => {
         if (opts.r2) {

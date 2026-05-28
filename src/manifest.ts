@@ -48,7 +48,9 @@ const assembleRegistry = (
             size: s.size,
             url: s.url,
             built_at: s.built_at,
-            ...(s.suggested_vmid !== undefined && { suggested_vmid: s.suggested_vmid }),
+            ...(s.suggested_vmid !== undefined && {
+                suggested_vmid: s.suggested_vmid,
+            }),
         })
     }
 
@@ -74,12 +76,20 @@ const assembleRegistry = (
     }
 }
 
-const writeRegistry = async (outPath: string, registry: Registry): Promise<string> => {
+const writeRegistry = async (
+    outPath: string,
+    registry: Registry
+): Promise<string> => {
     const parent = dirname(outPath)
     if (parent && parent !== '.') await mkdir(parent, { recursive: true })
     await writeFile(outPath, JSON.stringify(registry, null, 2) + '\n')
-    const templateCount = registry.groups.reduce((n, g) => n + g.templates.length, 0)
-    log.ok(`wrote ${outPath} (${templateCount} templates in ${registry.groups.length} groups)`)
+    const templateCount = registry.groups.reduce(
+        (n, g) => n + g.templates.length,
+        0
+    )
+    log.ok(
+        `wrote ${outPath} (${templateCount} templates in ${registry.groups.length} groups)`
+    )
     return outPath
 }
 

@@ -47,6 +47,9 @@ variable "winrm_password" {
   sensitive = true
 }
 
+variable "build_ip" { type = string }
+variable "build_mac" { type = string }
+
 locals {
   build_vmid     = 2000
   recipe_name    = "windows-server-2019"
@@ -101,7 +104,7 @@ source "proxmox-iso" "windows-server-2019" {
   network_adapters {
     bridge      = var.proxmox_bridge
     model       = "virtio"
-    mac_address = "02:50:4B:52:57:00"
+    mac_address = var.build_mac
   }
 
   boot_iso {
@@ -136,7 +139,7 @@ source "proxmox-iso" "windows-server-2019" {
   boot_command = ["<enter><wait2><enter><wait2><enter><wait2><enter><wait2><enter><wait2><enter><wait2><enter><wait2><enter><wait2><enter><wait2><enter><wait2>"]
 
   communicator   = "winrm"
-  winrm_host     = "10.0.0.100"
+  winrm_host     = var.build_ip
   winrm_username = "Administrator"
   winrm_password = var.winrm_password
   winrm_use_ssl  = false

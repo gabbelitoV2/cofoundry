@@ -29,6 +29,56 @@ export const REPO_ROOT = new URL('../', import.meta.url).pathname
 
 const fileExists = (path: string): Promise<boolean> => Bun.file(path).exists()
 
+/**
+ * Returns a shell fragment that starts a background watchdog alongside Packer.
+ *
+ * Problem: installers occasionally issue a hard shutdown instead of a reboot
+ * mid-install (Windows PE phase, Linux post-copy reboot, etc.), leaving Packer
+ * hanging on "Waiting for SSH/WinRM to become available" indefinitely.
+ *
+ * The watchdog polls `qm status` every 10 s.  If the VM stays in the stopped
+ * state for more than 20 s (i.e. it is not just briefly cycling through a
+ * normal communicator-triggered restart) it calls `qm start` — up to 5 times.
+ *
+ * Crucially, it **exits on its own** the moment the communicator port becomes
+ * reachable on the build IP.  At that point Packer's provisioners are in
+ * control; any subsequent intentional shutdown (e.g. Windows sysprep) must not
+ * be restarted.
+ *
+ * A shell EXIT trap ensures the watchdog subprocess is also killed if Packer
+ * exits for any other reason (success, failure, or signal).
+ *
+ * @param communicatorPort  22 for SSH (Linux), 5985 for WinRM (Windows)
+ */
+const buildVmWatchdog = (
+    vmid: number,
+    buildIp: string,
+    communicatorPort: number
+): string => `
+(
+  _n=0 _max=5
+  while true; do
+    sleep 10
+    if timeout 3 bash -c "echo >/dev/tcp/${buildIp}/${communicatorPort}" 2>/dev/null; then
+      echo "[watchdog] port ${communicatorPort} up on ${buildIp} — exiting"; exit 0
+    fi
+    _s=$(qm status ${vmid} 2>/dev/null | awk 'NR==1{print $2}') || continue
+    [ "$_s" = "stopped" ] || continue
+    sleep 20
+    _s=$(qm status ${vmid} 2>/dev/null | awk 'NR==1{print $2}') || continue
+    [ "$_s" = "stopped" ] || continue
+    _n=$((_n + 1))
+    if [ "$_n" -gt "$_max" ]; then
+      echo "[watchdog] VM ${vmid}: restart limit reached, giving up" >&2; exit 1
+    fi
+    echo "[watchdog] VM ${vmid} stopped unexpectedly (attempt $_n/$_max) — restarting"
+    qm start ${vmid} 2>&1 || true
+  done
+) &
+_WDOG_PID=$!
+trap 'kill "$_WDOG_PID" 2>/dev/null || true' EXIT INT TERM
+`
+
 export type SyncRepoOptions = {
     concurrency?: number
     onProgress?: OnProgress
@@ -258,10 +308,22 @@ export const buildPhase = async (
                   })
                 : undefined
 
+        // Prepend a watchdog that restarts the VM if it shuts down before the
+        // communicator comes up.  Installers (Windows PE and some Linux distros)
+        // occasionally issue a hard shutdown instead of a reboot mid-install,
+        // leaving Packer hanging on "Waiting for SSH/WinRM to become available".
+        // The watchdog exits automatically once the communicator port is
+        // reachable, so it never interferes with later intentional shutdowns
+        // (e.g. Windows sysprep at the end of Finalize.ps1).
+        const communicatorPort = isWindows ? 5985 : 22
+        const watchdog =
+            recipe.buildVmid && slot
+                ? buildVmWatchdog(recipe.buildVmid, slot.ip, communicatorPort)
+                : ''
         try {
             await remoteStreaming(
                 env.SSH_TARGET,
-                `${remoteEnv} ${packerArgs.join(' ')}`,
+                `${watchdog}${remoteEnv} ${packerArgs.join(' ')}`,
                 onLine
             )
         } finally {

@@ -213,9 +213,11 @@ const stepVmbr1: Step = {
     label: 'configure vmbr1 NAT bridge',
     inScope: plan => plan.needBuildNet,
     probe: async plan =>
+        // Anchor with $ — a bare '^auto vmbr1' also matches a pre-existing
+        // 'auto vmbr100' (prefix), which would skip creating vmbr1 entirely.
         (await sshOk(
             plan.target,
-            `grep -q '^auto vmbr1' /etc/network/interfaces`
+            `grep -q '^auto vmbr1$' /etc/network/interfaces`
         ))
             ? { done: true, note: 'vmbr1 already in /etc/network/interfaces' }
             : { done: false },

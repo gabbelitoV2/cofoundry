@@ -1,4 +1,5 @@
 import { spawnSync } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
 import pRetry from 'p-retry'
 import type { Env } from './env.ts'
 import type { RecipeInfo } from './config.ts'
@@ -25,7 +26,7 @@ import {
 } from './build/packer.ts'
 import { allocateBuildSlot, type BuildSlot } from './build/netslot.ts'
 
-export const REPO_ROOT = new URL('../', import.meta.url).pathname
+export const REPO_ROOT = fileURLToPath(new URL('../', import.meta.url))
 
 const fileExists = (path: string): Promise<boolean> => Bun.file(path).exists()
 
@@ -101,6 +102,13 @@ export const syncRepoToRemote = async (
         onProgress: opts.onProgress,
         onPhase: opts.onPhase,
     })
+    // Files synced from Windows lose the Unix executable bit, so packer's
+    // shell-local post-processors fail with "Permission denied" (exit 126).
+    // Restore +x on shell scripts after every upload.
+    await captureRemote(
+        env.SSH_TARGET,
+        `find ${shellQuote(remoteWorkDir)} -name '*.sh' -exec chmod +x {} +`
+    )
 }
 
 export type SyncArtifactsOptions = {

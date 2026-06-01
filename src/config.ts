@@ -1,7 +1,8 @@
 import { readdir, readFile } from 'node:fs/promises'
 import { basename, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
-const DEFAULT_BUILDS_DIR = new URL('../builds/', import.meta.url).pathname
+const DEFAULT_BUILDS_DIR = fileURLToPath(new URL('../builds/', import.meta.url))
 
 export interface RecipeInfo {
     name: string

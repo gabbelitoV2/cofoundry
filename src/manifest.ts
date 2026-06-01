@@ -1,5 +1,6 @@
 import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises'
 import { basename, dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import byteSize from 'byte-size'
 import { execa } from 'execa'
 import { log } from './log.ts'
@@ -23,7 +24,9 @@ interface GroupDef {
     description?: string | null
 }
 
-const GROUPS_FILE = new URL('../registry.groups.json', import.meta.url).pathname
+const GROUPS_FILE = fileURLToPath(
+    new URL('../registry.groups.json', import.meta.url)
+)
 
 const loadGroupDefs = async (): Promise<Map<string, GroupDef>> => {
     const defs: GroupDef[] = JSON.parse(await readFile(GROUPS_FILE, 'utf8'))

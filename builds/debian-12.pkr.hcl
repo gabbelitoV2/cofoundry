@@ -143,7 +143,7 @@ source "proxmox-iso" "debian-12" {
   boot_wait = "10s"
   boot_command = [
     "<esc><wait>",
-    "install auto=true priority=critical console=ttyS0,115200 console=tty0 <wait>",
+    "install auto=true priority=critical console=tty0 <wait>",
     "netcfg/disable_autoconfig=true <wait>",
     "netcfg/get_ipaddress=${var.build_ip} <wait>",
     "netcfg/get_netmask=255.255.255.0 <wait>",

@@ -213,9 +213,11 @@ const stepVmbr1: Step = {
     label: 'configure vmbr1 NAT bridge',
     inScope: plan => plan.needBuildNet,
     probe: async plan =>
+        // Anchor with $ — a bare '^auto vmbr1' also matches a pre-existing
+        // 'auto vmbr100' (prefix), which would skip creating vmbr1 entirely.
         (await sshOk(
             plan.target,
-            `grep -q '^auto vmbr1' /etc/network/interfaces`
+            `grep -q '^auto vmbr1$' /etc/network/interfaces`
         ))
             ? { done: true, note: 'vmbr1 already in /etc/network/interfaces' }
             : { done: false },
@@ -440,6 +442,29 @@ export const runBootstrap = async (): Promise<void> => {
         ],
     })) as Scope
     const flags = scopeFlags(scope)
+
+    // 2b. Cluster: optionally turn each build into a clonable template on every
+    // node (per-node VMID, local storage — no shared storage needed).
+    const members = await sshCapture(
+        target,
+        `grep -c '"id":' /etc/pve/.members 2>/dev/null || echo 1`
+    )
+    const nodeCount = parseInt(members.stdout.trim(), 10) || 1
+    if (nodeCount > 1) {
+        const clusterTemplates = await confirm({
+            message: `Cluster of ${nodeCount} nodes detected — restore each build as a clonable template on every node (per-node VMID via scripts/cf-cluster-templates.sh)?`,
+            default: false,
+        })
+        if (clusterTemplates) {
+            await upsertEnvFile({
+                CF_UPLOAD_CMD:
+                    'bash /var/lib/vz/dump/cofoundry-work/scripts/cf-cluster-templates.sh {{file}}',
+            })
+            log.ok(
+                `cluster template distribution enabled — each build creates a clonable template on all ${nodeCount} nodes`
+            )
+        }
+    }
 
     // 3. Token name — ask only if no 'cofoundry' (or any user-chosen) token yet.
     // Probe with default first; if it exists, no question.

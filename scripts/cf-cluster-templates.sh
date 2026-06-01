@@ -6,7 +6,7 @@
 # (cluster VMIDs are globally unique, so nodes cannot share one id).
 #
 # Wire in as the build node's CF_UPLOAD_CMD in .env:
-#   CF_UPLOAD_CMD=bash /var/lib/vz/dump/cofoundry-work/scripts/cf-cluster-templates.sh {{file}}
+#   CF_UPLOAD_CMD=bash $PVE_DUMP_DIR/cofoundry-work/scripts/cf-cluster-templates.sh {{file}}
 #
 # Reads from the environment (set by the recipe's post-processor):
 #   CF_BUILT_VMID (required), CF_RECIPE_NAME, CF_ARCH
@@ -16,18 +16,30 @@
 #
 # LOCAL/cluster convenience — not part of the upstream recipes.
 
+# Intentionally no `-e`: we want the per-node loop to keep going on a single
+# node's failure (logged as `[fail] $IP`) rather than aborting the whole run.
 set -uo pipefail
 
 ARTIFACT="${1:?usage: cf-cluster-templates.sh <artifact-path>}"
 BASE_VMID="${CF_BUILT_VMID:?CF_BUILT_VMID not set}"
+DUMP_DIR="${PVE_DUMP_DIR:-/var/lib/vz/dump}"
 
 # --- knobs (edit to taste) -------------------------------------------------
 STORAGE="${CF_TEMPLATE_STORAGE:-local}"        # per-node disk storage for the template
 OFFSET="${CF_TEMPLATE_VMID_OFFSET:-10000}"     # per-node VMID spacing
 # ---------------------------------------------------------------------------
 
+# Adjacent nodes collide if BASE_VMID >= OFFSET (e.g. node1+14001 == node2+4001).
+if [ "$BASE_VMID" -ge "$OFFSET" ]; then
+  echo "cf-cluster-templates: CF_BUILT_VMID ($BASE_VMID) must be < CF_TEMPLATE_VMID_OFFSET ($OFFSET)" >&2
+  exit 1
+fi
+
 BN="$(basename "$ARTIFACT")"
 SSHOPT=(-o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=8)
+
+# Local IPv4s — used to skip scp-to-self (the artifact is already on this node).
+LOCAL_IPS=" $(ip -4 -o addr show 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | tr '\n' ' ')"
 
 # node_id + ip for every online member, from the cluster state file
 mapfile -t NODES < <(
@@ -45,13 +57,18 @@ for line in "${NODES[@]}"; do
   STAMP="$(date +%Y_%m_%d-%H_%M_%S)"
   echo "==> node $ID ($IP) -> template $VMID"
 
-  if ! scp -q "${SSHOPT[@]}" "$ARTIFACT" "root@$IP:/var/lib/vz/dump/$BN"; then
+  # Skip scp when the target IP is on this host — the artifact is already there.
+  if [[ "$LOCAL_IPS" == *" $IP "* ]]; then
+    cp -f "$ARTIFACT" "$DUMP_DIR/$BN"
+  elif ! scp -q "${SSHOPT[@]}" "$ARTIFACT" "root@$IP:$DUMP_DIR/$BN"; then
     echo "    [skip] could not copy artifact to $IP"
     continue
   fi
 
   # Replace only a template we own at this id; never clobber a real VM.
-  ssh "${SSHOPT[@]}" "root@$IP" bash -s <<EOF || echo "    [fail] $IP"
+  # Same restore script for local + remote — pipe to bash directly for local
+  # to skip the ssh roundtrip.
+  RESTORE_SCRIPT=$(cat <<EOF
 set -e
 if qm status $VMID >/dev/null 2>&1; then
   if ! qm config $VMID 2>/dev/null | grep -q '^template:'; then
@@ -62,14 +79,20 @@ if qm status $VMID >/dev/null 2>&1; then
   qm destroy $VMID --purge 1 --destroy-unreferenced-disks 1 >/dev/null 2>&1 || true
 fi
 # qmrestore only accepts vzdump-style filenames, so rename before restoring
-VZ="/var/lib/vz/dump/vzdump-qemu-$VMID-$STAMP.vma.zst"
-mv "/var/lib/vz/dump/$BN" "\$VZ"
+VZ="$DUMP_DIR/vzdump-qemu-$VMID-$STAMP.vma.zst"
+mv "$DUMP_DIR/$BN" "\$VZ"
 qmrestore "\$VZ" $VMID --storage $STORAGE --unique 1 >/dev/null
 rm -f "\$VZ"
 # cofoundry artifacts are already templates after restore; only convert if not
 qm config $VMID 2>/dev/null | grep -q '^template:' || qm template $VMID >/dev/null
 echo "    [ok] template $VMID on $STORAGE"
 EOF
+)
+  if [[ "$LOCAL_IPS" == *" $IP "* ]]; then
+    bash -c "$RESTORE_SCRIPT" || echo "    [fail] $IP"
+  else
+    ssh "${SSHOPT[@]}" "root@$IP" bash -s <<<"$RESTORE_SCRIPT" || echo "    [fail] $IP"
+  fi
 done
 
 echo "==> cluster template distribution complete"

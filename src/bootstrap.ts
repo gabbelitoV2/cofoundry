@@ -456,9 +456,12 @@ export const runBootstrap = async (): Promise<void> => {
             default: false,
         })
         if (clusterTemplates) {
+            // $PVE_DUMP_DIR is exported into the post-processor env by
+            // buildPostProcEnv() in src/build/packer.ts, so this resolves on
+            // the PVE node regardless of how PVE_DUMP_DIR is configured.
             await upsertEnvFile({
                 CF_UPLOAD_CMD:
-                    'bash /var/lib/vz/dump/cofoundry-work/scripts/cf-cluster-templates.sh {{file}}',
+                    'bash "$PVE_DUMP_DIR/cofoundry-work/scripts/cf-cluster-templates.sh" {{file}}',
             })
             log.ok(
                 `cluster template distribution enabled — each build creates a clonable template on all ${nodeCount} nodes`

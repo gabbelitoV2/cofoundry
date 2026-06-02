@@ -73,8 +73,18 @@ winrm set winrm/config/service @{AllowUnencrypted="false"} 2>&1 | Out-Null
 winrm set winrm/config/service/auth @{Basic="false"} 2>&1 | Out-Null
 
 Write-Step "sysprep and shutdown"
+# Pass cloudbase-init's bundled Unattend.xml so OOBE on the cloned VM auto-
+# completes (accepts EULA, sets a placeholder Administrator password, skips
+# all OOBE screens). Without this, first boot blocks in noVNC waiting for an
+# operator to set the Administrator password, and the cloudbase-init service
+# can't start until OOBE finishes — which defeats unattended cloning.
+$sysprepUnattend = "C:\Program Files\Cloudbase Solutions\Cloudbase-Init\conf\Unattend.xml"
+if (-not (Test-Path $sysprepUnattend)) {
+  throw "cloudbase-init Unattend.xml not found at $sysprepUnattend — was Cloudbase-Init installed?"
+}
 $p = Start-Process -FilePath "C:\Windows\System32\Sysprep\Sysprep.exe" `
-  -ArgumentList "/generalize", "/oobe", "/shutdown", "/quiet" -Wait -PassThru
+  -ArgumentList "/generalize", "/oobe", "/shutdown", "/quiet", "/unattend:`"$sysprepUnattend`"" `
+  -Wait -PassThru
 if ($p.ExitCode -ne 0 -and $p.ExitCode -ne 3010) {
   throw "Sysprep exited $($p.ExitCode)"
 }

@@ -52,6 +52,18 @@ trap cleanup EXIT
 
 mkdir -p "$CF_OUT_DIR"
 
+# Bake ciuser=root into the template config so clones with --sshkeys /
+# --cipassword apply them to root instead of falling through to the distro's
+# default cloud-init user (debian/ubuntu/cloud-user/…), which doesn't actually
+# exist in these images. Linux only — Windows uses cloudbase-init, not ciuser.
+OSTYPE_LINE=$(_pve "qm config '$CF_BUILT_VMID' 2>/dev/null | grep -E '^ostype:' || true")
+case "$OSTYPE_LINE" in
+  *l24*|*l26*)
+    echo "==> setting ciuser=root on VMID $CF_BUILT_VMID"
+    _pve "qm set '$CF_BUILT_VMID' --ciuser root >/dev/null"
+    ;;
+esac
+
 echo "==> vzdump VMID $CF_BUILT_VMID"
 _pve "vzdump $CF_BUILT_VMID --compress zstd --mode stop --dumpdir $PVE_DUMP_DIR"
 

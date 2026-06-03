@@ -23,7 +23,7 @@ jobs:
 
       - id: check
         run: |
-          CHANGED=$(bun run tb check --json)
+          CHANGED=$(bun run cf check --json)
           echo "matrix={\"recipe\":$CHANGED}" >> "$GITHUB_OUTPUT"
           if [ "$CHANGED" = "[]" ]; then
             echo "any_changed=false" >> "$GITHUB_OUTPUT"

@@ -13,6 +13,9 @@
 - Keep parallel progress output readable when installing multiple templates at once.
 - Re-prompt after empty or invalid template selections instead of exiting immediately.
 - Preserve piped answers across repeated prompts for scripted usage.
+- Close prompt handles after completion so `coport` exits cleanly.
+- Handle Ctrl-C by aborting active downloads, terminating active `qmrestore` processes, and removing temporary archives.
+- Store downloads in a per-run directory under `/var/lib/vz/dump/coport-tmp` and remove it after completion to avoid accumulated large archives.
 
 ## v1.0.0
 

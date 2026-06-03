@@ -9,12 +9,15 @@ import {
     verifySha256,
     ensureTempDir,
     tempPath,
+    cleanupTempDir,
+    cleanupTempDirSync,
 } from './download.ts'
 import { qmrestore } from './install.ts'
 import {
     promptStorage,
     promptTemplateSelection,
     confirmVmidConflicts,
+    closePrompts,
 } from './prompt.ts'
 import { log } from './log.ts'
 import type { Template } from '../../src/registry/schema.ts'
@@ -186,16 +189,21 @@ const installTemplate = async (
     storage: string,
     verify: boolean,
     force: boolean,
-    progress: ProgressRenderer
+    progress: ProgressRenderer,
+    signal: AbortSignal
 ): Promise<void> => {
     const dest = tempPath(vmid)
 
     progress.update(template.name, 'download', 0)
-    await downloadWithRetry(template.url, dest, p =>
-        progress.update(template.name, 'download', p.pct, {
-            received: p.received,
-            total: p.total,
-        })
+    await downloadWithRetry(
+        template.url,
+        dest,
+        p =>
+            progress.update(template.name, 'download', p.pct, {
+                received: p.received,
+                total: p.total,
+            }),
+        signal
     )
 
     if (verify) {
@@ -204,15 +212,16 @@ const installTemplate = async (
     }
 
     progress.update(template.name, 'install', 0, `VMID ${vmid}`)
-    await qmrestore(dest, vmid, storage, force, pct =>
-        progress.update(template.name, 'install', pct, `VMID ${vmid}`)
+    await qmrestore(
+        dest,
+        vmid,
+        storage,
+        force,
+        pct => progress.update(template.name, 'install', pct, `VMID ${vmid}`),
+        signal
     )
 
     progress.update(template.name, 'done', 100, `VMID ${vmid}`)
-
-    import('node:fs/promises').then(({ unlink }) =>
-        unlink(dest).catch(() => {})
-    )
 }
 
 const program = new Command()
@@ -237,6 +246,18 @@ program
     .option('--no-verify', 'Skip SHA-256 verification after download')
     .option('--json', 'NDJSON progress output for scripted use')
     .action(async (registryArg: string | undefined, opts) => {
+        const abort = new AbortController()
+        let interrupted = false
+        process.once('SIGINT', () => {
+            interrupted = true
+            abort.abort()
+            logUpdate.done()
+            log.warn('Interrupted; stopping active downloads/restores...')
+            cleanupTempDirSync()
+            closePrompts()
+            process.exit(130)
+        })
+
         const { registrySource, defaultStorage } =
             await resolveConfig(registryArg)
 
@@ -297,7 +318,8 @@ program
                     storage,
                     !opts.noVerify,
                     a.overwrite,
-                    progress
+                    progress,
+                    abort.signal
                 ).catch(err => {
                     progress.update(
                         a.template.name,
@@ -311,8 +333,17 @@ program
         )
 
         progress.finish()
+        await cleanupTempDir()
+        closePrompts()
 
         console.log()
+        if (interrupted) {
+            log.warn(
+                'Interrupted. Temporary archives were removed; inspect Proxmox for any partial restores before retrying.'
+            )
+            process.exit(130)
+        }
+
         let failed = 0
         for (let i = 0; i < results.length; i++) {
             const r = results[i]!
@@ -331,6 +362,8 @@ program
     })
 
 program.parseAsync(process.argv).catch(err => {
+    cleanupTempDirSync()
+    closePrompts()
     log.error(err instanceof Error ? err.message : String(err))
     process.exit(1)
 })

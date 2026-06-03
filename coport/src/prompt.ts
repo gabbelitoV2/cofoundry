@@ -12,6 +12,11 @@ const rl = (): ReturnType<typeof createInterface> => {
     return iface
 }
 
+export const closePrompts = (): void => {
+    iface?.close()
+    iface = undefined
+}
+
 const question = (prompt: string): Promise<string> =>
     new Promise(resolve => {
         if (!process.stdin.isTTY) {

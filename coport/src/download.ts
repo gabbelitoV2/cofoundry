@@ -1,9 +1,11 @@
-import { mkdir } from 'node:fs/promises'
+import { mkdir, rm } from 'node:fs/promises'
+import { rmSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { join } from 'node:path'
 
-const TEMP_DIR = '/var/lib/vz/dump/coport-tmp'
+const TEMP_ROOT = '/var/lib/vz/dump/coport-tmp'
 const MAX_RETRIES = 3
+let tempDir: string | undefined
 
 export interface DownloadProgress {
     pct: number
@@ -12,10 +14,27 @@ export interface DownloadProgress {
 }
 
 export const tempPath = (vmid: number): string =>
-    join(TEMP_DIR, `vzdump-qemu-${vmid}-1970_01_01-00_00_00.vma.zst`)
+    join(
+        tempDir ?? TEMP_ROOT,
+        `vzdump-qemu-${vmid}-1970_01_01-00_00_00.vma.zst`
+    )
 
-export const ensureTempDir = (): Promise<void> =>
-    mkdir(TEMP_DIR, { recursive: true }).then(() => {})
+export const ensureTempDir = async (): Promise<void> => {
+    tempDir = join(TEMP_ROOT, `${process.pid}-${Date.now()}`)
+    await mkdir(tempDir, { recursive: true })
+}
+
+export const cleanupTempDir = async (): Promise<void> => {
+    if (!tempDir) return
+    await rm(tempDir, { recursive: true, force: true })
+    tempDir = undefined
+}
+
+export const cleanupTempDirSync = (): void => {
+    if (!tempDir) return
+    rmSync(tempDir, { recursive: true, force: true })
+    tempDir = undefined
+}
 
 const sleep = (ms: number): Promise<void> =>
     new Promise(resolve => setTimeout(resolve, ms))
@@ -23,13 +42,15 @@ const sleep = (ms: number): Promise<void> =>
 export const downloadWithRetry = async (
     url: string,
     destPath: string,
-    onProgress?: (progress: DownloadProgress) => void
+    onProgress?: (progress: DownloadProgress) => void,
+    signal?: AbortSignal
 ): Promise<void> => {
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
         try {
-            await download(url, destPath, onProgress)
+            await download(url, destPath, onProgress, signal)
             return
         } catch (err) {
+            if (signal?.aborted) throw err
             if (attempt === MAX_RETRIES) throw err
             await sleep(1000 * 2 ** (attempt - 1))
         }
@@ -39,9 +60,10 @@ export const downloadWithRetry = async (
 const download = async (
     url: string,
     destPath: string,
-    onProgress?: (progress: DownloadProgress) => void
+    onProgress?: (progress: DownloadProgress) => void,
+    signal?: AbortSignal
 ): Promise<void> => {
-    const res = await fetch(url)
+    const res = await fetch(url, { signal })
     if (!res.ok) throw new Error(`HTTP ${res.status} fetching ${url}`)
 
     const total = Number(res.headers.get('content-length') ?? 0)
@@ -50,6 +72,7 @@ const download = async (
 
     let received = 0
     for await (const chunk of res.body as AsyncIterable<Uint8Array>) {
+        if (signal?.aborted) throw new Error('Aborted')
         writer.write(chunk)
         received += chunk.byteLength
         if (onProgress) {

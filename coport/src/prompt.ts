@@ -1,16 +1,27 @@
+import { readFileSync } from 'node:fs'
 import { createInterface } from 'node:readline'
 import pc from 'picocolors'
 import type { Registry, Group, Template } from '../../src/registry/schema.ts'
 import type { VmidAssignment } from './vmid.ts'
 
-const rl = (): ReturnType<typeof createInterface> =>
-    createInterface({ input: process.stdin, output: process.stdout })
+let iface: ReturnType<typeof createInterface> | undefined
+let pipedAnswers: string[] | undefined
+
+const rl = (): ReturnType<typeof createInterface> => {
+    iface ??= createInterface({ input: process.stdin, output: process.stdout })
+    return iface
+}
 
 const question = (prompt: string): Promise<string> =>
     new Promise(resolve => {
-        const iface = rl()
-        iface.question(prompt, answer => {
-            iface.close()
+        if (!process.stdin.isTTY) {
+            pipedAnswers ??= readFileSync(0, 'utf8').split(/\r?\n/)
+            process.stdout.write(prompt)
+            resolve((pipedAnswers.shift() ?? '').trim())
+            return
+        }
+
+        rl().question(prompt, answer => {
             resolve(answer.trim())
         })
     })
@@ -60,14 +71,23 @@ export const promptTemplateSelection = async (
     }
     console.log()
 
-    const answer = await question(
-        pc.bold('Select templates (e.g. 1,3-5 or "all"): ')
-    )
-    const selected = parseSelection(answer, entries.length)
-    return selected.map(idx => entries[idx - 1]!.template)
+    while (true) {
+        const answer = await question(
+            pc.bold('Select templates (e.g. 1,3-5 or "all"): ')
+        )
+        try {
+            const selected = parseSelection(answer, entries.length)
+            return selected.map(idx => entries[idx - 1]!.template)
+        } catch (err) {
+            console.log(
+                pc.red(err instanceof Error ? err.message : String(err))
+            )
+        }
+    }
 }
 
 const parseSelection = (input: string, max: number): number[] => {
+    if (!input.trim()) throw new Error('Selection is required.')
     if (input.toLowerCase() === 'all') {
         return Array.from({ length: max }, (_, i) => i + 1)
     }

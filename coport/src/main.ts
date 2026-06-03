@@ -1,4 +1,5 @@
 import { Command } from 'commander'
+import logUpdate from 'log-update'
 import pc from 'picocolors'
 import { resolveConfig } from './config.ts'
 import { fetchRegistry } from './registry.ts'
@@ -18,29 +19,104 @@ import {
 import { log } from './log.ts'
 import type { Template } from '../../src/registry/schema.ts'
 
-const createProgressReporter = (
-    name: string,
-    phase: string
-): ((pct: number) => void) => {
-    let last = -1
+type ProgressPhase =
+    | 'queued'
+    | 'download'
+    | 'verify'
+    | 'install'
+    | 'done'
+    | 'failed'
 
-    return pct => {
-        if (pct === last) return
-        last = pct
+interface ProgressRow {
+    name: string
+    phase: ProgressPhase
+    pct: number
+    message?: string
+}
 
-        if (process.stdout.isTTY) {
-            process.stdout.write(`\r  ${name}: ${phase} ${pct}%  `)
+class ProgressRenderer {
+    private rows = new Map<string, ProgressRow>()
+    private lastLog = new Map<string, number>()
+    private readonly enabled = process.stdout.isTTY
+
+    constructor(names: string[]) {
+        for (const name of names) {
+            this.rows.set(name, { name, phase: 'queued', pct: 0 })
+        }
+    }
+
+    update(
+        name: string,
+        phase: ProgressPhase,
+        pct: number,
+        message?: string
+    ): void {
+        const row = this.rows.get(name) ?? { name, phase, pct: 0 }
+        const clamped = Math.max(0, Math.min(100, pct))
+        if (
+            row.phase === phase &&
+            row.pct === clamped &&
+            row.message === message
+        )
+            return
+
+        row.phase = phase
+        row.pct = clamped
+        row.message = message
+        this.rows.set(name, row)
+
+        if (!this.enabled) {
+            this.logSparse(row)
             return
         }
 
-        if (pct === 100 || pct % 10 === 0) {
-            log.info(`${name}: ${phase} ${pct}%`)
-        }
+        this.render()
     }
-}
 
-const finishProgressLine = (): void => {
-    if (process.stdout.isTTY) process.stdout.write('\n')
+    finish(): void {
+        if (this.enabled) logUpdate.done()
+    }
+
+    private logSparse(row: ProgressRow): void {
+        const key = `${row.name}:${row.phase}`
+        const last = this.lastLog.get(key) ?? -1
+        if (row.pct !== 100 && row.pct % 10 !== 0) return
+        if (row.pct === last) return
+        this.lastLog.set(key, row.pct)
+        log.info(
+            `${row.name}: ${row.phase} ${row.pct}%${row.message ? ` — ${row.message}` : ''}`
+        )
+    }
+
+    private render(): void {
+        const lines = [pc.bold('Installing templates')]
+        for (const row of this.rows.values()) {
+            lines.push(this.formatRow(row))
+        }
+
+        logUpdate(lines.join('\n'))
+    }
+
+    private formatRow(row: ProgressRow): string {
+        const label = row.name.padEnd(28)
+        const phase = row.phase.padEnd(8)
+        const pct = String(row.pct).padStart(3)
+        const width = 24
+        const filled = Math.round((row.pct / 100) * width)
+        const bar = `${'='.repeat(filled)}${'-'.repeat(width - filled)}`
+        const text = row.message ? `  ${pc.dim(row.message)}` : ''
+
+        if (row.phase === 'done') {
+            return `  ${pc.green('OK')} ${label} ${phase} [${bar}] ${pct}%${text}`
+        }
+        if (row.phase === 'failed') {
+            return `  ${pc.red('!!')} ${label} ${phase} [${bar}] ${pct}%${text}`
+        }
+        if (row.phase === 'queued') {
+            return `  ${pc.dim('--')} ${label} ${pc.dim(phase)} [${bar}] ${pct}%${text}`
+        }
+        return `  ${pc.cyan('>>')} ${label} ${phase} [${bar}] ${pct}%${text}`
+    }
 }
 
 const installTemplate = async (
@@ -48,32 +124,27 @@ const installTemplate = async (
     vmid: number,
     storage: string,
     verify: boolean,
-    force: boolean
+    force: boolean,
+    progress: ProgressRenderer
 ): Promise<void> => {
     const dest = tempPath(vmid)
 
-    log.info(`[${template.name}] downloading...`)
-    await downloadWithRetry(
-        template.url,
-        dest,
-        createProgressReporter(template.name, 'download')
+    progress.update(template.name, 'download', 0)
+    await downloadWithRetry(template.url, dest, pct =>
+        progress.update(template.name, 'download', pct)
     )
-    finishProgressLine()
 
     if (verify) {
-        log.info(`[${template.name}] verifying SHA-256...`)
+        progress.update(template.name, 'verify', 0)
         await verifySha256(dest, template.sha256)
     }
 
-    log.info(`[${template.name}] installing as VMID ${vmid}...`)
-    await qmrestore(
-        dest,
-        vmid,
-        storage,
-        force,
-        createProgressReporter(template.name, 'install')
+    progress.update(template.name, 'install', 0, `VMID ${vmid}`)
+    await qmrestore(dest, vmid, storage, force, pct =>
+        progress.update(template.name, 'install', pct, `VMID ${vmid}`)
     )
-    finishProgressLine()
+
+    progress.update(template.name, 'done', 100, `VMID ${vmid}`)
 
     import('node:fs/promises').then(({ unlink }) =>
         unlink(dest).catch(() => {})
@@ -150,17 +221,32 @@ program
 
         await ensureTempDir()
 
+        const progress = new ProgressRenderer(
+            assignments.map(a => a.template.name)
+        )
+
         const results = await Promise.allSettled(
-            assignments.map(a =>
+            assignments.map(async a =>
                 installTemplate(
                     a.template,
                     a.vmid,
                     storage,
                     !opts.noVerify,
-                    a.overwrite
-                )
+                    a.overwrite,
+                    progress
+                ).catch(err => {
+                    progress.update(
+                        a.template.name,
+                        'failed',
+                        100,
+                        err instanceof Error ? err.message : String(err)
+                    )
+                    throw err
+                })
             )
         )
+
+        progress.finish()
 
         console.log()
         let failed = 0

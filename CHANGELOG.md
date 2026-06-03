@@ -1,5 +1,18 @@
 # Changelog
 
+## v1.1.0
+
+### Added
+
+- Add a `log-update` based multi-template progress view for concurrent downloads and restores.
+- Bake registry recipe names such as `ubuntu-22.04` into template archives instead of keeping archived `packer-*` names.
+
+### Fixed
+
+- Keep parallel progress output readable when installing multiple templates at once.
+- Re-prompt after empty or invalid template selections instead of exiting immediately.
+- Preserve piped answers across repeated prompts for scripted usage.
+
 ## v1.0.0
 
 Initial coport release.

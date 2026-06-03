@@ -13,6 +13,7 @@
   "dependencies": {
     "commander": "^12",
     "consola": "^3",
+    "log-update": "^8",
     "picocolors": "^1",
     "zod": "^3"
   },

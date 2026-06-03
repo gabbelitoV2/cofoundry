@@ -64,6 +64,9 @@ case "$OSTYPE_LINE" in
     ;;
 esac
 
+echo "==> setting template name to $CF_RECIPE_NAME"
+_pve "qm set '$CF_BUILT_VMID' --name '$CF_RECIPE_NAME' >/dev/null"
+
 echo "==> vzdump VMID $CF_BUILT_VMID"
 _pve "vzdump $CF_BUILT_VMID --compress zstd --mode stop --dumpdir $PVE_DUMP_DIR"
 

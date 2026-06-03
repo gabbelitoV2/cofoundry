@@ -8,6 +8,7 @@ import { runBootstrap } from './bootstrap.ts'
 import { checkRecipes, SYNTHETIC_RECIPES, saveChecksums } from './upstream.ts'
 import { resolveIsoUpdate, applyIsoUpdate } from './update.ts'
 import { buildManifest, buildManifestFromR2 } from './manifest.ts'
+import { runUpload } from './upload.ts'
 import { type Env, loadEnv } from './env.ts'
 import { log } from './log.ts'
 import { redactSensitive } from './util.ts'
@@ -314,6 +315,42 @@ program
         const recipe = await loadRecipe(name)
         await runVerify(env, recipe)
     })
+
+program
+    .command('upload [names...]')
+    .description(
+        'Upload already-built artifacts to R2 using CF_UPLOAD_CMD (and CF_SIDECAR_UPLOAD_CMD). Reads sidecar JSONs from CF_OUT_DIR and uploads the matching .vma.zst + sidecar.'
+    )
+    .option(
+        '--remote',
+        'Upload directly from the PVE node (SSH_TARGET) instead of locally; defaults source-dir to $PVE_DUMP_DIR/cofoundry-out'
+    )
+    .option(
+        '--source-dir <dir>',
+        'Directory containing .vma.zst + .json sidecars (default: CF_OUT_DIR, or remote out-dir with --remote)'
+    )
+    .option('--skip-sidecar', 'Skip sidecar JSON upload')
+    .option('--dry-run', 'Print the rendered upload commands without running')
+    .action(
+        async (
+            names: string[],
+            opts: {
+                remote?: boolean
+                sourceDir?: string
+                skipSidecar?: boolean
+                dryRun?: boolean
+            }
+        ) => {
+            const env = loadEnv()
+            await runUpload(env, {
+                sourceDir: opts.sourceDir,
+                names,
+                skipSidecar: opts.skipSidecar,
+                dryRun: opts.dryRun,
+                remote: opts.remote,
+            })
+        }
+    )
 
 program
     .command('publish')

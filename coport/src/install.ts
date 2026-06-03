@@ -2,12 +2,13 @@ export const qmrestore = async (
     filePath: string,
     vmid: number,
     storage: string,
+    force: boolean,
     onProgress?: (pct: number) => void
 ): Promise<void> => {
-    const proc = Bun.spawn(
-        ['qmrestore', filePath, String(vmid), '-storage', storage],
-        { stdout: 'pipe', stderr: 'pipe' }
-    )
+    const args = ['qmrestore', filePath, String(vmid), '-storage', storage]
+    if (force) args.push('-force', '1')
+
+    const proc = Bun.spawn(args, { stdout: 'pipe', stderr: 'pipe' })
 
     const decoder = new TextDecoder()
     for await (const chunk of proc.stdout) {

@@ -47,7 +47,8 @@ const installTemplate = async (
     template: Template,
     vmid: number,
     storage: string,
-    verify: boolean
+    verify: boolean,
+    force: boolean
 ): Promise<void> => {
     const dest = tempPath(vmid)
 
@@ -69,6 +70,7 @@ const installTemplate = async (
         dest,
         vmid,
         storage,
+        force,
         createProgressReporter(template.name, 'install')
     )
     finishProgressLine()
@@ -93,6 +95,10 @@ program
     .option('-f, --filter <tag>', 'Only show/install templates with this tag')
     .option('--vmid-start <n>', 'Auto-VMID range start for conflicts', '9000')
     .option('--dry-run', 'Show what would be installed; skip downloads')
+    .option(
+        '--overwrite',
+        'Overwrite existing VMs when a suggested VMID is already taken'
+    )
     .option('--no-verify', 'Skip SHA-256 verification after download')
     .option('--json', 'NDJSON progress output for scripted use')
     .action(async (registryArg: string | undefined, opts) => {
@@ -119,7 +125,11 @@ program
         }
 
         const vmidStart = Number(opts.vmidStart)
-        const assignments = await resolveVmids(selected, vmidStart)
+        const assignments = await resolveVmids(
+            selected,
+            vmidStart,
+            opts.overwrite
+        )
 
         const ok = await confirmVmidConflicts(assignments)
         if (!ok) {
@@ -142,7 +152,13 @@ program
 
         const results = await Promise.allSettled(
             assignments.map(a =>
-                installTemplate(a.template, a.vmid, storage, !opts.noVerify)
+                installTemplate(
+                    a.template,
+                    a.vmid,
+                    storage,
+                    !opts.noVerify,
+                    a.overwrite
+                )
             )
         )
 

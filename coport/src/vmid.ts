@@ -32,28 +32,41 @@ export interface VmidAssignment {
     template: Template
     vmid: number
     conflict: boolean
+    overwrite: boolean
 }
 
 export const resolveVmids = async (
     templates: Template[],
-    vmidStart: number
+    vmidStart: number,
+    overwriteTaken = false
 ): Promise<VmidAssignment[]> => {
     const reserved = new Set<number>()
     const assignments: VmidAssignment[] = []
 
     for (const t of templates) {
         const suggested = t.suggested_vmid
+        const suggestedTaken = suggested ? await vmidTaken(suggested) : false
         if (
             suggested &&
             !reserved.has(suggested) &&
-            !(await vmidTaken(suggested))
+            (!suggestedTaken || overwriteTaken)
         ) {
             reserved.add(suggested)
-            assignments.push({ template: t, vmid: suggested, conflict: false })
+            assignments.push({
+                template: t,
+                vmid: suggested,
+                conflict: false,
+                overwrite: suggestedTaken,
+            })
         } else {
             const free = await findFreeVmid(vmidStart, reserved)
             reserved.add(free)
-            assignments.push({ template: t, vmid: free, conflict: true })
+            assignments.push({
+                template: t,
+                vmid: free,
+                conflict: true,
+                overwrite: false,
+            })
         }
     }
 

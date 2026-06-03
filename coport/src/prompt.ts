@@ -89,23 +89,30 @@ export const confirmVmidConflicts = async (
     assignments: VmidAssignment[]
 ): Promise<boolean> => {
     const conflicts = assignments.filter(a => a.conflict)
-    if (conflicts.length === 0) return true
+    const overwrites = assignments.filter(a => a.overwrite)
+    if (conflicts.length === 0 && overwrites.length === 0) return true
 
     console.log()
-    console.log(pc.yellow(pc.bold('VMID conflicts:')))
-    for (const a of assignments) {
-        const suggested = a.template.suggested_vmid
-        if (a.conflict) {
+    if (overwrites.length > 0) {
+        console.log(pc.red(pc.bold('Existing VMIDs will be overwritten:')))
+        for (const a of overwrites) {
             console.log(
-                `  ${a.template.name.padEnd(32)} → ${pc.bold(String(a.vmid))}  ${pc.dim(`(suggested ${suggested ?? 'none'}, taken)`)}`
-            )
-        } else {
-            console.log(
-                `  ${a.template.name.padEnd(32)} → ${pc.bold(String(a.vmid))}  ${pc.dim('(free)')}`
+                `  ${a.template.name.padEnd(32)} VMID ${pc.bold(String(a.vmid))}`
             )
         }
+        console.log()
     }
-    console.log()
+
+    if (conflicts.length > 0) {
+        console.log(pc.yellow(pc.bold('Suggested VMIDs unavailable:')))
+        for (const a of conflicts) {
+            const suggested = a.template.suggested_vmid
+            console.log(
+                `  ${a.template.name.padEnd(32)} suggested ${suggested ?? 'none'} unavailable; using free VMID ${pc.bold(String(a.vmid))}`
+            )
+        }
+        console.log()
+    }
 
     const answer = await question('Proceed? [Y/n] ')
     return answer === '' || answer.toLowerCase() === 'y'

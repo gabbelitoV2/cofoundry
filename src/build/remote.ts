@@ -54,13 +54,26 @@ export const remoteStreamingPty = (
     cmd: string
 ): Promise<void> => streaming('ssh', ['-t', '-t', target, cmd])
 
+// Wget exit codes worth surfacing. See man wget(1) EXIT STATUS.
+const WGET_EXIT: Record<number, string> = {
+    1: 'generic error',
+    2: 'parse error (bad command line)',
+    3: 'file I/O error (cannot write to destination)',
+    4: 'network failure (DNS/connect)',
+    5: 'SSL verification failure',
+    6: 'authentication failure',
+    7: 'protocol error',
+    8: 'server returned an error response (e.g. 404 — URL may be stale)',
+}
+
 // Runs a remote wget via SSH with a forced PTY (-t -t) so wget detects a
 // terminal and streams live progress. 2>&1 merges wget's stderr (where it
 // writes the bar) into the PTY stdout that we capture.
 export const remoteWgetCapture = async (
     target: string,
     cmd: string,
-    onLine: (line: string) => void
+    onLine: (line: string) => void,
+    context?: { url?: string; what?: string }
 ): Promise<void> => {
     const proc = execa('ssh', ['-t', '-t', target, `{ ${cmd}; } 2>&1`], {
         stdin: 'pipe',
@@ -89,6 +102,13 @@ export const remoteWgetCapture = async (
             throw new Error(
                 `"ssh" not found — is it installed and on your PATH?`
             )
+        if (err instanceof ExecaError && typeof err.exitCode === 'number') {
+            const code = err.exitCode
+            const meaning = WGET_EXIT[code] ?? 'unknown wget error'
+            const what = context?.what ?? 'download'
+            const url = context?.url ? ` ${context.url}` : ''
+            throw new Error(`${what} failed: wget exit ${code} — ${meaning}${url ? ` (${url.trim()})` : ''}`)
+        }
         if (err instanceof Error) throw new Error(redactSensitive(err.message))
         throw err
     } finally {

@@ -154,8 +154,11 @@ export const prefetchPhase = async (
         if (!(await remoteFileExists(env, recipe.isoTargetPath))) {
             const tmpPath = recipe.isoTargetPath + '.tmp'
             const wgetCmd = `wget -q --show-progress --progress=bar:force:noscroll -O ${shellQuote(tmpPath)} ${shellQuote(recipe.isoUrl)} && mv ${shellQuote(tmpPath)} ${shellQuote(recipe.isoTargetPath)}`
-            await remoteWgetCapture(env.SSH_TARGET, wgetCmd, line =>
-                onLine?.('iso', line)
+            await remoteWgetCapture(
+                env.SSH_TARGET,
+                wgetCmd,
+                line => onLine?.('iso', line),
+                { url: recipe.isoUrl, what: 'iso fetch' }
             )
         }
     }
@@ -167,8 +170,11 @@ export const prefetchPhase = async (
             const curlAndWget = `url=$(curl -s https://api.github.com/repos/cloudbase/cloudbase-init/releases/latest | python3 -c "import sys,json; r=json.load(sys.stdin); print(next(a['browser_download_url'] for a in r['assets'] if 'x64' in a['name'] and a['name'].endswith('.msi')))") && wget -q --show-progress --progress=bar:force:noscroll -O ${shellQuote(msiDest)} "$url"`
             await pRetry(
                 () =>
-                    remoteWgetCapture(env.SSH_TARGET, curlAndWget, line =>
-                        onLine?.('msi', line)
+                    remoteWgetCapture(
+                        env.SSH_TARGET,
+                        curlAndWget,
+                        line => onLine?.('msi', line),
+                        { what: 'cloudbase-init msi fetch' }
                     ),
                 { retries: 3, minTimeout: 1000, factor: 2 }
             )
@@ -179,8 +185,11 @@ export const prefetchPhase = async (
             'https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/stable-virtio/virtio-win.iso'
         if (!(await remoteFileExists(env, virtioIsoDest))) {
             const wgetCmd = `wget -q --show-progress --progress=bar:force:noscroll -O ${shellQuote(virtioIsoDest)} ${shellQuote(virtioIsoUrl)}`
-            await remoteWgetCapture(env.SSH_TARGET, wgetCmd, line =>
-                onLine?.('virtio', line)
+            await remoteWgetCapture(
+                env.SSH_TARGET,
+                wgetCmd,
+                line => onLine?.('virtio', line),
+                { url: virtioIsoUrl, what: 'virtio iso fetch' }
             )
         }
     }

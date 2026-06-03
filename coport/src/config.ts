@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
-const DEFAULT_REGISTRY = 'https://images.cdn.convoypanel.com/registry.json'
+const DEFAULT_REGISTRY = 'https://cofoundry.cdn.convoypanel.com/registry.json'
 
 interface CoportConfig {
     registry?: string

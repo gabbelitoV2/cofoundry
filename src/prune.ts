@@ -50,15 +50,16 @@ export const runPruneR2 = async ({
     const parsed = raw.trim() ? JSON.parse(raw) : { Contents: [] }
     const objects: R2Object[] = parsed.Contents ?? []
 
-    // Group .vma.zst by per-template prefix (templates/<name>-<arch>/).
-    // Sidecars are handled as siblings: each <sha>.vma.zst pairs with <sha>.json
-    // at the same prefix. Pruning the artifact also prunes its sidecar so the
-    // registry can never advertise a sha whose artifact has been deleted.
+    // Group .vma.zst by their parent "directory" prefix — supports both flat
+    // (templates/<name>-<arch>/<sha>.vma.zst) and nested
+    // (templates/<group>/<name>-<arch>/<sha>.vma.zst) layouts. Sidecars live as
+    // siblings at the same prefix; pruning an artifact also prunes its sidecar
+    // so the registry can never advertise a sha whose artifact has been deleted.
     const artifactGroups = new Map<string, R2Object[]>()
     const sidecarKeys = new Set<string>()
     for (const obj of objects) {
         if (obj.Key.endsWith('.vma.zst')) {
-            const m = obj.Key.match(/^(templates\/[^/]+)\//)
+            const m = obj.Key.match(/^(.+)\/[^/]+\.vma\.zst$/)
             if (!m) continue
             const prefix = m[1]!
             if (!artifactGroups.has(prefix)) artifactGroups.set(prefix, [])

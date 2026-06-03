@@ -1,8 +1,8 @@
 # display: Rocky Linux 9
 # group: rocky-linux
 # build_vmid: 5001
-# iso_url: https://download.rockylinux.org/pub/rocky/9/isos/x86_64/Rocky-9.7-x86_64-minimal.iso
-# iso_target_path: ${var.iso_cache_dir}/packer-Rocky-9.7-x86_64-minimal.iso
+# iso_url: https://download.rockylinux.org/pub/rocky/9/isos/x86_64/Rocky-9.8-x86_64-minimal.iso
+# iso_target_path: ${var.iso_cache_dir}/packer-Rocky-9.8-x86_64-minimal.iso
 # iso_checksum_url: https://download.rockylinux.org/pub/rocky/9/isos/x86_64/CHECKSUM
 # iso_filename_re: Rocky-9\.\d+-x86_64-minimal\.iso
 packer {
@@ -130,8 +130,8 @@ source "proxmox-iso" "rocky-linux-9" {
 
   boot_iso {
     type         = "ide"
-    iso_file     = "${var.proxmox_iso_storage_pool}:iso/packer-Rocky-9.7-x86_64-minimal.iso"
-    iso_checksum = "sha256:23a1ac1175d8ccada7195863914ef1237f584ff25f73bd53da410d5fffd882b0"
+    iso_file     = "${var.proxmox_iso_storage_pool}:iso/packer-Rocky-9.8-x86_64-minimal.iso"
+    iso_checksum = "sha256:d338032cd1cdd41c67139f2f71b4c832c8e4a21943106519db9c7137df7a63d4"
     unmount      = true
   }
 

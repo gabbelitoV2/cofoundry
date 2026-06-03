@@ -20,7 +20,9 @@ export const qmrestore = async (
 
     const code = await proc.exited
     if (code !== 0) {
-        const errText = decoder.decode(await new Response(proc.stderr).arrayBuffer())
+        const errText = decoder.decode(
+            await new Response(proc.stderr).arrayBuffer()
+        )
         throw new Error(`qmrestore exited with code ${code}: ${errText.trim()}`)
     }
 }

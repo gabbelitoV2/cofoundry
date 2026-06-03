@@ -5,7 +5,8 @@ import { join } from 'node:path'
 const TEMP_DIR = '/var/lib/vz/dump/coport-tmp'
 const MAX_RETRIES = 3
 
-export const tempPath = (name: string): string => join(TEMP_DIR, `${name}.vma.zst`)
+export const tempPath = (vmid: number): string =>
+    join(TEMP_DIR, `vzdump-qemu-${vmid}-1970_01_01-00_00_00.vma.zst`)
 
 export const ensureTempDir = (): Promise<void> =>
     mkdir(TEMP_DIR, { recursive: true }).then(() => {})
@@ -52,7 +53,10 @@ const download = async (
     await writer.end()
 }
 
-export const verifySha256 = async (filePath: string, expected: string): Promise<void> => {
+export const verifySha256 = async (
+    filePath: string,
+    expected: string
+): Promise<void> => {
     const hash = createHash('sha256')
     const stream = Bun.file(filePath).stream()
     for await (const chunk of stream) {

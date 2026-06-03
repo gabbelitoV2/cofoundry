@@ -17,9 +17,12 @@ export const vmidTaken = async (vmid: number): Promise<boolean> => {
     return false
 }
 
-export const findFreeVmid = async (start: number, reserved: Set<number>): Promise<number> => {
+export const findFreeVmid = async (
+    start: number,
+    reserved: Set<number>
+): Promise<number> => {
     let id = start
-    while (reserved.has(id) || await vmidTaken(id)) {
+    while (reserved.has(id) || (await vmidTaken(id))) {
         id++
     }
     return id
@@ -40,7 +43,11 @@ export const resolveVmids = async (
 
     for (const t of templates) {
         const suggested = t.suggested_vmid
-        if (suggested && !reserved.has(suggested) && !(await vmidTaken(suggested))) {
+        if (
+            suggested &&
+            !reserved.has(suggested) &&
+            !(await vmidTaken(suggested))
+        ) {
             reserved.add(suggested)
             assignments.push({ template: t, vmid: suggested, conflict: false })
         } else {

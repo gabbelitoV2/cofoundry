@@ -10,7 +10,9 @@ export const fetchRegistry = async (source: string): Promise<Registry> => {
     } else {
         const res = await fetch(source)
         if (!res.ok) {
-            throw new Error(`Failed to fetch registry: ${res.status} ${res.statusText}`)
+            throw new Error(
+                `Failed to fetch registry: ${res.status} ${res.statusText}`
+            )
         }
         raw = await res.text()
     }
@@ -22,7 +24,9 @@ export const fetchRegistry = async (source: string): Promise<Registry> => {
     }
 
     if (parsed.data.schema_version !== '1') {
-        throw new Error(`Unsupported registry schema_version: ${parsed.data.schema_version}. Upgrade coport.`)
+        throw new Error(
+            `Unsupported registry schema_version: ${parsed.data.schema_version}. Upgrade coport.`
+        )
     }
 
     return parsed.data

@@ -45,7 +45,9 @@ const runQueued = async <T>(
     let ahead = q.pending + q.size
     const render = (): void => {
         if (started) return
-        handle.setPhase(ahead > 0 ? `${phase} · queued (${ahead} ahead)` : phase)
+        handle.setPhase(
+            ahead > 0 ? `${phase} · queued (${ahead} ahead)` : phase
+        )
     }
     const onNext = (): void => {
         if (started) return

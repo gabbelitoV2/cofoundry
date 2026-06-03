@@ -193,11 +193,7 @@ export const buildManifestFromR2 = async (
     const normalizedPrefix = normalizeR2Prefix(prefix)
 
     log.step(`listing s3://${bucket}/${normalizedPrefix}`)
-    const listArgs = [
-        'list-objects-v2',
-        '--bucket',
-        bucket,
-    ]
+    const listArgs = ['list-objects-v2', '--bucket', bucket]
     if (normalizedPrefix) listArgs.push('--prefix', normalizedPrefix)
     const raw = await awsS3api(endpoint, listArgs)
     const parsed = raw.trim() ? JSON.parse(raw) : { Contents: [] }

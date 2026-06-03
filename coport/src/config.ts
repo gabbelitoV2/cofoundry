@@ -23,7 +23,9 @@ export interface ResolvedConfig {
     defaultStorage?: string
 }
 
-export const resolveConfig = async (cliArg?: string): Promise<ResolvedConfig> => {
+export const resolveConfig = async (
+    cliArg?: string
+): Promise<ResolvedConfig> => {
     if (cliArg) {
         return { registrySource: cliArg }
     }

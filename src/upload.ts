@@ -28,10 +28,7 @@ export interface UploadOptions {
     remote?: boolean
 }
 
-const renderTemplate = (
-    tmpl: string,
-    vars: Record<string, string>
-): string => {
+const renderTemplate = (tmpl: string, vars: Record<string, string>): string => {
     let out = tmpl
     for (const [k, v] of Object.entries(vars)) {
         out = out.split(`{{${k}}}`).join(v)
@@ -112,7 +109,10 @@ const remoteSource = (target: string, sourceDir: string): Source => {
                 target,
                 `ls -1 ${shellQuote(sourceDir)} 2>/dev/null | grep -E '\\.json$' | grep -v '\\.json\\.tmp$' || true`
             )
-            return out.split('\n').map(s => s.trim()).filter(Boolean)
+            return out
+                .split('\n')
+                .map(s => s.trim())
+                .filter(Boolean)
         },
         readJson: name =>
             captureRemote(target, `cat ${shellQuote(`${sourceDir}/${name}`)}`),
@@ -290,7 +290,9 @@ export const runUpload = async (
     console.log('')
     log.ok(`${succeeded.length} uploaded: ${succeeded.join(', ') || 'none'}`)
     if (failed.length > 0) {
-        log.err(`${failed.length} failed: ${failed.map(f => f.name).join(', ')}`)
+        log.err(
+            `${failed.length} failed: ${failed.map(f => f.name).join(', ')}`
+        )
         process.exit(1)
     }
 }

@@ -107,7 +107,9 @@ export const remoteWgetCapture = async (
             const meaning = WGET_EXIT[code] ?? 'unknown wget error'
             const what = context?.what ?? 'download'
             const url = context?.url ? ` ${context.url}` : ''
-            throw new Error(`${what} failed: wget exit ${code} — ${meaning}${url ? ` (${url.trim()})` : ''}`)
+            throw new Error(
+                `${what} failed: wget exit ${code} — ${meaning}${url ? ` (${url.trim()})` : ''}`
+            )
         }
         if (err instanceof Error) throw new Error(redactSensitive(err.message))
         throw err

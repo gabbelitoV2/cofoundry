@@ -15,7 +15,9 @@ const question = (prompt: string): Promise<string> =>
         })
     })
 
-export const promptStorage = async (defaultStorage?: string): Promise<string> => {
+export const promptStorage = async (
+    defaultStorage?: string
+): Promise<string> => {
     if (defaultStorage) return defaultStorage
     const answer = await question(pc.bold('Proxmox storage volume: '))
     if (!answer) throw new Error('Storage volume is required.')
@@ -52,11 +54,15 @@ export const promptTemplateSelection = async (
             console.log(pc.bold(pc.cyan(`\n  ${group.display_name}`)))
             if (group.description) console.log(`  ${pc.dim(group.description)}`)
         }
-        console.log(`  ${pc.dim(`[${index}]`)} ${template.display}  ${pc.dim(template.arch)}`)
+        console.log(
+            `  ${pc.dim(`[${index}]`)} ${template.display}  ${pc.dim(template.arch)}`
+        )
     }
     console.log()
 
-    const answer = await question(pc.bold('Select templates (e.g. 1,3-5 or "all"): '))
+    const answer = await question(
+        pc.bold('Select templates (e.g. 1,3-5 or "all"): ')
+    )
     const selected = parseSelection(answer, entries.length)
     return selected.map(idx => entries[idx - 1]!.template)
 }
@@ -79,7 +85,9 @@ const parseSelection = (input: string, max: number): number[] => {
     return [...indices].sort((a, b) => a - b)
 }
 
-export const confirmVmidConflicts = async (assignments: VmidAssignment[]): Promise<boolean> => {
+export const confirmVmidConflicts = async (
+    assignments: VmidAssignment[]
+): Promise<boolean> => {
     const conflicts = assignments.filter(a => a.conflict)
     if (conflicts.length === 0) return true
 

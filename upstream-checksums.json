@@ -1,0 +1,84 @@
+{
+  "almalinux-10": {
+    "lastModified": "Sat, 23 May 2026 21:31:58 GMT",
+    "contentLength": "1651376128",
+    "etag": "\"6a121cce-626e0000\""
+  },
+  "almalinux-8": {
+    "lastModified": "Sat, 25 May 2024 08:01:14 GMT",
+    "contentLength": "2140143616",
+    "etag": "\"66519aca-7f900000\""
+  },
+  "almalinux-9": {
+    "lastModified": "Sun, 24 May 2026 07:44:08 GMT",
+    "contentLength": "2838495232",
+    "etag": "\"6a12ac48-a9300000\""
+  },
+  "debian-11": {
+    "lastModified": "Sat, 31 Aug 2024 16:11:10 GMT",
+    "contentLength": "408944640"
+  },
+  "debian-12": {
+    "lastModified": "Sat, 16 May 2026 16:51:46 GMT",
+    "contentLength": "709885952"
+  },
+  "debian-13": {
+    "lastModified": "Sat, 16 May 2026 12:14:52 GMT",
+    "contentLength": "791674880"
+  },
+  "rocky-linux-10": {
+    "lastModified": "Wed, 27 May 2026 00:13:21 GMT",
+    "contentLength": "2072444928",
+    "etag": "\"6a163721-7b870000\""
+  },
+  "rocky-linux-8": {
+    "lastModified": "Mon, 27 May 2024 15:05:20 GMT",
+    "contentLength": "2694053888",
+    "etag": "\"6654a130-a0940000\""
+  },
+  "rocky-linux-9": {
+    "lastModified": "Tue, 26 May 2026 00:52:50 GMT",
+    "contentLength": "2755067904",
+    "etag": "\"6a14eee2-a4370000\""
+  },
+  "ubuntu-22.04": {
+    "lastModified": "Wed, 11 Sep 2024 18:46:55 GMT",
+    "contentLength": "2136926208",
+    "etag": "\"7f5ee800-621dc6a07d4dc\""
+  },
+  "ubuntu-24.04": {
+    "lastModified": "Tue, 10 Feb 2026 06:53:04 GMT",
+    "contentLength": "3405469696",
+    "etag": "\"cafb5800-64a72b50ecbc2\""
+  },
+  "ubuntu-25.10": {
+    "lastModified": "Tue, 07 Oct 2025 19:35:49 GMT",
+    "contentLength": "2283360256",
+    "etag": "\"88195000-64096acd63b83\""
+  },
+  "ubuntu-26.04": {
+    "lastModified": "Mon, 20 Apr 2026 18:39:18 GMT",
+    "contentLength": "2918598656",
+    "etag": "\"adf64800-64fe89dc1e180\""
+  },
+  "windows-server-2019": {
+    "lastModified": "Sat, 21 Sep 2019 00:33:36 GMT",
+    "contentLength": "5296713728",
+    "etag": "\"0xBBA83DF6FF6B9A626FED559BA72634873C8CFC0D7E0D71E26D6EF4694621F27B\""
+  },
+  "windows-server-2022": {
+    "lastModified": "Thu, 12 Aug 2021 20:02:24 GMT",
+    "contentLength": "5550831616",
+    "etag": "\"0x18936A309260E276F81B45395AC0C57F7472B363B19944BCF85FCF3A5A857CCC\""
+  },
+  "windows-server-2025": {
+    "lastModified": "Tue, 20 Jan 2026 13:56:22 GMT",
+    "contentLength": "8152356864",
+    "etag": "\"0x60A8C190FBB54AF58E40BA049FF290D098101E0EAD343CE912A1DC685219BE85\""
+  },
+  "virtio-win": {
+    "lastModified": "Fri, 12 Sep 2025 01:17:28 GMT",
+    "contentLength": "789645312",
+    "etag": "\"2f110800-63e906acdd1cb\""
+  }
+}

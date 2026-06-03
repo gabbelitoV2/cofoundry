@@ -359,18 +359,30 @@ program
     )
     .option('--r2', 'Source sidecars from R2 instead of CF_OUT_DIR')
     .option(
+        '--prefix <prefix>',
+        'R2 key prefix to scan for template sidecars (default: R2_PREFIX or templates/)'
+    )
+    .option(
         '--source-dir <dir>',
         'Sidecar source dir for local mode (default: CF_OUT_DIR)'
     )
     .option('--out <path>', 'Where to write registry.json', 'registry.json')
-    .action(async (opts: { r2?: boolean; sourceDir?: string; out: string }) => {
-        if (opts.r2) {
-            await buildManifestFromR2(opts.out)
-            return
+    .action(
+        async (opts: {
+            r2?: boolean
+            prefix?: string
+            sourceDir?: string
+            out: string
+        }) => {
+            if (opts.r2) {
+                await buildManifestFromR2(opts.out, opts.prefix)
+                return
+            }
+            const sourceDir =
+                opts.sourceDir || process.env.CF_OUT_DIR || './dist'
+            await buildManifest(sourceDir, opts.out)
         }
-        const sourceDir = opts.sourceDir || process.env.CF_OUT_DIR || './dist'
-        await buildManifest(sourceDir, opts.out)
-    })
+    )
 
 program.parseAsync(process.argv).catch(err => {
     log.err(redactSensitive(err instanceof Error ? err.message : String(err)))

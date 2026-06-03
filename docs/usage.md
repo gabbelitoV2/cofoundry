@@ -84,11 +84,13 @@ A cron job on the node handles this automatically — see [Setup §8](setup.md#8
 Set in `.env` and every build will upload the artifact automatically:
 
 ```sh
-CF_UPLOAD_CMD='aws s3 cp {{file}} s3://my-bucket/templates/{{name}}.vma.zst'
-CF_PUBLIC_URL_TMPL='https://cdn.example.com/templates/{{name}}.vma.zst'
+R2_PREFIX=templates/
+CF_UPLOAD_CMD='aws s3 cp {{file}} s3://my-bucket/templates/{{name}}-{{arch}}/{{sha256}}.vma.zst'
+CF_SIDECAR_UPLOAD_CMD='aws s3 cp {{file}} s3://my-bucket/templates/{{name}}-{{arch}}/{{sha256}}.json'
+CF_PUBLIC_URL_TMPL='https://cdn.example.com/templates/{{name}}-{{arch}}/{{sha256}}.vma.zst'
 ```
 
-`{{file}}` is replaced with the local artifact path, `{{name}}` with the recipe name.
+`{{file}}` is replaced with the local artifact path, `{{name}}` with the recipe name, and `{{arch}}` with the target architecture. `cf publish --r2` scans `R2_PREFIX` by default; use `cf publish --r2 --prefix /` for a bucket-root layout.
 
 ## GitHub Actions
 

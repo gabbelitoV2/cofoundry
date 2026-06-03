@@ -118,10 +118,41 @@ export const buildManifest = async (
     return writeRegistry(outPath, assembleRegistry(sidecars, groupDefs))
 }
 
-interface R2Object {
+export interface R2Object {
     Key: string
     LastModified: string
     Size: number
+}
+
+const escapeRegex = (value: string): string =>
+    value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
+const normalizeR2Prefix = (prefix: string): string => {
+    const trimmed = prefix.replace(/^\/+|\/+$/g, '')
+    return trimmed ? `${trimmed}/` : ''
+}
+
+export const selectNewestR2Sidecars = (
+    objects: R2Object[],
+    prefix: string
+): Map<string, R2Object> => {
+    const newest = new Map<string, R2Object>()
+    const normalizedPrefix = normalizeR2Prefix(prefix)
+    const escapedPrefix = escapeRegex(normalizedPrefix)
+    const prefixPattern = new RegExp(`^(${escapedPrefix}[^/]+)/`)
+
+    for (const obj of objects) {
+        if (!obj.Key.endsWith('.json')) continue
+        const m = obj.Key.match(prefixPattern)
+        if (!m) continue
+        const templatePrefix = m[1]!
+        const cur = newest.get(templatePrefix)
+        if (!cur || obj.LastModified > cur.LastModified) {
+            newest.set(templatePrefix, obj)
+        }
+    }
+
+    return newest
 }
 
 const awsS3api = async (endpoint: string, args: string[]): Promise<string> => {
@@ -147,46 +178,46 @@ const awsS3Get = async (
 }
 
 /**
- * Aggregate sidecar JSONs from R2 into a registry. For each `templates/<name>-<arch>/`
- * prefix, takes the newest `.json` — the registry should advertise the current
- * artifact per template, not the full history.
+ * Aggregate sidecar JSONs from R2 into a registry. For each template prefix,
+ * takes the newest `.json` — the registry should advertise the current artifact
+ * per template, not the full history.
  */
-export const buildManifestFromR2 = async (outPath: string): Promise<string> => {
+export const buildManifestFromR2 = async (
+    outPath: string,
+    prefix = process.env.R2_PREFIX ?? '/'
+): Promise<string> => {
     const endpoint = process.env.R2_ENDPOINT
     const bucket = process.env.R2_BUCKET
     if (!endpoint) throw new Error('R2_ENDPOINT is required for --r2 publish')
     if (!bucket) throw new Error('R2_BUCKET is required for --r2 publish')
+    const normalizedPrefix = normalizeR2Prefix(prefix)
 
-    log.step(`listing s3://${bucket}/templates/`)
-    const raw = await awsS3api(endpoint, [
+    log.step(`listing s3://${bucket}/${normalizedPrefix}`)
+    const listArgs = [
         'list-objects-v2',
         '--bucket',
         bucket,
-        '--prefix',
-        'templates/',
-    ])
+    ]
+    if (normalizedPrefix) listArgs.push('--prefix', normalizedPrefix)
+    const raw = await awsS3api(endpoint, listArgs)
     const parsed = raw.trim() ? JSON.parse(raw) : { Contents: [] }
     const objects: R2Object[] = parsed.Contents ?? []
 
     // Pick newest .json per per-template prefix.
-    const newest = new Map<string, R2Object>()
-    for (const obj of objects) {
-        if (!obj.Key.endsWith('.json')) continue
-        const m = obj.Key.match(/^(templates\/[^/]+)\//)
-        if (!m) continue
-        const prefix = m[1]!
-        const cur = newest.get(prefix)
-        if (!cur || obj.LastModified > cur.LastModified) newest.set(prefix, obj)
-    }
+    const newest = selectNewestR2Sidecars(objects, normalizedPrefix)
 
     const groupDefs = await loadGroupDefs()
     const sidecars: Sidecar[] = []
-    for (const [prefix, obj] of newest) {
+    for (const [templatePrefix, obj] of newest) {
         const body = await awsS3Get(endpoint, bucket, obj.Key)
         const parsedSidecar = JSON.parse(body) as Sidecar
         sidecars.push(parsedSidecar)
+        const displayPrefix = templatePrefix.replace(
+            new RegExp(`^${escapeRegex(normalizedPrefix)}`),
+            ''
+        )
         log.info(
-            `  + ${prefix.replace(/^templates\//, '')}  ${parsedSidecar.sha256.slice(0, 12)}…  ${byteSize(parsedSidecar.size)}`
+            `  + ${displayPrefix}  ${parsedSidecar.sha256.slice(0, 12)}…  ${byteSize(parsedSidecar.size)}`
         )
     }
 

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { mkdtemp, copyFile, readFile, readdir, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { buildManifest } from '../src/manifest.ts'
+import { buildManifest, selectNewestR2Sidecars } from '../src/manifest.ts'
 
 const FIXTURES = new URL('./fixtures/sidecars/', import.meta.url).pathname
 
@@ -92,5 +92,63 @@ describe('buildManifest', () => {
 
     afterEach(async () => {
         await rm(sourceDir, { recursive: true, force: true })
+    })
+})
+
+describe('selectNewestR2Sidecars', () => {
+    test('supports scanning from the bucket root', () => {
+        const newest = selectNewestR2Sidecars(
+            [
+                {
+                    Key: 'almalinux-10/almalinux-10-amd64-old.json',
+                    LastModified: '2026-01-01T00:00:00.000Z',
+                    Size: 100,
+                },
+                {
+                    Key: 'almalinux-10/almalinux-10-amd64-new.json',
+                    LastModified: '2026-02-01T00:00:00.000Z',
+                    Size: 100,
+                },
+                {
+                    Key: 'almalinux-10/almalinux-10-amd64-new.vma.zst',
+                    LastModified: '2026-02-01T00:00:00.000Z',
+                    Size: 1000,
+                },
+            ],
+            ''
+        )
+
+        expect([...newest.keys()]).toEqual(['almalinux-10'])
+        expect(newest.get('almalinux-10')?.Key).toBe(
+            'almalinux-10/almalinux-10-amd64-new.json'
+        )
+    })
+
+    test('uses the configured prefix when grouping templates', () => {
+        const newest = selectNewestR2Sidecars(
+            [
+                {
+                    Key: 'templates/debian-12-amd64/old.json',
+                    LastModified: '2026-01-01T00:00:00.000Z',
+                    Size: 100,
+                },
+                {
+                    Key: 'templates/debian-12-amd64/new.json',
+                    LastModified: '2026-02-01T00:00:00.000Z',
+                    Size: 100,
+                },
+                {
+                    Key: 'debian-12/debian-12-amd64-new.json',
+                    LastModified: '2026-03-01T00:00:00.000Z',
+                    Size: 100,
+                },
+            ],
+            'templates/'
+        )
+
+        expect([...newest.keys()]).toEqual(['templates/debian-12-amd64'])
+        expect(newest.get('templates/debian-12-amd64')?.Key).toBe(
+            'templates/debian-12-amd64/new.json'
+        )
     })
 })

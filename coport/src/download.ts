@@ -5,6 +5,12 @@ import { join } from 'node:path'
 const TEMP_DIR = '/var/lib/vz/dump/coport-tmp'
 const MAX_RETRIES = 3
 
+export interface DownloadProgress {
+    pct: number
+    received: number
+    total: number
+}
+
 export const tempPath = (vmid: number): string =>
     join(TEMP_DIR, `vzdump-qemu-${vmid}-1970_01_01-00_00_00.vma.zst`)
 
@@ -17,7 +23,7 @@ const sleep = (ms: number): Promise<void> =>
 export const downloadWithRetry = async (
     url: string,
     destPath: string,
-    onProgress?: (pct: number) => void
+    onProgress?: (progress: DownloadProgress) => void
 ): Promise<void> => {
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
         try {
@@ -33,7 +39,7 @@ export const downloadWithRetry = async (
 const download = async (
     url: string,
     destPath: string,
-    onProgress?: (pct: number) => void
+    onProgress?: (progress: DownloadProgress) => void
 ): Promise<void> => {
     const res = await fetch(url)
     if (!res.ok) throw new Error(`HTTP ${res.status} fetching ${url}`)
@@ -46,8 +52,12 @@ const download = async (
     for await (const chunk of res.body as AsyncIterable<Uint8Array>) {
         writer.write(chunk)
         received += chunk.byteLength
-        if (total > 0 && onProgress) {
-            onProgress(Math.round((received / total) * 100))
+        if (onProgress) {
+            onProgress({
+                pct: total > 0 ? Math.round((received / total) * 100) : 0,
+                received,
+                total,
+            })
         }
     }
     await writer.end()

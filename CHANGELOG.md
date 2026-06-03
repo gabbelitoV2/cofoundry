@@ -5,6 +5,7 @@
 ### Added
 
 - Add a `log-update` based multi-template progress view for concurrent downloads and restores.
+- Show elapsed time, downloaded size, total size, and transfer speed in the install progress view.
 - Bake registry recipe names such as `ubuntu-22.04` into template archives instead of keeping archived `packer-*` names.
 
 ### Fixed

@@ -31,7 +31,30 @@ interface ProgressRow {
     name: string
     phase: ProgressPhase
     pct: number
+    startedAt: number
     message?: string
+    received?: number
+    total?: number
+}
+
+interface ProgressUpdate {
+    message?: string
+    received?: number
+    total?: number
+}
+
+const fmtBytes = (n: number): string => {
+    if (n >= 1e9) return `${(n / 1e9).toFixed(2)}GB`
+    if (n >= 1e6) return `${(n / 1e6).toFixed(1)}MB`
+    if (n >= 1e3) return `${(n / 1e3).toFixed(1)}KB`
+    return `${n}B`
+}
+
+const fmtElapsed = (ms: number): string => {
+    if (ms < 1000) return `${ms}ms`
+    const seconds = Math.floor(ms / 1000)
+    if (seconds < 60) return `${seconds}s`
+    return `${Math.floor(seconds / 60)}m${String(seconds % 60).padStart(2, '0')}s`
 }
 
 class ProgressRenderer {
@@ -41,7 +64,12 @@ class ProgressRenderer {
 
     constructor(names: string[]) {
         for (const name of names) {
-            this.rows.set(name, { name, phase: 'queued', pct: 0 })
+            this.rows.set(name, {
+                name,
+                phase: 'queued',
+                pct: 0,
+                startedAt: Date.now(),
+            })
         }
     }
 
@@ -49,20 +77,34 @@ class ProgressRenderer {
         name: string,
         phase: ProgressPhase,
         pct: number,
-        message?: string
+        update: string | ProgressUpdate = {}
     ): void {
-        const row = this.rows.get(name) ?? { name, phase, pct: 0 }
+        const row = this.rows.get(name) ?? {
+            name,
+            phase,
+            pct: 0,
+            startedAt: Date.now(),
+        }
         const clamped = Math.max(0, Math.min(100, pct))
+        const details =
+            typeof update === 'string' ? { message: update } : update
         if (
             row.phase === phase &&
             row.pct === clamped &&
-            row.message === message
+            row.message === details.message &&
+            row.received === details.received &&
+            row.total === details.total
         )
             return
 
+        if (row.phase !== phase && phase !== 'done' && phase !== 'failed') {
+            row.startedAt = Date.now()
+        }
         row.phase = phase
         row.pct = clamped
-        row.message = message
+        row.message = details.message
+        row.received = details.received
+        row.total = details.total
         this.rows.set(name, row)
 
         if (!this.enabled) {
@@ -84,7 +126,7 @@ class ProgressRenderer {
         if (row.pct === last) return
         this.lastLog.set(key, row.pct)
         log.info(
-            `${row.name}: ${row.phase} ${row.pct}%${row.message ? ` — ${row.message}` : ''}`
+            `${row.name}: ${row.phase} ${row.pct}%${this.formatDetails(row)}`
         )
     }
 
@@ -105,17 +147,36 @@ class ProgressRenderer {
         const filled = Math.round((row.pct / 100) * width)
         const bar = `${'='.repeat(filled)}${'-'.repeat(width - filled)}`
         const text = row.message ? `  ${pc.dim(row.message)}` : ''
+        const details = this.formatDetails(row)
 
         if (row.phase === 'done') {
-            return `  ${pc.green('OK')} ${label} ${phase} [${bar}] ${pct}%${text}`
+            return `  ${pc.green('OK')} ${label} ${phase} [${bar}] ${pct}%${details}${text}`
         }
         if (row.phase === 'failed') {
-            return `  ${pc.red('!!')} ${label} ${phase} [${bar}] ${pct}%${text}`
+            return `  ${pc.red('!!')} ${label} ${phase} [${bar}] ${pct}%${details}${text}`
         }
         if (row.phase === 'queued') {
-            return `  ${pc.dim('--')} ${label} ${pc.dim(phase)} [${bar}] ${pct}%${text}`
+            return `  ${pc.dim('--')} ${label} ${pc.dim(phase)} [${bar}] ${pct}%${details}${text}`
         }
-        return `  ${pc.cyan('>>')} ${label} ${phase} [${bar}] ${pct}%${text}`
+        return `  ${pc.cyan('>>')} ${label} ${phase} [${bar}] ${pct}%${details}${text}`
+    }
+
+    private formatDetails(row: ProgressRow): string {
+        const elapsedMs = Math.max(0, Date.now() - row.startedAt)
+        const parts = [fmtElapsed(elapsedMs)]
+
+        if (row.phase === 'download' && row.received !== undefined) {
+            const total = row.total && row.total > 0 ? row.total : undefined
+            const speed = elapsedMs > 0 ? row.received / (elapsedMs / 1000) : 0
+            parts.push(
+                total
+                    ? `${fmtBytes(row.received)}/${fmtBytes(total)}`
+                    : fmtBytes(row.received)
+            )
+            parts.push(`${fmtBytes(speed)}/s`)
+        }
+
+        return `  ${pc.dim(parts.join('  '))}`
     }
 }
 
@@ -130,8 +191,11 @@ const installTemplate = async (
     const dest = tempPath(vmid)
 
     progress.update(template.name, 'download', 0)
-    await downloadWithRetry(template.url, dest, pct =>
-        progress.update(template.name, 'download', pct)
+    await downloadWithRetry(template.url, dest, p =>
+        progress.update(template.name, 'download', p.pct, {
+            received: p.received,
+            total: p.total,
+        })
     )
 
     if (verify) {

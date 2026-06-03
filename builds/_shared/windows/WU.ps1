@@ -3,51 +3,125 @@ $ProgressPreference = "SilentlyContinue"
 
 function Write-Step($Message) { Write-Host "==> $Message" }
 
-$WUFlag    = "C:\Windows\Temp\tb-wu-done.flag"
-$WULog     = "C:\Windows\Temp\tb-wu.log"
-$WUScript  = "C:\Windows\Temp\tb-wu.ps1"
-$WUTaskName = "TBWindowsUpdate"
+$WUFlag       = "C:\Windows\Temp\tb-wu-done.flag"
+$WURebootFlag = "C:\Windows\Temp\tb-wu-reboot.flag"
+$WULog        = "C:\Windows\Temp\tb-wu.log"
+$WUScript     = "C:\Windows\Temp\tb-wu.ps1"
+$WUTaskName   = "TBWindowsUpdate"
 
-# Clear state from any prior round.
-Remove-Item $WUFlag -Force -ErrorAction SilentlyContinue
-Remove-Item $WULog  -Force -ErrorAction SilentlyContinue
+# Clear state from any prior round. The reboot flag is preserved across the WU
+# provisioner and read by the conditional restart_command in the recipe.
+Remove-Item $WUFlag       -Force -ErrorAction SilentlyContinue
+Remove-Item $WURebootFlag -Force -ErrorAction SilentlyContinue
+Remove-Item $WULog        -Force -ErrorAction SilentlyContinue
 
 # WinRM runs with a restricted network token that blocks the Windows Update COM
 # API. Run as SYSTEM via a scheduled task with RunLevel Highest instead.
-# The task writes progress lines to $WULog so the outer loop can tail them.
+#
+# The task loops internally: search -> batched download -> batched install ->
+# pending-reboot check. It exits when there's nothing left to install OR when a
+# reboot is required, so packer can perform the reboot and re-invoke this
+# script for another round.
 @'
 function Log($msg) { Add-Content "C:\Windows\Temp\tb-wu.log" "[$(Get-Date -Format 'HH:mm:ss')] $msg" }
 
-Log "searching for updates..."
-$session  = New-Object -ComObject Microsoft.Update.Session
-$searcher = $session.CreateUpdateSearcher()
-try {
-  $found = $searcher.Search("IsInstalled=0 and Type='Software' and IsHidden=0")
-} catch {
-  Log "search failed: $_"
-  Set-Content "C:\Windows\Temp\tb-wu-done.flag" "none"
-  exit
+function Test-PendingReboot {
+  if (Test-Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending") { return $true }
+  if (Test-Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired") { return $true }
+  $sm = Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager" -ErrorAction SilentlyContinue
+  if ($sm -and $sm.PSObject.Properties.Name -contains "PendingFileRenameOperations") { return $true }
+  try {
+    $si = New-Object -ComObject Microsoft.Update.SystemInfo
+    if ($si.RebootRequired) { return $true }
+  } catch {}
+  return $false
 }
-if ($found.Updates.Count -eq 0) {
-  Log "no pending updates"
-  Set-Content "C:\Windows\Temp\tb-wu-done.flag" "none"
-  exit
+
+$session = New-Object -ComObject Microsoft.Update.Session
+$totalInstalled = 0
+$maxIterations  = 5
+
+for ($iter = 1; $iter -le $maxIterations; $iter++) {
+  Log "iteration $iter - searching for updates..."
+  $searcher = $session.CreateUpdateSearcher()
+  try {
+    # IsInstalled=0: not yet installed. Type=Software: skip drivers (template should
+    # stay generic). IsHidden=0: skip anything an admin would have hidden. We do NOT
+    # filter on BrowseOnly here — that excludes legitimate optional updates that
+    # may be required for cumulative chains.
+    $found = $searcher.Search("IsInstalled=0 and Type='Software' and IsHidden=0")
+  } catch {
+    Log "search failed: $_"
+    break
+  }
+
+  if ($found.Updates.Count -eq 0) {
+    Log "no pending updates"
+    break
+  }
+
+  $total = $found.Updates.Count
+  Log "found $total update(s):"
+  for ($i = 0; $i -lt $total; $i++) { Log "  - $($found.Updates.Item($i).Title)" }
+
+  # Accept EULAs (some optional/feature updates require this before download).
+  for ($i = 0; $i -lt $total; $i++) {
+    $u = $found.Updates.Item($i)
+    if (-not $u.EulaAccepted) { try { $u.AcceptEula() } catch {} }
+  }
+
+  Log "downloading $total update(s) in one batch..."
+  $dl = $session.CreateUpdateDownloader()
+  $dl.Updates = $found.Updates
+  try {
+    $dlResult = $dl.Download()
+    Log "  download result: HResult=$($dlResult.HResult) ResultCode=$($dlResult.ResultCode)"
+  } catch {
+    Log "download failed: $_"
+    break
+  }
+
+  # Only install updates that actually downloaded.
+  $toInstall = New-Object -ComObject Microsoft.Update.UpdateColl
+  for ($i = 0; $i -lt $total; $i++) {
+    if ($found.Updates.Item($i).IsDownloaded) { [void]$toInstall.Add($found.Updates.Item($i)) }
+  }
+  if ($toInstall.Count -eq 0) {
+    Log "nothing downloaded successfully - aborting iteration"
+    break
+  }
+
+  Log "installing $($toInstall.Count) update(s) in one batch..."
+  $inst = $session.CreateUpdateInstaller()
+  $inst.Updates = $toInstall
+  try {
+    $instResult = $inst.Install()
+    Log "  install result: HResult=$($instResult.HResult) ResultCode=$($instResult.ResultCode) RebootRequired=$($instResult.RebootRequired)"
+  } catch {
+    Log "install failed: $_"
+    break
+  }
+
+  # Per-update result codes (2=Succeeded, 3=SucceededWithErrors, 4=Failed, 5=Aborted).
+  for ($i = 0; $i -lt $toInstall.Count; $i++) {
+    $r = $instResult.GetUpdateResult($i)
+    Log "    [$($i+1)/$($toInstall.Count)] code=$($r.ResultCode) hr=$($r.HResult)  $($toInstall.Item($i).Title)"
+    if ($r.ResultCode -eq 2 -or $r.ResultCode -eq 3) { $totalInstalled++ }
+  }
+
+  if ($instResult.RebootRequired -or (Test-PendingReboot)) {
+    Log "reboot required - exiting loop so packer can restart"
+    Set-Content "C:\Windows\Temp\tb-wu-reboot.flag" "needed"
+    break
+  }
+
+  Log "no reboot required - looping to check for further updates"
 }
-$total = $found.Updates.Count
-Log "found $total update(s) - downloading..."
-$dl = $session.CreateUpdateDownloader()
-$dl.Updates = $found.Updates
-$dl.Download()
-Log "download complete - installing..."
-$inst = $session.CreateUpdateInstaller()
-for ($i = 0; $i -lt $total; $i++) {
-  Log "  [$($i+1)/$total] $($found.Updates.Item($i).Title)"
-  $single = New-Object -ComObject Microsoft.Update.UpdateColl
-  $single.Add($found.Updates.Item($i)) | Out-Null
-  $inst.Updates = $single
-  $inst.Install() | Out-Null
+
+Log "round complete; installed $totalInstalled update(s) this invocation"
+if (Test-PendingReboot -and -not (Test-Path "C:\Windows\Temp\tb-wu-reboot.flag")) {
+  Set-Content "C:\Windows\Temp\tb-wu-reboot.flag" "needed"
 }
-Log "all updates installed"
 Set-Content "C:\Windows\Temp\tb-wu-done.flag" "done"
 '@ | Set-Content $WUScript -Encoding UTF8
 
@@ -67,7 +141,6 @@ $logOffset = 0
 while (-not (Test-Path $WUFlag) -and [DateTime]::Now -lt $deadline) {
   Start-Sleep 30
 
-  # Tail new lines from the progress log.
   if (Test-Path $WULog) {
     $lines = Get-Content $WULog
     if ($lines.Count -gt $logOffset) {
@@ -82,7 +155,6 @@ while (-not (Test-Path $WUFlag) -and [DateTime]::Now -lt $deadline) {
 
 Unregister-ScheduledTask -TaskName $WUTaskName -Confirm:$false -ErrorAction SilentlyContinue
 
-# Flush any remaining log lines.
 if (Test-Path $WULog) {
   $lines = Get-Content $WULog
   if ($lines.Count -gt $logOffset) {
@@ -94,9 +166,8 @@ if (-not (Test-Path $WUFlag)) {
   throw "Windows Update timed out after 3h"
 }
 
-$result = (Get-Content $WUFlag).Trim()
-if ($result -eq "none") {
-  Write-Step "no pending updates"
+if (Test-Path $WURebootFlag) {
+  Write-Step "updates installed - reboot required (conditional windows-restart will reboot)"
 } else {
-  Write-Step "updates installed - Packer restart provisioner will reboot"
+  Write-Step "no reboot required - conditional windows-restart will skip"
 }

@@ -173,6 +173,7 @@ build {
   }
   provisioner "windows-restart" {
     restart_timeout = "90m"
+    restart_command = "powershell -Command \"if (Test-Path 'C:/Windows/Temp/tb-wu-reboot.flag') { Remove-Item 'C:/Windows/Temp/tb-wu-reboot.flag' -Force; shutdown /r /f /t 5 /c 'packer wu reboot' } else { exit 0 }\""
   }
 
   provisioner "powershell" {
@@ -181,14 +182,7 @@ build {
   }
   provisioner "windows-restart" {
     restart_timeout = "90m"
-  }
-
-  provisioner "powershell" {
-    pause_before = "30s"
-    script       = "${path.root}/_shared/windows/WU.ps1"
-  }
-  provisioner "windows-restart" {
-    restart_timeout = "90m"
+    restart_command = "powershell -Command \"if (Test-Path 'C:/Windows/Temp/tb-wu-reboot.flag') { Remove-Item 'C:/Windows/Temp/tb-wu-reboot.flag' -Force; shutdown /r /f /t 5 /c 'packer wu reboot' } else { exit 0 }\""
   }
 
   provisioner "powershell" {

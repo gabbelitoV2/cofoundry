@@ -1,6 +1,7 @@
 import { readdir, readFile, access } from 'node:fs/promises'
 import { join } from 'node:path'
 import { execa } from 'execa'
+import pRetry from 'p-retry'
 import { log } from './log.ts'
 import type { Env } from './env.ts'
 import { captureRemote } from './build/remote.ts'
@@ -76,14 +77,26 @@ const AWS_VARS = [
     'AWS_SECRET_ACCESS_KEY',
     'AWS_SESSION_TOKEN',
     'AWS_DEFAULT_REGION',
+    'AWS_REQUEST_CHECKSUM_CALCULATION',
+    'AWS_RESPONSE_CHECKSUM_VALIDATION',
     'R2_ENDPOINT',
     'R2_BUCKET',
 ] as const
 
+// R2's signature validation rejects the x-amz-checksum-* header that AWS CLI
+// ≥ 2.23 sends by default on single-PUT uploads, so small uploads (sidecars)
+// fail with SignatureDoesNotMatch. Multipart uploads (large artifacts) are
+// unaffected because parts use MD5. Default to `when_required` so cf upload
+// works against R2 out of the box; user-provided values still win.
+const AWS_DEFAULTS: Record<string, string> = {
+    AWS_REQUEST_CHECKSUM_CALCULATION: 'when_required',
+    AWS_RESPONSE_CHECKSUM_VALIDATION: 'when_required',
+}
+
 const buildRemoteEnvPrefix = (): string => {
     const pairs: string[] = []
     for (const k of AWS_VARS) {
-        const v = process.env[k]
+        const v = process.env[k] ?? AWS_DEFAULTS[k]
         if (v) pairs.push(`${k}=${shellQuote(v)}`)
     }
     return pairs.length > 0 ? pairs.join(' ') + ' ' : ''
@@ -116,6 +129,32 @@ const remoteSource = (target: string, sourceDir: string): Source => {
             })
         },
     }
+}
+
+// Retry transient R2/network failures: InvalidPart (R2 sometimes loses parts
+// mid-CompleteMultipartUpload), RequestTimeout, ServiceUnavailable, connection
+// resets, etc. Three attempts with exponential backoff matches what the build
+// pipeline uses for remote wget (see src/build.ts:171).
+const execWithRetry = async (
+    src: Source,
+    cmd: string,
+    label: string
+): Promise<void> => {
+    await pRetry(
+        async () => {
+            await src.exec(cmd)
+        },
+        {
+            retries: 2,
+            minTimeout: 2000,
+            factor: 2,
+            onFailedAttempt: ({ error, attemptNumber, retriesLeft }) => {
+                log.warn(
+                    `${label}: attempt ${attemptNumber} failed (${retriesLeft} left): ${error.message.split('\n')[0]}`
+                )
+            },
+        }
+    )
 }
 
 const loadSidecars = async (
@@ -159,6 +198,12 @@ export const runUpload = async (
         throw new Error('CF_UPLOAD_CMD is not set')
     }
     const sidecarCmd = process.env.CF_SIDECAR_UPLOAD_CMD
+
+    // Apply R2-friendly defaults to the local env so the bash -c subprocess
+    // inherits them (remote mode forwards via buildRemoteEnvPrefix).
+    for (const [k, v] of Object.entries(AWS_DEFAULTS)) {
+        if (!process.env[k]) process.env[k] = v
+    }
 
     const src = opts.remote
         ? remoteSource(env.SSH_TARGET, opts.sourceDir ?? buildRemoteOutDir(env))
@@ -209,7 +254,7 @@ export const runUpload = async (
             log.info(`dry-run: ${cmd}`)
         } else {
             try {
-                await src.exec(cmd)
+                await execWithRetry(src, cmd, `${baseName} artifact`)
             } catch (err) {
                 const msg = err instanceof Error ? err.message : String(err)
                 log.err(`${baseName}: artifact upload failed: ${msg}`)
@@ -229,7 +274,7 @@ export const runUpload = async (
                 log.info(`dry-run: ${scmd}`)
             } else {
                 try {
-                    await src.exec(scmd)
+                    await execWithRetry(src, scmd, `${baseName} sidecar`)
                 } catch (err) {
                     const msg = err instanceof Error ? err.message : String(err)
                     log.err(`${baseName}: sidecar upload failed: ${msg}`)

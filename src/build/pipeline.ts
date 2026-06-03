@@ -40,13 +40,18 @@ const runQueued = async <T>(
     work: () => Promise<T>
 ): Promise<T> => {
     let started = false
+    // Snapshot position at enqueue: jobs currently running + already queued
+    // ahead of us. Decrement on each 'next' (one job ahead just finished).
+    let ahead = q.pending + q.size
     const render = (): void => {
         if (started) return
-        // After .add(), q.pending + q.size includes this job, so subtract self.
-        const ahead = Math.max(0, q.pending + q.size - 1)
         handle.setPhase(ahead > 0 ? `${phase} · queued (${ahead} ahead)` : phase)
     }
-    const onNext = (): void => render()
+    const onNext = (): void => {
+        if (started) return
+        ahead = Math.max(0, ahead - 1)
+        render()
+    }
     q.on('next', onNext)
     const promise = q.add(async () => {
         started = true

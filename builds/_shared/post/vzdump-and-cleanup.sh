@@ -15,7 +15,7 @@
 #   CF_BUILT_VMID / CF_RECIPE_NAME / CF_RECIPE_DISPLAY
 #
 # Optional: CF_UPLOAD_CMD, CF_PUBLIC_URL_TMPL, CF_KEEP_VM
-#   CF_UPLOAD_CMD / CF_PUBLIC_URL_TMPL support {{file}}, {{name}}, {{arch}}, {{sha256}}.
+#   CF_UPLOAD_CMD / CF_PUBLIC_URL_TMPL support {{file}}, {{name}}, {{arch}}, {{sha256}}, {{group}}, {{filename}}.
 
 set -euo pipefail
 
@@ -99,6 +99,7 @@ if [ -n "${CF_PUBLIC_URL_TMPL:-}" ]; then
   PUBLIC_URL="${CF_PUBLIC_URL_TMPL//\{\{name\}\}/$CF_RECIPE_NAME}"
   PUBLIC_URL="${PUBLIC_URL//\{\{arch\}\}/$CF_ARCH}"
   PUBLIC_URL="${PUBLIC_URL//\{\{sha256\}\}/$SHA256}"
+  PUBLIC_URL="${PUBLIC_URL//\{\{group\}\}/$CF_GROUP}"
   PUBLIC_URL="${PUBLIC_URL//\{\{filename\}\}/$UPLOAD_FILENAME}"
 fi
 
@@ -108,6 +109,7 @@ if [ -n "${CF_UPLOAD_CMD:-}" ]; then
   CMD="${CMD//\{\{name\}\}/$CF_RECIPE_NAME}"
   CMD="${CMD//\{\{arch\}\}/$CF_ARCH}"
   CMD="${CMD//\{\{sha256\}\}/$SHA256}"
+  CMD="${CMD//\{\{group\}\}/$CF_GROUP}"
   CMD="${CMD//\{\{filename\}\}/$UPLOAD_FILENAME}"
   bash -c "$CMD"
 fi
@@ -137,6 +139,7 @@ if [ -n "${CF_SIDECAR_UPLOAD_CMD:-}" ]; then
   SCMD="${SCMD//\{\{name\}\}/$CF_RECIPE_NAME}"
   SCMD="${SCMD//\{\{arch\}\}/$CF_ARCH}"
   SCMD="${SCMD//\{\{sha256\}\}/$SHA256}"
+  SCMD="${SCMD//\{\{group\}\}/$CF_GROUP}"
   SCMD="${SCMD//\{\{filename\}\}/${CF_RECIPE_NAME}-${CF_ARCH}-${SHA256}.json}"
   bash -c "$SCMD"
 fi

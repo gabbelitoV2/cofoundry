@@ -65,12 +65,14 @@ jobs:
           if-no-files-found: error
 
       - name: Publish GitHub release
-        uses: softprops/action-gh-release@v2
+        uses: ncipollo/release-action@v1
         with:
+          allowUpdates: true
+          artifactErrorsFailBuild: true
+          artifacts: release/coport-linux-x64,release/coport-linux-arm64,release/coport.sha256
+          bodyFile: release-notes.md
           draft: true
           name: ${{ github.ref_name }}
-          body_path: release-notes.md
-          files: |
-            release/coport-linux-x64
-            release/coport-linux-arm64
-            release/coport.sha256
+          replacesArtifacts: true
+          tag: ${{ github.ref_name }}
+          updateOnlyUnreleased: true

@@ -384,6 +384,8 @@ export async function sftpDownload(
 
                 try {
                     await client.fastGet(file.remotePath, tmpPath, {
+                        concurrency: 16,
+                        chunkSize: 256 * 1024,
                         step: (transferred: number) => {
                             fileBytes[idx] = transferred
                             currentFile = file.relPath

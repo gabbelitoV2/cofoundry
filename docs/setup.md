@@ -189,8 +189,8 @@ won't work in CI.
 **b. Create the OAuth client** (admin → **Settings → OAuth clients →
 Generate**):
 
-- Scopes: **Devices → Core → Write**
-- Tags: `tag:cofoundry`
+- Scopes: **`Auth Keys` → Write** (the action mints an ephemeral auth key per run; `devices:core` alone is not enough and produces a 403).
+- Tags: `tag:cofoundry` (the client can only mint keys for tags selected here; not editable after creation — recreate the client if you missed one).
 - Copy the client ID and secret (secret is shown once).
 
 **c. Set repo secrets** (Settings → Secrets → Actions):

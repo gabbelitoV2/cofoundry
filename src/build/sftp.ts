@@ -5,7 +5,7 @@ import { dirname, join, relative, posix } from 'path'
 import { homedir } from 'os'
 import { existsSync } from 'fs'
 import PQueue from 'p-queue'
-import pRetry, { AbortError } from 'p-retry'
+import pRetry from 'p-retry'
 
 export type TransferEvent = {
     direction: '↑' | '↓'
@@ -58,10 +58,11 @@ const doConnect = async (target: string): Promise<SftpClient> => {
             const { readFile } = await import('fs/promises')
             cfg.privateKey = await readFile(keyFile)
         } else {
-            // No key found — don't retry, this is a config error.
-            throw new AbortError(
-                `No SSH key found in ~/.ssh and no SSH_AUTH_SOCK set`
-            )
+            // No key and no agent — attempt "none" auth. The server may accept
+            // it (e.g. Tailscale SSH, which authenticates via tailnet identity
+            // and ignores the SSH-level credential). If the server refuses,
+            // ssh2 surfaces a clearer permission error than failing upfront.
+            cfg.authHandler = ['none']
         }
     }
 

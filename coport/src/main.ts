@@ -36,15 +36,24 @@ import type { Template } from '../../src/registry/schema.ts'
 
 type Phase = 'download' | 'verify' | 'install'
 
-const phaseLabel = (phase: Phase): string => {
-    switch (phase) {
-        case 'download':
-            return 'downloading'
-        case 'verify':
-            return 'verifying'
-        case 'install':
-            return 'installing'
-    }
+const PHASE_VERBS: Record<Phase, string> = {
+    download: 'downloading',
+    verify: 'verifying  ',
+    install: 'installing ',
+}
+
+const formatPhase = (phase: Phase, vmid: number): string =>
+    `${PHASE_VERBS[phase]} ${dim(`→ VMID ${String(vmid).padEnd(4)}`)}`
+
+const QUEUED_DOWNLOAD = `${dim('queued')}     ${dim('→ download')}`
+const QUEUED_RESTORE = `${dim('queued')}     ${dim('→ restore ')}`
+
+const BAR_WIDTH = 14
+
+const renderBar = (pct: number): string => {
+    const clamped = Math.max(0, Math.min(100, pct))
+    const filled = Math.round((clamped / 100) * BAR_WIDTH)
+    return `${'█'.repeat(filled)}${dim('░'.repeat(BAR_WIDTH - filled))}`
 }
 
 const formatDownload = (
@@ -54,8 +63,35 @@ const formatDownload = (
 ): string => {
     const elapsed = Math.max(1, Date.now() - startedAt)
     const pct = total > 0 ? (received / total) * 100 : 0
-    const size = total > 0 ? `${fmtBytes(received)}/${fmtBytes(total)}` : fmtBytes(received)
-    return `${fmtPercent(pct)} ${dim('·')} ${size} ${dim('·')} ${fmtRate(received, elapsed)}`
+    const size =
+        total > 0
+            ? `${fmtBytes(received)}/${fmtBytes(total)}`
+            : fmtBytes(received)
+    return `${renderBar(pct)} ${fmtPercent(pct)}  ${size.padEnd(22)} ${fmtRate(received, elapsed).padStart(10)}`
+}
+
+const formatRestoreProgress = (pct: number): string =>
+    `${renderBar(pct)} ${fmtPercent(pct)}`
+
+const PROGRESS_THROTTLE_MS = 120
+
+class Semaphore {
+    private readonly waiters: Array<() => void> = []
+    constructor(private available: number) {}
+    async run<T>(fn: () => Promise<T>): Promise<T> {
+        if (this.available > 0) {
+            this.available--
+        } else {
+            await new Promise<void>(r => this.waiters.push(r))
+        }
+        try {
+            return await fn()
+        } finally {
+            const next = this.waiters.shift()
+            if (next) next()
+            else this.available++
+        }
+    }
 }
 
 const installTemplate = async (
@@ -65,38 +101,60 @@ const installTemplate = async (
     verify: boolean,
     force: boolean,
     task: TaskHandle,
-    signal: AbortSignal
+    signal: AbortSignal,
+    downloadSem: Semaphore,
+    restoreSem: Semaphore
 ): Promise<void> => {
     const dest = tempPath(vmid)
 
-    const downloadStartedAt = Date.now()
-    task.setPhase(`${phaseLabel('download')} ${dim(`→ VMID ${vmid}`)}`)
-    await downloadWithRetry(
-        template.url,
-        dest,
-        p =>
-            task.setProgress(
-                formatDownload(p.received, p.total, downloadStartedAt)
-            ),
-        signal
-    )
+    task.setPhase(QUEUED_DOWNLOAD)
+    await downloadSem.run(async () => {
+        const downloadStartedAt = Date.now()
+        task.setPhase(formatPhase('download', vmid))
+        task.setProgress(formatDownload(0, 0, downloadStartedAt))
+        let lastUpdate = 0
+        await downloadWithRetry(
+            template.url,
+            dest,
+            p => {
+                const now = Date.now()
+                if (now - lastUpdate < PROGRESS_THROTTLE_MS && p.pct < 100)
+                    return
+                lastUpdate = now
+                task.setProgress(
+                    formatDownload(p.received, p.total, downloadStartedAt)
+                )
+            },
+            signal
+        )
+    })
 
-    if (verify) {
-        task.setPhase(`${phaseLabel('verify')} ${dim(`→ VMID ${vmid}`)}`)
-        task.setProgress('SHA-256')
-        await verifySha256(dest, template.sha256)
-    }
+    task.setPhase(QUEUED_RESTORE)
+    await restoreSem.run(async () => {
+        if (verify) {
+            task.setPhase(formatPhase('verify', vmid))
+            task.setProgress(`${renderBar(0)} SHA-256`)
+            await verifySha256(dest, template.sha256)
+        }
 
-    task.setPhase(`${phaseLabel('install')} ${dim(`→ VMID ${vmid}`)}`)
-    task.setProgress(fmtPercent(0))
-    await qmrestore(
-        dest,
-        vmid,
-        storage,
-        force,
-        pct => task.setProgress(fmtPercent(pct)),
-        signal
-    )
+        task.setPhase(formatPhase('install', vmid))
+        task.setProgress(formatRestoreProgress(0))
+        let lastUpdate = 0
+        await qmrestore(
+            dest,
+            vmid,
+            storage,
+            force,
+            pct => {
+                const now = Date.now()
+                if (now - lastUpdate < PROGRESS_THROTTLE_MS && pct < 100)
+                    return
+                lastUpdate = now
+                task.setProgress(formatRestoreProgress(pct))
+            },
+            signal
+        )
+    })
 
     await removeTempFile(dest)
     task.succeed(`installed as ${accent(`VMID ${vmid}`)}`)
@@ -122,6 +180,16 @@ program
         'Overwrite existing VMs when a suggested VMID is already taken'
     )
     .option('--no-verify', 'Skip SHA-256 verification after download')
+    .option(
+        '--download-concurrency <n>',
+        'Parallel downloads (env: COPORT_DOWNLOAD_CONCURRENCY)',
+        process.env.COPORT_DOWNLOAD_CONCURRENCY ?? '4'
+    )
+    .option(
+        '--restore-concurrency <n>',
+        'Parallel verifies + qmrestores (env: COPORT_RESTORE_CONCURRENCY)',
+        process.env.COPORT_RESTORE_CONCURRENCY ?? '2'
+    )
     .option('--verbose', 'Stream per-event logs instead of in-place TUI')
     .action(async (registryArg: string | undefined, opts) => {
         const abort = new AbortController()
@@ -188,16 +256,32 @@ program
         await sweepStaleTempDirs()
         await ensureTempDir()
 
+        const downloadLimit = Math.max(1, Number(opts.downloadConcurrency))
+        const restoreLimit = Math.max(1, Number(opts.restoreConcurrency))
+        if (!Number.isFinite(downloadLimit) || !Number.isFinite(restoreLimit)) {
+            throw new Error(
+                'Invalid concurrency values; must be positive integers.'
+            )
+        }
+        const downloadSem = new Semaphore(downloadLimit)
+        const restoreSem = new Semaphore(restoreLimit)
+
+        const nameWidth = Math.max(
+            ...assignments.map(a => a.template.name.length)
+        )
         const renderer = createRenderer({
-            title: title(`Installing ${assignments.length} template${assignments.length === 1 ? '' : 's'} → ${accent(storage)}`),
+            title: title(
+                `Installing ${assignments.length} template${assignments.length === 1 ? '' : 's'} → ${accent(storage)} ${dim(`(downloads × ${downloadLimit}, restores × ${restoreLimit})`)}`
+            ),
             verbose: opts.verbose,
             outputLines: 1,
+            queuedPattern: /\bqueued\b/,
         })
         activeRenderer = renderer
 
         const results = await Promise.allSettled(
             assignments.map(async a => {
-                const task = renderer.task(a.template.name)
+                const task = renderer.task(a.template.name.padEnd(nameWidth))
                 try {
                     await installTemplate(
                         a.template,
@@ -206,7 +290,9 @@ program
                         !opts.noVerify,
                         a.overwrite,
                         task,
-                        abort.signal
+                        abort.signal,
+                        downloadSem,
+                        restoreSem
                     )
                 } catch (err) {
                     const msg = err instanceof Error ? err.message : String(err)

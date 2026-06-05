@@ -71,7 +71,7 @@ class LiveRenderer implements Renderer {
         this.queuedPattern = opts.queuedPattern
         this.stream = opts.stream
         this.write = createLogUpdate(opts.stream)
-        this.timer = setInterval(() => this.render(), 80)
+        this.timer = setInterval(() => this.render(), 120)
         this.timer.unref?.()
         process.stdout.on('resize', this.onResize)
     }

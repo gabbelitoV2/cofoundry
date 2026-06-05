@@ -5,12 +5,15 @@
 ### Added
 
 - Adopt the shared `@cofoundry/ui` renderer used by `cf build` so multi-template installs show a live spinner-driven row per template with phase, elapsed time, and download/restore progress.
+- Bound parallelism with `--download-concurrency` (default 4, env `COPORT_DOWNLOAD_CONCURRENCY`) and `--restore-concurrency` (default 2, env `COPORT_RESTORE_CONCURRENCY`) so a `coport <all>` run no longer launches 16 simultaneous fetches and 16 simultaneous `qmrestore` processes against a single node. Waiting templates show `queued → download` / `queued → restore` with their elapsed timer paused.
 - Add `--verbose` to force the line-oriented stream output (for CI or copy-paste) over the in-place TUI.
 
 ### Fixed
 
 - Delete each downloaded `.vma.zst` as soon as its restore completes instead of holding the whole batch on disk until the end. Peak temp usage now scales with in-flight concurrency, not total template count — `coport <all>` peaked at ~38 GB before and stayed under 20 GB after, preventing mid-run exits when disk space was tight.
 - Sweep orphaned `${pid}-${ts}` subdirectories under `/var/lib/vz/dump/coport-tmp/` on startup so crashed runs no longer leak gigabytes of temp archives.
+- Bring back the per-template progress bar and align the name / phase / VMID columns to a fixed width so 16 parallel rows scan cleanly instead of jittering between widths.
+- Throttle per-chunk progress callbacks to ~120 ms and slow the renderer redraw tick to match, cutting the periodic event-loop stalls users saw when many large downloads were active at once.
 
 ## v1.1.0
 

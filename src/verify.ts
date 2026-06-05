@@ -94,9 +94,19 @@ export const runVerify = async (
         )
     }
 
-    const remoteFile = remoteHasBuildArtifact
+    const sourceFile = remoteHasBuildArtifact
         ? remoteBuildFile
         : `${remoteTmp}/${basename(local)}`
+    // qmrestore parses the basename to extract VMID/type and rejects anything
+    // not matching `vzdump-qemu-<vmid>-<timestamp>.vma.zst`. Our artifact is
+    // named `<recipe>-<arch>.vma.zst`, so expose it to qmrestore under a
+    // vzdump-shaped symlink in our scratch dir.
+    const ts = new Date()
+        .toISOString()
+        .replace(/[-:T]/g, '_')
+        .replace(/\..+$/, '')
+    const vzdumpName = `vzdump-qemu-0-${ts}.vma.zst`
+    const restoreFile = `${remoteTmp}/${vzdumpName}`
 
     const renderer = createRenderer({
         title: title(
@@ -111,14 +121,21 @@ export const runVerify = async (
     try {
         if (remoteHasBuildArtifact) {
             task.setPhase(`using remote artifact ${dim(remoteBuildFile)}`)
+            await ssh(env.SSH_TARGET, `mkdir -p ${shellQuote(remoteTmp)}`)
         } else {
             task.setPhase(`uploading artifact ${dim('→')} ${env.SSH_TARGET}`)
             await ssh(env.SSH_TARGET, `mkdir -p ${shellQuote(remoteTmp)}`)
-            await execa('scp', [local, `${env.SSH_TARGET}:${remoteFile}`], {
+            await execa('scp', [local, `${env.SSH_TARGET}:${sourceFile}`], {
                 stdin: 'inherit',
                 stderr: 'inherit',
             })
         }
+
+        // qmrestore reads the file via its argument path; a symlink is enough.
+        await ssh(
+            env.SSH_TARGET,
+            `ln -sf ${shellQuote(sourceFile)} ${shellQuote(restoreFile)}`
+        )
 
         task.setPhase('allocating VMID')
         vmid = await pickScratchVmid(env.SSH_TARGET)
@@ -126,7 +143,7 @@ export const runVerify = async (
         task.setPhase(`qmrestore ${dim('→')} VMID ${accent(String(vmid))}`)
         await ssh(
             env.SSH_TARGET,
-            `qmrestore ${shellQuote(remoteFile)} ${vmid} --storage ${shellQuote(env.CF_STORAGE)} --unique 1`
+            `qmrestore ${shellQuote(restoreFile)} ${vmid} --storage ${shellQuote(env.CF_STORAGE)} --unique 1`
         )
         restored = true
 
@@ -153,9 +170,7 @@ export const runVerify = async (
         throw err
     } finally {
         if (restored) await destroyVm(env.SSH_TARGET, vmid)
-        if (!remoteHasBuildArtifact) {
-            await sshOk(env.SSH_TARGET, `rm -rf ${shellQuote(remoteTmp)}`)
-        }
+        await sshOk(env.SSH_TARGET, `rm -rf ${shellQuote(remoteTmp)}`)
         renderer.finish()
     }
 }

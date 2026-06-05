@@ -294,7 +294,7 @@ export const runPrune = async (
     const downloadedIsos = lines(
         await ssh(
             env.SSH_TARGET,
-            `find ${DOWNLOADED_ISO_DIR} -maxdepth 1 \( -name '*.iso' -o -name '*.iso.lock' \) 2>/dev/null || true`
+            `find ${DOWNLOADED_ISO_DIR} -maxdepth 1 \\( -name '*.iso' -o -name '*.iso.lock' \\) 2>/dev/null || true`
         )
     )
     await remove(env, downloadedIsos, dryRun)

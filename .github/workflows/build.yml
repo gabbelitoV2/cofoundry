@@ -63,7 +63,7 @@ jobs:
       # CF_UPLOAD_CMD pushes the artifact to R2 at a content-addressed path,
       # so each build is immutable and rollback is "revert registry.json".
       - name: Build template
-        run: bun run cf build ${{ inputs.recipe }}
+        run: bun run cf build ${{ inputs.recipe }} --ci --verbose
         env:
           PVE_HOST: ${{ secrets.PVE_HOST }}
           PVE_PORT: ${{ secrets.PVE_PORT }}

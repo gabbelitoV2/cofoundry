@@ -152,14 +152,25 @@ export const runVerify = async (
         )
         restored = true
 
-        // vzdump of a template preserves the template flag; qm start refuses
-        // to boot a template. qm set --template 0 is the documented clear,
-        // but sed against the config is a guaranteed fallback in case the
-        // option no-ops on this PVE version.
+        // vzdump-of-a-template restores as a template: (1) the config has
+        // `template: 1`, blocking `qm start`; and (2) on dir/file storage,
+        // each disk has the immutable attr (chattr +i) set and a base-<vmid>
+        // filename prefix, so KVM can't open them ("Operation not permitted").
+        // Strip both so we can boot the restored VM.
         await ssh(
             env.SSH_TARGET,
+            // (1) Clear template flag in both API and on-disk config.
             `qm set ${vmid} --template 0 >/dev/null 2>&1 || true; ` +
-                `sed -i '/^template:/d' /etc/pve/qemu-server/${vmid}.conf`
+                `sed -i '/^template:/d' /etc/pve/qemu-server/${vmid}.conf; ` +
+                // (2) Clear immutable attr on all disk files for this VMID
+                // across whatever storages were used. Resolve each disk volid
+                // through `pvesm path` so this works regardless of CF_STORAGE.
+                `qm config ${vmid} | ` +
+                `sed -nE 's/^(scsi|sata|ide|virtio|efidisk|tpmstate)[0-9]+: ([^,]+).*/\\2/p' | ` +
+                `while read vol; do ` +
+                `  p=$(pvesm path "$vol" 2>/dev/null) || continue; ` +
+                `  [ -n "$p" ] && [ -f "$p" ] && chattr -i "$p" 2>/dev/null || true; ` +
+                `done`
         )
 
         task.setPhase(`qm start ${vmid}`)

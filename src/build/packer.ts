@@ -92,6 +92,14 @@ export const buildRemoteEnv = (
         const v = process.env[k]
         if (v) pairs[k] = v
     }
+    // R2 rejects the default CRC32 integrity checksum AWS CLI v2.23+ adds to
+    // single-part PutObject ("SignatureDoesNotMatch" on small objects like
+    // sidecar JSONs). Multipart uploads (large .vma.zst) take a different
+    // code path and aren't affected. Caller can override by exporting these.
+    pairs.AWS_REQUEST_CHECKSUM_CALCULATION =
+        process.env.AWS_REQUEST_CHECKSUM_CALCULATION ?? 'when_required'
+    pairs.AWS_RESPONSE_CHECKSUM_VALIDATION =
+        process.env.AWS_RESPONSE_CHECKSUM_VALIDATION ?? 'when_required'
     return Object.entries(pairs)
         .map(([k, v]) => `${k}=${shellQuote(v)}`)
         .join(' ')

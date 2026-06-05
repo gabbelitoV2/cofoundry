@@ -68,6 +68,13 @@ const buildVmWatchdog = (
     sleep 20
     _s=$(qm status ${vmid} 2>/dev/null | awk 'NR==1{print $2}') || continue
     [ "$_s" = "stopped" ] || continue
+    # A template also reports "stopped". Never qm start it — that fails with
+    # "you can't start a vm if it's a template". A template at this point means
+    # packer already finished and converted the VM, so there's nothing to
+    # restart: exit cleanly instead of burning restart attempts on an error.
+    if qm config ${vmid} 2>/dev/null | grep -q '^template:'; then
+      echo "[watchdog] VM ${vmid} is now a template — exiting"; exit 0
+    fi
     _n=$((_n + 1))
     if [ "$_n" -gt "$_max" ]; then
       echo "[watchdog] VM ${vmid}: restart limit reached, giving up" >&2; exit 1

@@ -76,13 +76,18 @@ export const buildRemoteEnv = (
     if (env.CF_UPLOAD_CMD) pairs.CF_UPLOAD_CMD = env.CF_UPLOAD_CMD
     if (env.CF_PUBLIC_URL_TMPL)
         pairs.CF_PUBLIC_URL_TMPL = env.CF_PUBLIC_URL_TMPL
-    // Forward S3-compatible creds (R2, AWS, MinIO, …) so a CF_UPLOAD_CMD using
-    // `aws s3 cp` can authenticate on the node. Opt-in via the host env only.
+    // Forward S3-compatible creds + endpoint/bucket so a CF_UPLOAD_CMD using
+    // `aws s3 cp ... $R2_ENDPOINT ... s3://$R2_BUCKET/...` can authenticate
+    // and resolve those shell vars on the node.
     for (const k of [
         'AWS_ACCESS_KEY_ID',
         'AWS_SECRET_ACCESS_KEY',
         'AWS_SESSION_TOKEN',
         'AWS_DEFAULT_REGION',
+        'R2_ENDPOINT',
+        'R2_BUCKET',
+        'R2_PREFIX',
+        'CF_SIDECAR_UPLOAD_CMD',
     ]) {
         const v = process.env[k]
         if (v) pairs[k] = v

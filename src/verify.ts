@@ -152,6 +152,16 @@ export const runVerify = async (
         )
         restored = true
 
+        // vzdump of a template preserves the template flag; qm start refuses
+        // to boot a template. qm set --template 0 is the documented clear,
+        // but sed against the config is a guaranteed fallback in case the
+        // option no-ops on this PVE version.
+        await ssh(
+            env.SSH_TARGET,
+            `qm set ${vmid} --template 0 >/dev/null 2>&1 || true; ` +
+                `sed -i '/^template:/d' /etc/pve/qemu-server/${vmid}.conf`
+        )
+
         task.setPhase(`qm start ${vmid}`)
         await ssh(env.SSH_TARGET, `qm start ${vmid}`)
 

@@ -232,6 +232,47 @@ const stepVmbr1: Step = {
     },
 }
 
+const BUILD_NET_SUBNET = '10.0.0.0/24'
+const BUILD_NET_FW_COMMENT = 'cofoundry build network (packer HTTP)'
+
+// When the Proxmox firewall is enabled, the host's PVEFW-INPUT chain drops the
+// build VM's connection to packer's HTTP server (preseed/kickstart fetch) on
+// vmbr1 — the build then hangs at "Waiting for SSH". A pve-firewall host rule is
+// the correct fix: it survives reboots AND firewall reloads, unlike a post-up
+// iptables rule which pve-firewall flushes whenever it recompiles. No-op when the
+// firewall is disabled (nothing to open).
+const stepBuildNetFirewall: Step = {
+    id: 'build-net-firewall',
+    label: 'allow build network through Proxmox firewall',
+    inScope: plan => plan.needBuildNet,
+    probe: async plan => {
+        const status = await sshCapture(
+            plan.target,
+            'pve-firewall status 2>/dev/null'
+        )
+        if (!/enabled/i.test(status.stdout)) {
+            return {
+                done: true,
+                note: 'Proxmox firewall disabled — no rule needed',
+            }
+        }
+        const rules = await sshCapture(
+            plan.target,
+            `pvesh get /nodes/$(hostname)/firewall/rules --output-format json 2>/dev/null`
+        )
+        return rules.stdout.includes('cofoundry build network')
+            ? { done: true, note: 'host firewall rule already present' }
+            : { done: false, note: 'Proxmox firewall on — opening build net' }
+    },
+    apply: async plan => {
+        await remoteStreaming(
+            plan.target,
+            `pvesh create /nodes/$(hostname)/firewall/rules --action ACCEPT --type in --source ${BUILD_NET_SUBNET} --enable 1 --comment ${shellQuote(BUILD_NET_FW_COMMENT)}`
+        )
+        return { note: `allowed ${BUILD_NET_SUBNET} in (host firewall rule)` }
+    },
+}
+
 const stepDnsmasq: Step = {
     id: 'dnsmasq',
     label: 'install dnsmasq',
@@ -347,6 +388,7 @@ const ALL_STEPS: Step[] = [
     stepAwscli,
     stepIsoCache,
     stepVmbr1,
+    stepBuildNetFirewall,
     stepDnsmasq,
     stepDnsmasqConf,
     stepNetslotDir,

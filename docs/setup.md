@@ -251,7 +251,18 @@ Also set this as a repo **variable** (Settings → Variables → Actions):
 > | `CF_SIDECAR_UPLOAD_CMD` | Shell command that uploads the sidecar JSON. |
 > | `CF_PUBLIC_URL_TMPL` | Public URL recorded in the sidecar + registry. |
 >
-> Placeholders: `{{file}}`, `{{name}}`, `{{arch}}`, `{{sha256}}`, `{{group}}`, `{{filename}}`.
+> Placeholders (substituted into all three strings):
+>
+> | Placeholder | Meaning |
+> |---|---|
+> | `{{file}}` | Local path on the PVE node to the artifact (`.vma.zst`) or sidecar (`.json`) being uploaded. |
+> | `{{name}}` | Bare recipe name, e.g. `almalinux-10`. |
+> | `{{arch}}` | Build architecture, e.g. `amd64`. |
+> | `{{sha256}}` | SHA-256 of the `.vma.zst` (also used for content-addressing). |
+> | `{{group}}` | OS group declared in the recipe, e.g. `almalinux`, `debian`, `windows`. |
+> | `{{filename}}` | Content-addressed upload basename, e.g. `almalinux-10-amd64-<sha256>.vma.zst` (or `.json` for the sidecar). |
+>
+> Path-layout note: `cf prune --r2` recognizes either `templates/{{name}}-{{arch}}/{{sha256}}.…` (flat — CI default) or `templates/{{group}}/{{name}}-{{arch}}/{{sha256}}.…` (OS-grouped). A flat `templates/{{filename}}` layout uploads fine but **won't prune correctly**.
 >
 > **The three variables are independent.** The post-processor substitutes
 > placeholders into each one separately — it does *not* derive the public URL

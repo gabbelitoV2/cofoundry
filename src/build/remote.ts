@@ -1,6 +1,11 @@
 import { execa, ExecaError } from 'execa'
 import { redactSensitive } from '../util.ts'
 
+// Keep idle SSH sessions alive — and detect a dead peer — so a long quiet remote
+// step (e.g. a multi-hundred-MB artifact upload in CF_UPLOAD_CMD) can't leave the
+// build hanging forever on a half-open connection.
+const SSH_OPTS = ['-o', 'ServerAliveInterval=15', '-o', 'ServerAliveCountMax=6']
+
 // ── SIGINT cleanup ────────────────────────────────────────────────────────────
 
 type KillableProc = { kill: (signal?: string) => boolean }
@@ -25,7 +30,7 @@ export const captureRemote = async (
     cmd: string
 ): Promise<string> => {
     try {
-        const { stdout } = await execa('ssh', [target, cmd], {
+        const { stdout } = await execa('ssh', [...SSH_OPTS, target, cmd], {
             stdin: 'inherit',
             stderr: 'inherit',
         })
@@ -45,14 +50,14 @@ export const remoteStreaming = (
     target: string,
     cmd: string,
     onLine?: (line: string) => void
-): Promise<void> => streaming('ssh', [target, cmd], onLine)
+): Promise<void> => streaming('ssh', [...SSH_OPTS, target, cmd], onLine)
 
 // Allocates a PTY so remote programs (e.g. wget) detect a terminal and show
 // their native progress bar rather than falling back to dot-style output.
 export const remoteStreamingPty = (
     target: string,
     cmd: string
-): Promise<void> => streaming('ssh', ['-t', '-t', target, cmd])
+): Promise<void> => streaming('ssh', [...SSH_OPTS, '-t', '-t', target, cmd])
 
 // Wget exit codes worth surfacing. See man wget(1) EXIT STATUS.
 const WGET_EXIT: Record<number, string> = {
@@ -75,7 +80,7 @@ export const remoteWgetCapture = async (
     onLine: (line: string) => void,
     context?: { url?: string; what?: string }
 ): Promise<void> => {
-    const proc = execa('ssh', ['-t', '-t', target, `{ ${cmd}; } 2>&1`], {
+    const proc = execa('ssh', [...SSH_OPTS, '-t', '-t', target, `{ ${cmd}; } 2>&1`], {
         stdin: 'pipe',
         stdout: 'pipe',
         stderr: 'ignore',

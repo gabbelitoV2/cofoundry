@@ -226,7 +226,24 @@ Go to **Settings → Secrets and variables → Actions** and add:
 | `R2_SECRET_ACCESS_KEY` | R2 API token secret |
 | `CF_PUBLIC_BASE_URL` | Public base URL bound to the bucket, e.g. `https://templates.example.com` |
 
-> Legacy `CF_UPLOAD_CMD` / `CF_PUBLIC_URL_TMPL` are still honored by the post-processor for local runs, but the workflow now sets them automatically from the R2 secrets above.
+> **Default upload layout (CI).** The workflow auto-builds the upload commands and public URL template from the R2 secrets above, producing:
+>
+> ```
+> s3://<R2_BUCKET>/templates/<recipe>-<arch>/<sha256>.vma.zst   (artifact)
+> s3://<R2_BUCKET>/templates/<recipe>-<arch>/<sha256>.json      (sidecar)
+> <CF_PUBLIC_BASE_URL>/templates/<recipe>-<arch>/<sha256>.vma.zst   (public URL)
+> ```
+>
+> **Custom layout.** Override any of the three by setting matching repo
+> **variables** (Settings → Variables → Actions, *not* Secrets):
+>
+> | Variable | Purpose |
+> |---|---|
+> | `CF_UPLOAD_CMD` | Shell command that uploads the artifact. |
+> | `CF_SIDECAR_UPLOAD_CMD` | Shell command that uploads the sidecar JSON. |
+> | `CF_PUBLIC_URL_TMPL` | Public URL recorded in the sidecar + registry. |
+>
+> Placeholders: `{{file}}`, `{{name}}`, `{{arch}}`, `{{sha256}}`, `{{group}}`, `{{filename}}`. Keep upload + sidecar + public URL on a consistent prefix — `cf publish --r2` walks whatever it finds under `templates/` to rebuild `registry.json`. Local runs read these from `.env` (see `docs/usage.md`).
 
 ---
 

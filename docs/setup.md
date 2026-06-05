@@ -218,7 +218,9 @@ workflow skips the key-setup step and auth is brokered by the tailnet.
 Go to **Settings → Secrets and variables → Actions**. Secrets hide values
 (use for credentials); Variables show values in the UI (use for resource
 names). The workflow reads each non-credential field from `vars.X` and
-falls back to `secrets.X` if you originally created them as secrets.
+falls back to `secrets.X`, so anything listed under **Variables** below
+can also be set as a Secret if you'd rather keep it hidden (e.g.
+`SSH_TARGET`, `PVE_HOST`) — set it in one place, not both.
 
 **Secrets** (Secrets tab):
 

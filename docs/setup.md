@@ -251,7 +251,16 @@ Also set this as a repo **variable** (Settings → Variables → Actions):
 > | `CF_SIDECAR_UPLOAD_CMD` | Shell command that uploads the sidecar JSON. |
 > | `CF_PUBLIC_URL_TMPL` | Public URL recorded in the sidecar + registry. |
 >
-> Placeholders: `{{file}}`, `{{name}}`, `{{arch}}`, `{{sha256}}`, `{{group}}`, `{{filename}}`. Keep upload + sidecar + public URL on a consistent prefix — `cf publish --r2` walks whatever it finds under `templates/` to rebuild `registry.json`. Local runs read these from `.env` (see `docs/usage.md`).
+> Placeholders: `{{file}}`, `{{name}}`, `{{arch}}`, `{{sha256}}`, `{{group}}`, `{{filename}}`.
+>
+> **The three variables are independent.** The post-processor substitutes
+> placeholders into each one separately — it does *not* derive the public URL
+> from the upload command (or vice versa). If you change the path layout in
+> `CF_UPLOAD_CMD`, you must update `CF_SIDECAR_UPLOAD_CMD` and
+> `CF_PUBLIC_URL_TMPL` to match; otherwise the sidecar's `url` field will
+> point at a 404 and `cf publish --r2` (which walks `templates/` in the
+> bucket) won't find anything to publish. Local runs read these from `.env`
+> (see `docs/usage.md`).
 
 ---
 

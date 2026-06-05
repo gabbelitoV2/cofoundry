@@ -1,6 +1,16 @@
 import { Command } from 'commander'
-import logUpdate from 'log-update'
-import pc from 'picocolors'
+import {
+    createRenderer,
+    log,
+    title,
+    dim,
+    accent,
+    fmtBytes,
+    fmtRate,
+    fmtPercent,
+    type Renderer,
+    type TaskHandle,
+} from '@cofoundry/ui'
 import { resolveConfig } from './config.ts'
 import { fetchRegistry } from './registry.ts'
 import { resolveVmids } from './vmid.ts'
@@ -21,168 +31,30 @@ import {
     confirmVmidConflicts,
     closePrompts,
 } from './prompt.ts'
-import { log } from './log.ts'
 import type { Template } from '../../src/registry/schema.ts'
 
-type ProgressPhase =
-    | 'queued'
-    | 'download'
-    | 'verify'
-    | 'install'
-    | 'done'
-    | 'failed'
+type Phase = 'download' | 'verify' | 'install'
 
-interface ProgressRow {
-    name: string
-    phase: ProgressPhase
-    pct: number
+const phaseLabel = (phase: Phase): string => {
+    switch (phase) {
+        case 'download':
+            return 'downloading'
+        case 'verify':
+            return 'verifying'
+        case 'install':
+            return 'installing'
+    }
+}
+
+const formatDownload = (
+    received: number,
+    total: number,
     startedAt: number
-    message?: string
-    received?: number
-    total?: number
-}
-
-interface ProgressUpdate {
-    message?: string
-    received?: number
-    total?: number
-}
-
-const fmtBytes = (n: number): string => {
-    if (n >= 1e9) return `${(n / 1e9).toFixed(2)}GB`
-    if (n >= 1e6) return `${(n / 1e6).toFixed(1)}MB`
-    if (n >= 1e3) return `${(n / 1e3).toFixed(1)}KB`
-    return `${n}B`
-}
-
-const fmtElapsed = (ms: number): string => {
-    if (ms < 1000) return `${ms}ms`
-    const seconds = Math.floor(ms / 1000)
-    if (seconds < 60) return `${seconds}s`
-    return `${Math.floor(seconds / 60)}m${String(seconds % 60).padStart(2, '0')}s`
-}
-
-class ProgressRenderer {
-    private rows = new Map<string, ProgressRow>()
-    private lastLog = new Map<string, number>()
-    private readonly enabled = process.stdout.isTTY
-
-    constructor(names: string[]) {
-        for (const name of names) {
-            this.rows.set(name, {
-                name,
-                phase: 'queued',
-                pct: 0,
-                startedAt: Date.now(),
-            })
-        }
-    }
-
-    update(
-        name: string,
-        phase: ProgressPhase,
-        pct: number,
-        update: string | ProgressUpdate = {}
-    ): void {
-        const row = this.rows.get(name) ?? {
-            name,
-            phase,
-            pct: 0,
-            startedAt: Date.now(),
-        }
-        const clamped = Math.max(0, Math.min(100, pct))
-        const details =
-            typeof update === 'string' ? { message: update } : update
-        if (
-            row.phase === phase &&
-            row.pct === clamped &&
-            row.message === details.message &&
-            row.received === details.received &&
-            row.total === details.total
-        )
-            return
-
-        if (row.phase !== phase && phase !== 'done' && phase !== 'failed') {
-            row.startedAt = Date.now()
-        }
-        row.phase = phase
-        row.pct = clamped
-        row.message = details.message
-        row.received = details.received
-        row.total = details.total
-        this.rows.set(name, row)
-
-        if (!this.enabled) {
-            this.logSparse(row)
-            return
-        }
-
-        this.render()
-    }
-
-    finish(): void {
-        if (this.enabled) logUpdate.done()
-    }
-
-    private logSparse(row: ProgressRow): void {
-        const key = `${row.name}:${row.phase}`
-        const last = this.lastLog.get(key) ?? -1
-        if (row.pct !== 100 && row.pct % 10 !== 0) return
-        if (row.pct === last) return
-        this.lastLog.set(key, row.pct)
-        log.info(
-            `${row.name}: ${row.phase} ${row.pct}%${this.formatDetails(row)}`
-        )
-    }
-
-    private render(): void {
-        const lines = [pc.bold('Installing templates')]
-        for (const row of this.rows.values()) {
-            lines.push(this.formatRow(row))
-        }
-
-        logUpdate(lines.join('\n'))
-    }
-
-    private formatRow(row: ProgressRow): string {
-        const label = row.name.padEnd(28)
-        const phase = row.phase.padEnd(8)
-        const pct = String(row.pct).padStart(3)
-        const width = 24
-        const filled = Math.round((row.pct / 100) * width)
-        const bar = `${'='.repeat(filled)}${'-'.repeat(width - filled)}`
-        const text = row.message ? `  ${pc.dim(row.message)}` : ''
-        const details = this.formatDetails(row)
-
-        if (row.phase === 'done') {
-            return `  ${pc.green('OK')} ${label} ${phase} [${bar}] ${pct}%${details}${text}`
-        }
-        if (row.phase === 'failed') {
-            return `  ${pc.red('!!')} ${label} ${phase} [${bar}] ${pct}%${details}${text}`
-        }
-        if (row.phase === 'queued') {
-            return `  ${pc.dim('--')} ${label} ${pc.dim(phase)} [${bar}] ${pct}%${details}${text}`
-        }
-        return `  ${pc.cyan('>>')} ${label} ${phase} [${bar}] ${pct}%${details}${text}`
-    }
-
-    private formatDetails(row: ProgressRow): string {
-        const elapsedMs = Math.max(0, Date.now() - row.startedAt)
-        const parts = [fmtElapsed(elapsedMs)]
-
-        if (row.phase === 'download' && row.received !== undefined) {
-            const total = row.total && row.total > 0 ? row.total : undefined
-            const speed = elapsedMs > 0 ? row.received / (elapsedMs / 1000) : 0
-            parts.push(
-                total
-                    ? `${fmtBytes(row.received)}/${fmtBytes(total)}`
-                    : fmtBytes(row.received)
-            )
-            parts.push(`${fmtBytes(speed)}/s`)
-        }
-
-        return `  ${pc.dim(parts.join('  '))}`
-    }
+): string => {
+    const elapsed = Math.max(1, Date.now() - startedAt)
+    const pct = total > 0 ? (received / total) * 100 : 0
+    const size = total > 0 ? `${fmtBytes(received)}/${fmtBytes(total)}` : fmtBytes(received)
+    return `${fmtPercent(pct)} ${dim('·')} ${size} ${dim('·')} ${fmtRate(received, elapsed)}`
 }
 
 const installTemplate = async (
@@ -191,41 +63,42 @@ const installTemplate = async (
     storage: string,
     verify: boolean,
     force: boolean,
-    progress: ProgressRenderer,
+    task: TaskHandle,
     signal: AbortSignal
 ): Promise<void> => {
     const dest = tempPath(vmid)
 
-    progress.update(template.name, 'download', 0)
+    const downloadStartedAt = Date.now()
+    task.setPhase(`${phaseLabel('download')} ${dim(`→ VMID ${vmid}`)}`)
     await downloadWithRetry(
         template.url,
         dest,
         p =>
-            progress.update(template.name, 'download', p.pct, {
-                received: p.received,
-                total: p.total,
-            }),
+            task.setProgress(
+                formatDownload(p.received, p.total, downloadStartedAt)
+            ),
         signal
     )
 
     if (verify) {
-        progress.update(template.name, 'verify', 0)
+        task.setPhase(`${phaseLabel('verify')} ${dim(`→ VMID ${vmid}`)}`)
+        task.setProgress('SHA-256')
         await verifySha256(dest, template.sha256)
     }
 
-    progress.update(template.name, 'install', 0, `VMID ${vmid}`)
+    task.setPhase(`${phaseLabel('install')} ${dim(`→ VMID ${vmid}`)}`)
+    task.setProgress(fmtPercent(0))
     await qmrestore(
         dest,
         vmid,
         storage,
         force,
-        pct => progress.update(template.name, 'install', pct, `VMID ${vmid}`),
+        pct => task.setProgress(fmtPercent(pct)),
         signal
     )
 
     await removeTempFile(dest)
-
-    progress.update(template.name, 'done', 100, `VMID ${vmid}`)
+    task.succeed(`installed as ${accent(`VMID ${vmid}`)}`)
 }
 
 const program = new Command()
@@ -248,14 +121,15 @@ program
         'Overwrite existing VMs when a suggested VMID is already taken'
     )
     .option('--no-verify', 'Skip SHA-256 verification after download')
-    .option('--json', 'NDJSON progress output for scripted use')
+    .option('--verbose', 'Stream per-event logs instead of in-place TUI')
     .action(async (registryArg: string | undefined, opts) => {
         const abort = new AbortController()
         let interrupted = false
+        let activeRenderer: Renderer | undefined
         process.once('SIGINT', () => {
             interrupted = true
             abort.abort()
-            logUpdate.done()
+            activeRenderer?.finish()
             log.warn('Interrupted; stopping active downloads/restores...')
             cleanupTempDirSync()
             closePrompts()
@@ -265,11 +139,13 @@ program
         const { registrySource, defaultStorage } =
             await resolveConfig(registryArg)
 
-        log.info(`Registry: ${registrySource}`)
+        log.info(`Registry: ${dim(registrySource)}`)
         const registry = await fetchRegistry(registrySource)
-        log.success(
-            `Loaded "${registry.name}" (${registry.groups.reduce((n, g) => n + g.templates.length, 0)} templates)`
+        const count = registry.groups.reduce(
+            (n, g) => n + g.templates.length,
+            0
         )
+        log.ok(`Loaded ${accent(`"${registry.name}"`)} ${dim(`(${count} templates)`)}`)
 
         const storage =
             (opts.storage ?? defaultStorage) || (await promptStorage())
@@ -298,50 +174,51 @@ program
         }
 
         if (opts.dryRun) {
-            console.log()
-            console.log(pc.bold('Dry run — would install:'))
+            log.section('Dry run — would install')
             for (const a of assignments) {
-                console.log(
-                    `  ${a.template.name}  →  VMID ${a.vmid}  (${storage})`
+                log.raw(
+                    `  ${a.template.name.padEnd(28)} ${dim('→')} VMID ${accent(String(a.vmid))} ${dim(`(${storage})`)}`
                 )
             }
+            log.blank()
             process.exit(0)
         }
 
         await sweepStaleTempDirs()
         await ensureTempDir()
 
-        const progress = new ProgressRenderer(
-            assignments.map(a => a.template.name)
-        )
+        const renderer = createRenderer({
+            title: title(`Installing ${assignments.length} template${assignments.length === 1 ? '' : 's'} → ${accent(storage)}`),
+            verbose: opts.verbose,
+            outputLines: 1,
+        })
+        activeRenderer = renderer
 
         const results = await Promise.allSettled(
-            assignments.map(async a =>
-                installTemplate(
-                    a.template,
-                    a.vmid,
-                    storage,
-                    !opts.noVerify,
-                    a.overwrite,
-                    progress,
-                    abort.signal
-                ).catch(err => {
-                    progress.update(
-                        a.template.name,
-                        'failed',
-                        100,
-                        err instanceof Error ? err.message : String(err)
+            assignments.map(async a => {
+                const task = renderer.task(a.template.name)
+                try {
+                    await installTemplate(
+                        a.template,
+                        a.vmid,
+                        storage,
+                        !opts.noVerify,
+                        a.overwrite,
+                        task,
+                        abort.signal
                     )
+                } catch (err) {
+                    const msg = err instanceof Error ? err.message : String(err)
+                    task.fail(msg)
                     throw err
-                })
-            )
+                }
+            })
         )
 
-        progress.finish()
+        renderer.finish()
         await cleanupTempDir()
         closePrompts()
 
-        console.log()
         if (interrupted) {
             log.warn(
                 'Interrupted. Temporary archives were removed; inspect Proxmox for any partial restores before retrying.'
@@ -349,26 +226,20 @@ program
             process.exit(130)
         }
 
-        let failed = 0
-        for (let i = 0; i < results.length; i++) {
-            const r = results[i]!
-            const name = assignments[i]!.template.name
-            if (r.status === 'fulfilled') {
-                log.success(
-                    `${name} — installed as VMID ${assignments[i]!.vmid}`
-                )
-            } else {
-                log.error(`${name} — FAILED: ${(r.reason as Error).message}`)
-                failed++
-            }
+        const passed = results.filter(r => r.status === 'fulfilled').length
+        const failed = results.length - passed
+        log.blank()
+        if (failed === 0) {
+            log.ok(`Installed ${passed}/${results.length} templates.`)
+        } else {
+            log.err(`${failed} failed, ${passed} succeeded.`)
+            process.exit(1)
         }
-
-        if (failed > 0) process.exit(1)
     })
 
 program.parseAsync(process.argv).catch(err => {
     cleanupTempDirSync()
     closePrompts()
-    log.error(err instanceof Error ? err.message : String(err))
+    log.err(err instanceof Error ? err.message : String(err))
     process.exit(1)
 })

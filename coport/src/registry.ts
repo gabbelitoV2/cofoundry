@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises'
 import { RegistrySchema, type Registry } from '../../src/registry/schema.ts'
 import { isFilePath } from './config.ts'
-import { log } from './log.ts'
+import { log } from '@cofoundry/ui'
 
 export const fetchRegistry = async (source: string): Promise<Registry> => {
     let raw: string
@@ -19,7 +19,7 @@ export const fetchRegistry = async (source: string): Promise<Registry> => {
 
     const parsed = RegistrySchema.safeParse(JSON.parse(raw))
     if (!parsed.success) {
-        log.error('Registry validation failed:', parsed.error.format())
+        log.err(`Registry validation failed: ${JSON.stringify(parsed.error.format())}`)
         throw new Error('Invalid registry format. Try upgrading coport.')
     }
 

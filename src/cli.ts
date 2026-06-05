@@ -12,6 +12,7 @@ import { runUpload } from './upload.ts'
 import { type Env, loadEnv } from './env.ts'
 import { log } from './log.ts'
 import { redactSensitive } from './util.ts'
+import pc from 'picocolors'
 
 type BuildCommandOptions = {
     skipArtifactSync?: boolean
@@ -56,13 +57,13 @@ const buildAction = async (
 
     const { passed, failed } = await runPipeline(env, recipes, pipelineOpts)
 
-    console.log('')
-    log.ok(`${passed.length} succeeded: ${passed.join(', ') || 'none'}`)
+    log.blank()
+    log.ok(`${passed.length} succeeded${passed.length > 0 ? `: ${passed.join(', ')}` : ''}`)
     if (failed.length > 0) {
         log.err(
             `${failed.length} failed: ${failed.map(f => f.name).join(', ')}`
         )
-        for (const f of failed) log.err(`  ${f.name}: ${f.error}`)
+        for (const f of failed) log.note(`${f.name}: ${f.error}`)
         process.exit(1)
     }
 }
@@ -76,8 +77,14 @@ program
     .action(async () => {
         const recipes = await listRecipes()
         if (recipes.length === 0) return log.warn('No recipes found in builds/')
-        for (const r of recipes)
-            console.log(`${r.name.padEnd(20)} ${r.display}`)
+        log.section(`Recipes ${pc.dim(`(${recipes.length})`)}`)
+        const w = Math.max(...recipes.map(r => r.name.length))
+        for (const r of recipes) {
+            log.raw(
+                `  ${pc.cyan(r.name.padEnd(w))}  ${pc.dim('·')}  ${r.display}`
+            )
+        }
+        log.blank()
     })
 
 program
@@ -173,32 +180,39 @@ program
         if (updatable.length === 0)
             return log.warn('No recipes with iso_checksum_url found')
 
+        log.section(
+            `Update ISOs ${pc.dim(`(${updatable.length} recipe${updatable.length === 1 ? '' : 's'})`)}`
+        )
+
         const updated: string[] = []
         const failed: { name: string; error: string }[] = []
+        const w = Math.max(...updatable.map(r => r.name.length))
 
         for (const recipe of updatable) {
+            const label = pc.cyan(recipe.name.padEnd(w))
             try {
                 const iso = await resolveIsoUpdate(recipe)
                 if (!iso) continue
                 const changed = await applyIsoUpdate(recipe, iso)
                 if (changed) {
-                    log.ok(`${recipe.name}: updated → ${iso.filename}`)
+                    log.ok(`${label} ${pc.dim('→')} ${iso.filename}`)
                     updated.push(recipe.name)
                 } else {
-                    log.info(`${recipe.name}: already up to date`)
+                    log.info(`${label} ${pc.dim('·')} already up to date`)
                 }
             } catch (err) {
                 const msg = err instanceof Error ? err.message : String(err)
-                log.err(`${recipe.name}: ${msg}`)
+                log.err(`${label} ${pc.dim('·')} ${msg}`)
                 failed.push({ name: recipe.name, error: msg })
             }
         }
 
-        console.log('')
-        if (updated.length > 0) log.ok(`updated: ${updated.join(', ')}`)
-        else log.info('nothing changed')
+        log.blank()
+        if (updated.length > 0)
+            log.ok(`Updated ${updated.length}/${updatable.length}.`)
+        else log.info('No changes.')
         if (failed.length > 0) {
-            log.err(`failed: ${failed.map(f => f.name).join(', ')}`)
+            log.err(`${failed.length} failed: ${failed.map(f => f.name).join(', ')}`)
             process.exit(1)
         }
     })
@@ -229,13 +243,20 @@ program
 
         const { results, store } = await checkRecipes(withUrl)
 
-        for (const r of results) {
-            if (r.error) {
-                log.warn(`${r.name}: error — ${r.error}`)
-            } else if (r.changed) {
-                log.info(`${r.name}: upstream changed`)
-            } else {
-                log.info(`${r.name}: up to date`)
+        if (!opts.json) {
+            log.section(
+                `Upstream check ${pc.dim(`(${results.length} recipe${results.length === 1 ? '' : 's'})`)}`
+            )
+            const w = Math.max(...results.map(r => r.name.length))
+            for (const r of results) {
+                const label = pc.cyan(r.name.padEnd(w))
+                if (r.error) {
+                    log.warn(`${label} ${pc.dim('·')} ${r.error}`)
+                } else if (r.changed) {
+                    log.ok(`${label} ${pc.dim('·')} upstream changed`)
+                } else {
+                    log.info(`${label} ${pc.dim('·')} up to date`)
+                }
             }
         }
 
@@ -246,12 +267,15 @@ program
             .map(r => r.name)
         if (opts.json) {
             console.log(JSON.stringify(changed))
-        } else if (changed.length > 0) {
-            log.ok(
-                `${changed.length} recipe(s) have a new upstream ISO: ${changed.join(', ')}`
-            )
         } else {
-            log.ok('All recipes are up to date')
+            log.blank()
+            if (changed.length > 0) {
+                log.ok(
+                    `${changed.length} recipe(s) have a new upstream ISO: ${changed.join(', ')}`
+                )
+            } else {
+                log.ok('All recipes are up to date.')
+            }
         }
     })
 

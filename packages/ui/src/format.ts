@@ -1,14 +1,15 @@
-// Shared formatters + wget output parsing used by the pipeline renderer.
+import prettyMs from 'pretty-ms'
 
 export const fmtBytes = (n: number): string => {
+    if (!Number.isFinite(n) || n < 0) return '0B'
     if (n >= 1e9) return `${(n / 1e9).toFixed(2)}GB`
     if (n >= 1e6) return `${(n / 1e6).toFixed(2)}MB`
     if (n >= 1e3) return `${(n / 1e3).toFixed(2)}KB`
-    return `${n}B`
+    return `${Math.round(n)}B`
 }
 
 export const fmtElapsed = (ms: number): string => {
-    if (ms < 1000) return `${ms}ms`
+    if (ms < 1000) return `${Math.round(ms)}ms`
     if (ms < 10_000) return `${(ms / 1000).toFixed(1)}s`
     const total = Math.round(ms / 1000)
     if (total < 60) return `${total}s`
@@ -17,12 +18,25 @@ export const fmtElapsed = (ms: number): string => {
     return `${minutes}m${seconds}s`
 }
 
+export const fmtDuration = (ms: number): string =>
+    prettyMs(ms, {
+        compact: false,
+        secondsDecimalDigits: 0,
+        keepDecimalsOnWholeSeconds: false,
+    })
+
+export const fmtPercent = (n: number): string =>
+    `${String(Math.max(0, Math.min(100, Math.round(n)))).padStart(3)}%`
+
+export const fmtRate = (bytes: number, ms: number): string => {
+    if (ms <= 0) return '0B/s'
+    return `${fmtBytes(bytes / (ms / 1000))}/s`
+}
+
 const ANSI_RE = /\x1b\[[0-9;]*[a-zA-Z]/g
 
 export type WgetProgress = { pct: number; speed?: string; eta?: string }
 
-// Parses one line of `wget --show-progress --progress=bar:force:noscroll` output.
-// Returns null for lines that aren't a progress update.
 export const parseWgetLine = (raw: string): WgetProgress | null => {
     const line = raw.replace(ANSI_RE, '').replace(/\r/g, '').trim()
     if (!line) return null

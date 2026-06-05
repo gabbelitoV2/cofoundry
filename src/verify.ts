@@ -1,8 +1,8 @@
 import { execa } from 'execa'
 import { basename, join } from 'node:path'
+import { createRenderer, title, accent, dim } from '@cofoundry/ui'
 import type { Env } from './env.ts'
 import type { RecipeInfo } from './config.ts'
-import { log } from './log.ts'
 import { shellQuote } from './util.ts'
 
 const SCRATCH_VMID_BASE = 9500
@@ -82,29 +82,39 @@ export const runVerify = async (
     const remoteTmp = `/var/tmp/cofoundry-verify-${process.pid}`
     const remoteFile = `${remoteTmp}/${basename(local)}`
 
-    log.step(`verify ${recipe.name}: uploading artifact to ${env.SSH_TARGET}`)
-    await ssh(env.SSH_TARGET, `mkdir -p ${shellQuote(remoteTmp)}`)
-    await execa('scp', [local, `${env.SSH_TARGET}:${remoteFile}`], {
-        stdin: 'inherit',
-        stderr: 'inherit',
+    const renderer = createRenderer({
+        title: title(
+            `Verifying ${accent(recipe.name)} ${dim('on')} ${accent(env.SSH_TARGET)}`
+        ),
+        outputLines: 1,
     })
-
-    const vmid = await pickScratchVmid(env.SSH_TARGET)
-    log.step(`verify ${recipe.name}: qmrestore → VMID ${vmid}`)
-
+    const task = renderer.task(recipe.name)
     let restored = false
+    let vmid = 0
+
     try {
+        task.setPhase(`uploading artifact ${dim('→')} ${env.SSH_TARGET}`)
+        await ssh(env.SSH_TARGET, `mkdir -p ${shellQuote(remoteTmp)}`)
+        await execa('scp', [local, `${env.SSH_TARGET}:${remoteFile}`], {
+            stdin: 'inherit',
+            stderr: 'inherit',
+        })
+
+        task.setPhase('allocating VMID')
+        vmid = await pickScratchVmid(env.SSH_TARGET)
+
+        task.setPhase(`qmrestore ${dim('→')} VMID ${accent(String(vmid))}`)
         await ssh(
             env.SSH_TARGET,
             `qmrestore ${shellQuote(remoteFile)} ${vmid} --storage ${shellQuote(env.CF_STORAGE)} --unique 1`
         )
         restored = true
 
-        log.step(`verify ${recipe.name}: qm start ${vmid}`)
+        task.setPhase(`qm start ${vmid}`)
         await ssh(env.SSH_TARGET, `qm start ${vmid}`)
 
-        log.step(
-            `verify ${recipe.name}: waiting up to ${GUEST_PING_TIMEOUT_S}s for guest agent`
+        task.setPhase(
+            `waiting for guest agent ${dim(`(≤${GUEST_PING_TIMEOUT_S}s)`)}`
         )
         const ok = await pingGuest(
             env.SSH_TARGET,
@@ -117,9 +127,13 @@ export const runVerify = async (
                 `guest agent did not respond within ${GUEST_PING_TIMEOUT_S}s`
             )
         }
-        log.ok(`verify ${recipe.name}: guest agent responded`)
+        task.succeed(`guest agent responded ${dim(`(VMID ${vmid})`)}`)
+    } catch (err) {
+        task.fail(err instanceof Error ? err.message : String(err))
+        throw err
     } finally {
         if (restored) await destroyVm(env.SSH_TARGET, vmid)
         await sshOk(env.SSH_TARGET, `rm -rf ${shellQuote(remoteTmp)}`)
+        renderer.finish()
     }
 }

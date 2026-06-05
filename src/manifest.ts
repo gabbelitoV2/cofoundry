@@ -3,6 +3,7 @@ import { basename, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import byteSize from 'byte-size'
 import { execa } from 'execa'
+import pc from 'picocolors'
 import { log } from './log.ts'
 import type { Registry, Group, Template } from './registry/schema.ts'
 
@@ -90,8 +91,9 @@ const writeRegistry = async (
         (n, g) => n + g.templates.length,
         0
     )
+    log.blank()
     log.ok(
-        `wrote ${outPath} (${templateCount} templates in ${registry.groups.length} groups)`
+        `Wrote ${pc.cyan(outPath)} ${pc.dim(`(${templateCount} templates in ${registry.groups.length} groups)`)}`
     )
     return outPath
 }
@@ -102,6 +104,7 @@ export const buildManifest = async (
 ): Promise<string> => {
     const groupDefs = await loadGroupDefs()
 
+    log.section(`Publish ${pc.dim('·')} ${pc.cyan(sourceDir)}`)
     const entries = await readdir(sourceDir)
     const sidecars: Sidecar[] = []
     for (const entry of entries) {
@@ -110,8 +113,8 @@ export const buildManifest = async (
         const raw = await readFile(path, 'utf8')
         const parsed = JSON.parse(raw) as Sidecar
         sidecars.push(parsed)
-        log.info(
-            `  + ${basename(entry, '.json')}  ${parsed.sha256.slice(0, 12)}…  ${byteSize(parsed.size)}`
+        log.raw(
+            `  ${pc.green('+')} ${pc.cyan(basename(entry, '.json').padEnd(28))} ${pc.dim(parsed.sha256.slice(0, 12) + '…')}  ${byteSize(parsed.size)}`
         )
     }
 
@@ -192,7 +195,10 @@ export const buildManifestFromR2 = async (
     if (!bucket) throw new Error('R2_BUCKET is required for --r2 publish')
     const normalizedPrefix = normalizeR2Prefix(prefix)
 
-    log.step(`listing s3://${bucket}/${normalizedPrefix}`)
+    log.section(
+        `Publish ${pc.dim('·')} ${pc.cyan(`s3://${bucket}/${normalizedPrefix}`)}`
+    )
+    log.step(`listing objects`)
     const listArgs = ['list-objects-v2', '--bucket', bucket]
     if (normalizedPrefix) listArgs.push('--prefix', normalizedPrefix)
     const raw = await awsS3api(endpoint, listArgs)
@@ -212,8 +218,8 @@ export const buildManifestFromR2 = async (
             new RegExp(`^${escapeRegex(normalizedPrefix)}`),
             ''
         )
-        log.info(
-            `  + ${displayPrefix}  ${parsedSidecar.sha256.slice(0, 12)}…  ${byteSize(parsedSidecar.size)}`
+        log.raw(
+            `  ${pc.green('+')} ${pc.cyan(displayPrefix.padEnd(28))} ${pc.dim(parsedSidecar.sha256.slice(0, 12) + '…')}  ${byteSize(parsedSidecar.size)}`
         )
     }
 

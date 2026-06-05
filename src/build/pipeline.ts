@@ -8,8 +8,14 @@ import {
     syncPhase,
 } from '../build.ts'
 import { redactSensitive } from '../util.ts'
-import { formatTransferStatus, parseWgetLine, formatWgetStatus } from './ui.ts'
-import { createRenderer, type Renderer, type TaskHandle } from './render.ts'
+import {
+    formatTransferStatus,
+    parseWgetLine,
+    formatWgetStatus,
+    createRenderer,
+    type Renderer,
+    type TaskHandle,
+} from '@cofoundry/ui'
 
 export type PipelineOptions = {
     syncBack: boolean

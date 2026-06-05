@@ -1,0 +1,20 @@
+{
+  "name": "@cofoundry/ui",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./renderer": "./src/renderer.ts",
+    "./format": "./src/format.ts",
+    "./log": "./src/log.ts"
+  },
+  "dependencies": {
+    "cli-spinners": "^3.4.0",
+    "cli-truncate": "^6.0.0",
+    "figures": "^6.1.0",
+    "log-update": "^8.0.0",
+    "picocolors": "^1.1.1",
+    "pretty-ms": "^9.3.0"
+  }
+}

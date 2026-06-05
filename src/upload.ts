@@ -2,6 +2,13 @@ import { readdir, readFile, access } from 'node:fs/promises'
 import { join } from 'node:path'
 import { execa } from 'execa'
 import pRetry from 'p-retry'
+import {
+    createRenderer,
+    title,
+    accent,
+    dim,
+    type TaskHandle,
+} from '@cofoundry/ui'
 import { log } from './log.ts'
 import type { Env } from './env.ts'
 import { captureRemote } from './build/remote.ts'
@@ -138,7 +145,7 @@ const remoteSource = (target: string, sourceDir: string): Source => {
 const execWithRetry = async (
     src: Source,
     cmd: string,
-    label: string
+    task: TaskHandle
 ): Promise<void> => {
     await pRetry(
         async () => {
@@ -149,8 +156,8 @@ const execWithRetry = async (
             minTimeout: 2000,
             factor: 2,
             onFailedAttempt: ({ error, attemptNumber, retriesLeft }) => {
-                log.warn(
-                    `${label}: attempt ${attemptNumber} failed (${retriesLeft} left): ${error.message.split('\n')[0]}`
+                task.log(
+                    `attempt ${attemptNumber} failed (${retriesLeft} left): ${error.message.split('\n')[0]}`
                 )
             },
         }
@@ -209,33 +216,38 @@ export const runUpload = async (
         ? remoteSource(env.SSH_TARGET, opts.sourceDir ?? buildRemoteOutDir(env))
         : localSource(opts.sourceDir ?? env.CF_OUT_DIR)
 
-    log.info(`source: ${src.label}`)
-
     const items = await loadSidecars(src, opts.names)
     if (items.length === 0) {
-        log.warn(`no sidecar .json files found in ${src.label}`)
+        log.warn(`No sidecar .json files found in ${src.label}`)
         return
     }
 
+    const renderer = createRenderer({
+        title: title(
+            `Uploading ${items.length} artifact${items.length === 1 ? '' : 's'} ${dim('from')} ${accent(src.label)}${opts.dryRun ? dim(' (dry-run)') : ''}`
+        ),
+        outputLines: 2,
+    })
+
     const succeeded: string[] = []
     const failed: { name: string; error: string }[] = []
+    const tasks = items.map(({ sidecar }) => ({
+        sidecar,
+        task: renderer.task(sidecar.name),
+    }))
 
-    for (const { sidecar } of items) {
-        // sidecar.name already includes the arch (e.g. "almalinux-10-amd64"),
-        // matching the on-disk filename written by vzdump-and-cleanup.sh.
+    for (const { sidecar, task } of tasks) {
         const baseName = sidecar.name
         const artifactFile = `${baseName}.vma.zst`
         const sidecarFile = `${baseName}.json`
+
+        task.setPhase('checking artifact')
         if (!(await src.fileExists(artifactFile))) {
-            log.warn(
-                `${baseName}: artifact missing (${src.pathOf(artifactFile)}); skipping`
-            )
+            task.fail(`artifact missing (${src.pathOf(artifactFile)})`)
             failed.push({ name: baseName, error: 'artifact missing' })
             continue
         }
 
-        // Match vzdump-and-cleanup.sh semantics: {{name}} is the bare recipe
-        // name (CF_RECIPE_NAME), not the arch-suffixed sidecar "name" field.
         const recipeName = sidecar.name.endsWith(`-${sidecar.arch}`)
             ? sidecar.name.slice(0, -(sidecar.arch.length + 1))
             : sidecar.name
@@ -249,15 +261,15 @@ export const runUpload = async (
         }
         const cmd = renderTemplate(env.CF_UPLOAD_CMD, vars)
 
-        log.step(`${baseName}: uploading artifact`)
+        task.setPhase(`uploading artifact ${dim(`(${fmtSize(sidecar.size)})`)}`)
         if (opts.dryRun) {
-            log.info(`dry-run: ${cmd}`)
+            task.log(cmd)
         } else {
             try {
-                await execWithRetry(src, cmd, `${baseName} artifact`)
+                await execWithRetry(src, cmd, task)
             } catch (err) {
                 const msg = err instanceof Error ? err.message : String(err)
-                log.err(`${baseName}: artifact upload failed: ${msg}`)
+                task.fail(`artifact upload failed: ${msg}`)
                 failed.push({ name: baseName, error: msg })
                 continue
             }
@@ -269,30 +281,40 @@ export const runUpload = async (
                 file: src.pathOf(sidecarFile),
                 filename: `${baseName}-${sidecar.sha256}.json`,
             })
-            log.step(`${baseName}: uploading sidecar`)
+            task.setPhase('uploading sidecar')
             if (opts.dryRun) {
-                log.info(`dry-run: ${scmd}`)
+                task.log(scmd)
             } else {
                 try {
-                    await execWithRetry(src, scmd, `${baseName} sidecar`)
+                    await execWithRetry(src, scmd, task)
                 } catch (err) {
                     const msg = err instanceof Error ? err.message : String(err)
-                    log.err(`${baseName}: sidecar upload failed: ${msg}`)
+                    task.fail(`sidecar upload failed: ${msg}`)
                     failed.push({ name: baseName, error: msg })
                     continue
                 }
             }
         }
 
+        task.succeed(opts.dryRun ? 'planned' : 'uploaded')
         succeeded.push(baseName)
     }
 
-    console.log('')
-    log.ok(`${succeeded.length} uploaded: ${succeeded.join(', ') || 'none'}`)
-    if (failed.length > 0) {
+    renderer.finish()
+
+    log.blank()
+    if (failed.length === 0) {
+        log.ok(`Uploaded ${succeeded.length}/${items.length}.`)
+    } else {
         log.err(
             `${failed.length} failed: ${failed.map(f => f.name).join(', ')}`
         )
         process.exit(1)
     }
+}
+
+const fmtSize = (n: number): string => {
+    if (n >= 1e9) return `${(n / 1e9).toFixed(2)}GB`
+    if (n >= 1e6) return `${(n / 1e6).toFixed(1)}MB`
+    return `${(n / 1e3).toFixed(0)}KB`
 }

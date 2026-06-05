@@ -1,4 +1,5 @@
 import { execa } from 'execa'
+import { accent, dim } from '@cofoundry/ui'
 import type { Env } from './env.ts'
 import { log } from './log.ts'
 import { shellQuote } from './util.ts'
@@ -37,9 +38,10 @@ export const runPruneR2 = async ({
     if (!endpoint) throw new Error('R2_ENDPOINT is required for --r2 prune')
     if (!bucket) throw new Error('R2_BUCKET is required for --r2 prune')
 
-    if (dryRun) log.warn('--dry-run: no objects will be deleted')
+    log.section(`R2 prune ${dim('·')} ${accent(`s3://${bucket}/templates/`)}`)
+    if (dryRun) log.warn('dry-run: no objects will be deleted')
 
-    log.step(`listing s3://${bucket}/templates/`)
+    log.step(`listing objects`)
     const raw = await awsS3(endpoint, [
         'list-objects-v2',
         '--bucket',
@@ -79,20 +81,20 @@ export const runPruneR2 = async ({
         for (const obj of live) liveArtifactKeys.add(obj.Key)
         if (stale.length === 0) {
             log.info(
-                `${prefix}: ${items.length} artifact(s), within keep=${keep}`
+                `${accent(prefix)} ${dim('·')} ${items.length} artifact(s), within keep=${keep}`
             )
             continue
         }
         const verb = dryRun ? 'would delete' : 'deleting'
         log.ok(
-            `${prefix}: ${items.length} artifact(s), ${verb} ${stale.length}`
+            `${accent(prefix)} ${dim('·')} ${items.length} artifact(s), ${verb} ${stale.length}`
         )
         for (const obj of stale) {
-            log.info(`  ${obj.Key}  (${obj.LastModified})`)
+            log.note(`${obj.Key}  (${obj.LastModified})`)
             deletions.push(obj.Key)
             const sidecar = obj.Key.replace(/\.vma\.zst$/, '.json')
             if (sidecarKeys.has(sidecar)) {
-                log.info(`  ${sidecar}  (paired sidecar)`)
+                log.note(`${sidecar}  (paired sidecar)`)
                 deletions.push(sidecar)
             }
         }
@@ -111,9 +113,9 @@ export const runPruneR2 = async ({
     }
     if (orphans.length > 0) {
         const verb = dryRun ? 'would delete' : 'deleting'
-        log.ok(`orphan sidecars: ${verb} ${orphans.length}`)
+        log.ok(`orphan sidecars ${dim('·')} ${verb} ${orphans.length}`)
         for (const key of orphans) {
-            log.info(`  ${key}`)
+            log.note(key)
             deletions.push(key)
         }
     }
@@ -130,10 +132,11 @@ export const runPruneR2 = async ({
         }
     }
 
+    log.blank()
     log.ok(
         dryRun
-            ? `R2 prune dry-run: ${deletions.length} object(s) would be deleted across ${artifactGroups.size} template(s)`
-            : `R2 prune: deleted ${deletions.length} object(s) across ${artifactGroups.size} template(s)`
+            ? `Dry-run: ${deletions.length} object(s) would be deleted across ${artifactGroups.size} template(s).`
+            : `Deleted ${deletions.length} object(s) across ${artifactGroups.size} template(s).`
     )
 }
 
@@ -184,12 +187,13 @@ const report = (label: string, paths: string[], dryRun: boolean): void => {
         return
     }
     const verb = dryRun ? 'would remove' : 'removed'
-    log.ok(`${label}: ${verb} ${paths.length}`)
-    for (const f of paths) log.info(`  ${f}`)
+    log.ok(`${label} ${dim('·')} ${verb} ${paths.length}`)
+    for (const f of paths) log.note(f)
 }
 
 export const runClean = async (env: Env): Promise<void> => {
-    log.step(`removing ${REMOTE_WORK_DIR} on ${env.SSH_TARGET}`)
+    log.section(`Clean ${dim('·')} ${accent(env.SSH_TARGET)}`)
+    log.step(`removing ${REMOTE_WORK_DIR}`)
     const workSize = await ssh(
         env.SSH_TARGET,
         sizeOrAbsent(REMOTE_WORK_DIR, '(not present)')
@@ -256,7 +260,8 @@ export const runClean = async (env: Env): Promise<void> => {
         }
     }
 
-    log.ok('clean done')
+    log.blank()
+    log.ok('Clean complete.')
 }
 
 /**
@@ -268,7 +273,8 @@ export const runPrune = async (
     env: Env,
     { days, dryRun }: PruneOptions
 ): Promise<void> => {
-    if (dryRun) log.warn('--dry-run: no files will be deleted')
+    log.section(`Prune ${dim('·')} ${accent(env.SSH_TARGET)}`)
+    if (dryRun) log.warn('dry-run: no files will be deleted')
 
     // 1. Ephemeral Packer ISOs (any age) — packer-prefixed names and SHA-hash
     // named files from PACKER_CACHE_DIR, all landing in the Proxmox ISO store.
@@ -322,7 +328,7 @@ export const runPrune = async (
     } else {
         const verb = dryRun ? 'would destroy' : 'destroying'
         for (const vmid of orphans) {
-            log.info(`${verb} VM ${vmid}`)
+            log.note(`${verb} VM ${vmid}`)
             if (!dryRun) {
                 await ssh(
                     env.SSH_TARGET,
@@ -331,7 +337,7 @@ export const runPrune = async (
             }
         }
         log.ok(
-            `orphaned VMs: ${verb.replace('would ', '').replace('ing', 'ed')} ${orphans.length}`
+            `orphaned VMs ${dim('·')} ${verb.replace('would ', '').replace('ing', 'ed')} ${orphans.length}`
         )
     }
 
@@ -354,5 +360,6 @@ export const runPrune = async (
         }
     }
 
-    log.ok(dryRun ? 'prune dry-run done' : 'prune done')
+    log.blank()
+    log.ok(dryRun ? 'Prune dry-run complete.' : 'Prune complete.')
 }

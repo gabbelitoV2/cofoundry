@@ -5,6 +5,7 @@
     "": {
       "name": "template-builder",
       "dependencies": {
+        "@cofoundry/ui": "workspace:*",
         "@inquirer/prompts": "^8.5.0",
         "byte-size": "^9.0.1",
         "cli-spinners": "^3.4.0",
@@ -31,8 +32,37 @@
         "typescript": "^5.6.3",
       },
     },
+    "coport": {
+      "name": "coport",
+      "version": "0.1.0",
+      "dependencies": {
+        "@cofoundry/ui": "workspace:*",
+        "commander": "^12",
+        "consola": "^3",
+        "picocolors": "^1",
+        "zod": "^3",
+      },
+      "devDependencies": {
+        "@types/bun": "latest",
+        "typescript": "^5.6.3",
+      },
+    },
+    "packages/ui": {
+      "name": "@cofoundry/ui",
+      "version": "0.0.1",
+      "dependencies": {
+        "cli-spinners": "^3.4.0",
+        "cli-truncate": "^6.0.0",
+        "figures": "^6.1.0",
+        "log-update": "^8.0.0",
+        "picocolors": "^1.1.1",
+        "pretty-ms": "^9.3.0",
+      },
+    },
   },
   "packages": {
+    "@cofoundry/ui": ["@cofoundry/ui@workspace:packages/ui"],
+
     "@inquirer/ansi": ["@inquirer/ansi@2.0.6", "", {}, "sha512-I/INw4sHGlVZ/afZOckpLiDP9SmbMl1g/GCqeHjLw1Afw/0PlRs2tRFgTGWmdI0hoNuWZn3y2iHNmG1vyECyQQ=="],
 
     "@inquirer/checkbox": ["@inquirer/checkbox@5.2.0", "", { "dependencies": { "@inquirer/ansi": "^2.0.6", "@inquirer/core": "^11.2.0", "@inquirer/figures": "^2.0.6", "@inquirer/type": "^4.0.6" }, "peerDependencies": { "@types/node": ">=18" }, "optionalPeers": ["@types/node"] }, "sha512-1HJt+3fqxblp/GQjdntSyoSHYBc0e3CzXVgjFpKA6qFLd9FHBBqwN8Co0xYH6t2JVUZrtFwZ4bBiwptkiLxyOg=="],
@@ -110,6 +140,8 @@
     "concat-stream": ["concat-stream@2.0.0", "", { "dependencies": { "buffer-from": "^1.0.0", "inherits": "^2.0.3", "readable-stream": "^3.0.2", "typedarray": "^0.0.6" } }, "sha512-MWufYdFw53ccGjCA+Ol7XJYpAlW6/prSMzuPOTRnJGcGzuhLn4Scrz7qf6o8bROZ514ltazcIFJZevcfbo0x7A=="],
 
     "consola": ["consola@3.4.2", "", {}, "sha512-5IKcdX0nnYavi6G7TtOhwkYzyjfJlatbjMjuLSfE2kYT5pMDOilZ4OvMhi637CcDICTmz3wARPoyhqyX1Y+XvA=="],
+
+    "coport": ["coport@workspace:coport"],
 
     "cpu-features": ["cpu-features@0.0.10", "", { "dependencies": { "buildcheck": "~0.0.6", "nan": "^2.19.0" } }, "sha512-9IkYqtX3YHPCzoVg1Py+o9057a3i0fp7S530UWokCSaFVTc7CwXPRiOjRjBQQ18ZCNafx78YfnG+HALxtVmOGA=="],
 

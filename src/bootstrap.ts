@@ -1,5 +1,6 @@
 import { execa } from 'execa'
 import { confirm, input, select } from '@inquirer/prompts'
+import pc from 'picocolors'
 import { remoteStreaming } from './build/remote.ts'
 import { log } from './log.ts'
 import { addSensitiveValues, shellQuote } from './util.ts'
@@ -524,22 +525,20 @@ export const runBootstrap = async (): Promise<void> => {
         probes.push({ step, result })
     }
 
-    console.log('')
-    console.log('Plan:')
+    log.section('Plan')
     for (const { step, result } of probes) {
-        const mark = result.done ? '✓' : '+'
+        const mark = result.done ? pc.green('✓') : pc.cyan('+')
         const status = result.done
-            ? `already done${result.note ? ` (${result.note})` : ''}`
-            : `will run${result.note ? ` (${result.note})` : ''}`
-        console.log(`  ${mark} ${step.label.padEnd(45)} ${status}`)
+            ? `${pc.dim('·')} already done${result.note ? ` ${pc.dim(`(${result.note})`)}` : ''}`
+            : `${pc.dim('·')} will run${result.note ? ` ${pc.dim(`(${result.note})`)}` : ''}`
+        log.raw(`  ${mark} ${step.label.padEnd(45)} ${status}`)
     }
     const skipped = ALL_STEPS.filter(s => !s.inScope(plan))
     if (skipped.length > 0) {
-        console.log('')
-        console.log('Out of scope (skipped):')
-        for (const s of skipped) console.log(`  - ${s.label}`)
+        log.section('Out of scope')
+        for (const s of skipped) log.raw(`  ${pc.dim('-')} ${pc.dim(s.label)}`)
     }
-    console.log('')
+    log.blank()
 
     const toApply = probes.filter(p => !p.result.done)
     if (toApply.length === 0) {
@@ -557,32 +556,29 @@ export const runBootstrap = async (): Promise<void> => {
     }
 
     // 7. Apply
+    log.section('Apply')
     let createdSecret: string | undefined
     let createdTokenId: string | undefined
     for (const { step, result } of probes) {
         if (result.done) {
-            log.info(`✓ ${step.label}: ${result.note ?? 'already done'}`)
+            log.info(`${step.label} ${pc.dim('·')} ${result.note ?? 'already done'}`)
             continue
         }
-        log.step(`${step.label}`)
+        log.step(step.label)
         const out = await step.apply(plan)
         if (out.secret) {
             createdSecret = out.secret
             createdTokenId = out.tokenId
         }
-        log.ok(`${step.label}: ${out.note ?? 'done'}`)
+        log.ok(`${step.label} ${pc.dim('·')} ${out.note ?? 'done'}`)
     }
 
     // 8. Post-run: token secret
     if (createdSecret && createdTokenId) {
-        console.log('')
-        console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━')
-        console.log('  API token created — SAVE THIS, it is shown only once:')
-        console.log('')
-        console.log(`    PVE_TOKEN_ID=${createdTokenId}`)
-        console.log(`    PVE_TOKEN_SECRET=${createdSecret}`)
-        console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━')
-        console.log('')
+        log.section(pc.yellow('API token created — SAVE THIS, shown only once'))
+        log.raw(`    ${pc.cyan('PVE_TOKEN_ID')}=${createdTokenId}`)
+        log.raw(`    ${pc.cyan('PVE_TOKEN_SECRET')}=${createdSecret}`)
+        log.blank()
         const persist = await confirm({
             message: 'append PVE_TOKEN_ID / PVE_TOKEN_SECRET to .env?',
             default: true,
@@ -596,5 +592,6 @@ export const runBootstrap = async (): Promise<void> => {
         }
     }
 
-    log.ok('bootstrap complete')
+    log.blank()
+    log.ok('Bootstrap complete.')
 }

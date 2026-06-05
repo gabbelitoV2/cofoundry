@@ -19,6 +19,29 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    # Job-level env so every step inherits. Sensitive values come from
+    # secrets; resource names and network coords come from repo variables
+    # (visible in the UI, reviewable). `vars.X || secrets.X` keeps
+    # back-compat for anyone who originally set them as secrets.
+    env:
+      # ── credentials (secrets only) ──
+      PVE_TOKEN_SECRET: ${{ secrets.PVE_TOKEN_SECRET }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: auto
+      # ── Proxmox resource names / network coords (vars, with secret fallback) ──
+      PVE_HOST: ${{ vars.PVE_HOST || secrets.PVE_HOST }}
+      PVE_PORT: ${{ vars.PVE_PORT || secrets.PVE_PORT }}
+      PVE_NODE: ${{ vars.PVE_NODE || secrets.PVE_NODE }}
+      PVE_TOKEN_ID: ${{ vars.PVE_TOKEN_ID || secrets.PVE_TOKEN_ID }}
+      SSH_TARGET: ${{ vars.SSH_TARGET || secrets.SSH_TARGET }}
+      PVE_DUMP_DIR: ${{ vars.PVE_DUMP_DIR || secrets.PVE_DUMP_DIR }}
+      CF_STORAGE: ${{ vars.CF_STORAGE || secrets.CF_STORAGE }}
+      CF_ISO_STORAGE: ${{ vars.CF_ISO_STORAGE || secrets.CF_ISO_STORAGE }}
+      CF_BRIDGE: ${{ vars.CF_BRIDGE || secrets.CF_BRIDGE }}
+      # ── R2 endpoint + bucket (vars, with secret fallback) ──
+      R2_ENDPOINT: ${{ vars.R2_ENDPOINT || secrets.R2_ENDPOINT }}
+      R2_BUCKET: ${{ vars.R2_BUCKET || secrets.R2_BUCKET }}
     steps:
       - uses: actions/checkout@v4
 
@@ -72,19 +95,6 @@ jobs:
       - name: Build template
         run: bun run cf build ${{ inputs.recipe }} --ci --verbose
         env:
-          PVE_HOST: ${{ secrets.PVE_HOST }}
-          PVE_PORT: ${{ secrets.PVE_PORT }}
-          PVE_NODE: ${{ secrets.PVE_NODE }}
-          PVE_TOKEN_ID: ${{ secrets.PVE_TOKEN_ID }}
-          PVE_TOKEN_SECRET: ${{ secrets.PVE_TOKEN_SECRET }}
-          SSH_TARGET: ${{ secrets.SSH_TARGET }}
-          PVE_DUMP_DIR: ${{ secrets.PVE_DUMP_DIR }}
-          CF_STORAGE: ${{ secrets.CF_STORAGE }}
-          CF_ISO_STORAGE: ${{ secrets.CF_ISO_STORAGE }}
-          CF_BRIDGE: ${{ secrets.CF_BRIDGE }}
-          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          AWS_DEFAULT_REGION: auto
           # Artifacts upload directly to R2 from the PVE node; never sync the
           # multi-GB .vma.zst back to the runner.
           CF_SKIP_SYNC_BACK: '1'
@@ -104,14 +114,6 @@ jobs:
       # before `cf publish` makes the build consumer-visible.
       - name: Smoke-test artifact
         run: bun run cf verify ${{ inputs.recipe }}
-        env:
-          SSH_TARGET: ${{ secrets.SSH_TARGET }}
-          PVE_HOST: ${{ secrets.PVE_HOST }}
-          PVE_PORT: ${{ secrets.PVE_PORT }}
-          PVE_NODE: ${{ secrets.PVE_NODE }}
-          PVE_TOKEN_ID: ${{ secrets.PVE_TOKEN_ID }}
-          PVE_TOKEN_SECRET: ${{ secrets.PVE_TOKEN_SECRET }}
-          CF_STORAGE: ${{ secrets.CF_STORAGE }}
 
       # ── Publish manifest ───────────────────────────────────────────────────
       # --r2: sidecars live in R2 (uploaded by CF_SIDECAR_UPLOAD_CMD during the
@@ -119,12 +121,6 @@ jobs:
       # is the only way the registry reflects all templates, not just this build.
       - name: Publish manifest
         run: bun run cf publish --r2
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          AWS_DEFAULT_REGION: auto
-          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
-          R2_BUCKET: ${{ secrets.R2_BUCKET }}
 
       # ── Commit registry.json back to main ─────────────────────────────────
       # Canonical history: `git log registry.json` is the audit log of every
@@ -146,25 +142,12 @@ jobs:
             registry.json "s3://$R2_BUCKET/registry.json" \
             --cache-control "public, max-age=60" \
             --content-type "application/json"
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          AWS_DEFAULT_REGION: auto
-          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
-          R2_BUCKET: ${{ secrets.R2_BUCKET }}
 
       # ── Reclaim disk on the node ──────────────────────────────────────────
       # Folds the old weekly cleanup cron into the build pipeline.
       - name: Prune Proxmox node
         if: always()
         run: bun run cf prune --days 7
-        env:
-          SSH_TARGET: ${{ secrets.SSH_TARGET }}
-          PVE_HOST: ${{ secrets.PVE_HOST }}
-          PVE_PORT: ${{ secrets.PVE_PORT }}
-          PVE_NODE: ${{ secrets.PVE_NODE }}
-          PVE_TOKEN_ID: ${{ secrets.PVE_TOKEN_ID }}
-          PVE_TOKEN_SECRET: ${{ secrets.PVE_TOKEN_SECRET }}
 
       # ── Prune old R2 objects ──────────────────────────────────────────────
       # Keep last 5 per template. The R2 lifecycle rule (configured out-of-band)
@@ -172,19 +155,6 @@ jobs:
       - name: Prune R2 templates
         if: always()
         run: bun run cf prune --r2 --keep 5
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          AWS_DEFAULT_REGION: auto
-          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
-          R2_BUCKET: ${{ secrets.R2_BUCKET }}
-          # cf prune still loads Env which requires PVE_* even with --r2.
-          PVE_HOST: ${{ secrets.PVE_HOST }}
-          PVE_PORT: ${{ secrets.PVE_PORT }}
-          PVE_NODE: ${{ secrets.PVE_NODE }}
-          PVE_TOKEN_ID: ${{ secrets.PVE_TOKEN_ID }}
-          PVE_TOKEN_SECRET: ${{ secrets.PVE_TOKEN_SECRET }}
-          SSH_TARGET: ${{ secrets.SSH_TARGET }}
 
       # ── Upload artifact ────────────────────────────────────────────────────
       - uses: actions/upload-artifact@v4

@@ -213,35 +213,40 @@ name (`root@pve.tail-scale.ts.net`) or the 100.x IP. With Tailscale SSH
 enabled on the node, you can also omit `SSH_PRIVATE_KEY` entirely; the
 workflow skips the key-setup step and auth is brokered by the tailnet.
 
-### 3. Set repo secrets
+### 3. Set repo secrets and variables
 
-Go to **Settings → Secrets and variables → Actions** and add:
+Go to **Settings → Secrets and variables → Actions**. Secrets hide values
+(use for credentials); Variables show values in the UI (use for resource
+names). The workflow reads each non-credential field from `vars.X` and
+falls back to `secrets.X` if you originally created them as secrets.
+
+**Secrets** (Secrets tab):
 
 | Secret | Value |
 |---|---|
-| `PVE_HOST` | Proxmox hostname or IP |
+| `PVE_TOKEN_SECRET` | Token secret from Part 1 step 1 |
+| `SSH_PRIVATE_KEY` | Contents of `~/.ssh/cofoundry_ci`. Omit if using Tailscale SSH. |
+| `TS_OAUTH_SECRET` | Tailscale OAuth secret (only if using Tailscale) |
+| `R2_ACCESS_KEY_ID` | R2 API token access key |
+| `R2_SECRET_ACCESS_KEY` | R2 API token secret |
+
+**Variables** (Variables tab):
+
+| Variable | Value |
+|---|---|
+| `PVE_HOST` | Proxmox hostname or IP (or tailnet IP) |
 | `PVE_NODE` | Proxmox node name (shown in the web UI sidebar) |
 | `PVE_TOKEN_ID` | `root@pam!cofoundry` |
-| `PVE_TOKEN_SECRET` | Token secret from Part 1 step 1 |
-| `SSH_TARGET` | e.g. `root@pve.example.com` (or `root@<tailnet-IP>` if using Tailscale) |
-| `SSH_PRIVATE_KEY` | Contents of `~/.ssh/cofoundry_ci` (the private key file). Omit if using Tailscale SSH. |
+| `SSH_TARGET` | e.g. `root@pve.example.com` or `root@<tailnet-IP>` |
 | `PVE_PORT` | Proxmox API port. Default: `8006`. |
 | `PVE_DUMP_DIR` | Path on the node where vzdump writes archives. Default: `/var/lib/vz/dump`. |
 | `CF_STORAGE` | Proxmox storage pool for VM disks (run `pvesm status` to list). Default: `local`. |
 | `CF_ISO_STORAGE` | Proxmox storage pool for ISOs. Default: `local`. |
-| `CF_BRIDGE` | Bridge for cloud-image builds (e.g. `vmbr0`). Default: `vmbr0`. ISO-installer builds use the NAT bridge from Part 1 step 5 regardless. |
-| `TS_OAUTH_CLIENT_ID` | Tailscale OAuth client ID (if node is on Tailscale) |
-| `TS_OAUTH_SECRET` | Tailscale OAuth secret (if node is on Tailscale) |
-| `R2_ACCOUNT_ID` | Cloudflare account ID (used to derive the R2 endpoint) |
+| `CF_BRIDGE` | Bridge for cloud-image builds (e.g. `vmbr0`). ISO-installer builds use the NAT bridge from Part 1 step 5 regardless. |
+| `TS_OAUTH_CLIENT_ID` | Tailscale OAuth client ID (only if using Tailscale) |
+| `TS_TAG` | Tailscale tag the OAuth client is scoped to. Default: `tag:ci`. |
 | `R2_ENDPOINT` | `https://<R2_ACCOUNT_ID>.r2.cloudflarestorage.com` |
 | `R2_BUCKET` | R2 bucket name, e.g. `cofoundry-templates` |
-| `R2_ACCESS_KEY_ID` | R2 API token access key |
-| `R2_SECRET_ACCESS_KEY` | R2 API token secret |
-
-Also set this as a repo **variable** (Settings → Variables → Actions):
-
-| Variable | Value |
-|---|---|
 | `CF_PUBLIC_URL_TMPL` | Full public URL template, e.g. `https://templates.example.com/templates/{{name}}-{{arch}}/{{sha256}}.vma.zst` |
 
 > **Default upload layout (CI).** The workflow auto-builds the upload commands from the R2 secrets above, producing:

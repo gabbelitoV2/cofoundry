@@ -193,12 +193,20 @@ Generate**):
 - Tags: `tag:cofoundry`
 - Copy the client ID and secret (secret is shown once).
 
-**c. Set repo secrets:**
+**c. Set repo secrets** (Settings → Secrets → Actions):
 
 | Secret | Value |
 |---|---|
 | `TS_OAUTH_CLIENT_ID` | OAuth client ID |
 | `TS_OAUTH_SECRET` | OAuth client secret |
+
+If your tag isn't `tag:ci`, also set a repo **variable** (Settings → Variables → Actions):
+
+| Variable | Value |
+|---|---|
+| `TS_TAG` | Tag the OAuth client is scoped to, e.g. `tag:cofoundry`. Default if unset: `tag:ci`. |
+
+The tag here must match (a) the tag in your `tagOwners` ACL block, (b) the tag your OAuth client is scoped to, and (c) the `src` of the SSH rule. A 403 "calling actor does not have enough permissions" from the `Connect to Tailscale` step means these are out of sync.
 
 **d. Point `SSH_TARGET` / `PVE_HOST` at the tailnet address** — MagicDNS
 name (`root@pve.tail-scale.ts.net`) or the 100.x IP. With Tailscale SSH

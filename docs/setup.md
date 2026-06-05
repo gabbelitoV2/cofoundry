@@ -224,17 +224,25 @@ Go to **Settings → Secrets and variables → Actions** and add:
 | `R2_BUCKET` | R2 bucket name, e.g. `cofoundry-templates` |
 | `R2_ACCESS_KEY_ID` | R2 API token access key |
 | `R2_SECRET_ACCESS_KEY` | R2 API token secret |
-| `CF_PUBLIC_BASE_URL` | Public base URL bound to the bucket, e.g. `https://templates.example.com` |
 
-> **Default upload layout (CI).** The workflow auto-builds the upload commands and public URL template from the R2 secrets above, producing:
+Also set this as a repo **variable** (Settings → Variables → Actions):
+
+| Variable | Value |
+|---|---|
+| `CF_PUBLIC_URL_TMPL` | Full public URL template, e.g. `https://templates.example.com/templates/{{name}}-{{arch}}/{{sha256}}.vma.zst` |
+
+> **Default upload layout (CI).** The workflow auto-builds the upload commands from the R2 secrets above, producing:
 >
 > ```
 > s3://<R2_BUCKET>/templates/<recipe>-<arch>/<sha256>.vma.zst   (artifact)
 > s3://<R2_BUCKET>/templates/<recipe>-<arch>/<sha256>.json      (sidecar)
-> <CF_PUBLIC_BASE_URL>/templates/<recipe>-<arch>/<sha256>.vma.zst   (public URL)
 > ```
 >
-> **Custom layout.** Override any of the three by setting matching repo
+> The public URL is fully user-defined — set `CF_PUBLIC_URL_TMPL` as a repo
+> variable (required; no default). For the default layout that's
+> `<your-cdn>/templates/{{name}}-{{arch}}/{{sha256}}.vma.zst`.
+>
+> **Custom layout.** Override the upload commands by setting matching repo
 > **variables** (Settings → Variables → Actions, *not* Secrets):
 >
 > | Variable | Purpose |
@@ -255,7 +263,7 @@ In the Cloudflare dashboard: **R2 → Create bucket**, name it (e.g. `cofoundry-
 
 ### 2. Bind a custom domain
 
-**R2 → Bucket → Settings → Custom Domains → Connect Domain.** Use a subdomain you control, e.g. `templates.example.com`. This is the value for `CF_PUBLIC_BASE_URL`. Final artifact URLs look like:
+**R2 → Bucket → Settings → Custom Domains → Connect Domain.** Use a subdomain you control, e.g. `templates.example.com`. Plug that host into your `CF_PUBLIC_URL_TMPL` repo variable. Final artifact URLs look like:
 
 ```
 https://templates.example.com/templates/<name>-<arch>/<sha256>.vma.zst

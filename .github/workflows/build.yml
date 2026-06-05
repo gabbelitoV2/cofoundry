@@ -79,14 +79,14 @@ jobs:
           # Artifacts upload directly to R2 from the PVE node; never sync the
           # multi-GB .vma.zst back to the runner.
           CF_SKIP_SYNC_BACK: '1'
-          # Override the upload/URL layout by setting matching repo variables
-          # (Settings → Variables → Actions): CF_UPLOAD_CMD,
-          # CF_SIDECAR_UPLOAD_CMD, CF_PUBLIC_URL_TMPL. Unset → content-addressed
-          # defaults under templates/<name>-<arch>/<sha256>.{vma.zst,json}.
+          # Override the upload commands via repo variables (Settings →
+          # Variables → Actions): CF_UPLOAD_CMD, CF_SIDECAR_UPLOAD_CMD. Unset →
+          # content-addressed defaults under templates/<name>-<arch>/<sha256>.
+          # CF_PUBLIC_URL_TMPL is required (no default) — set it as a repo var.
           # Placeholders: {{file}} {{name}} {{arch}} {{sha256}} {{group}} {{filename}}.
           CF_UPLOAD_CMD: ${{ vars.CF_UPLOAD_CMD || format('aws --endpoint-url {0} s3 cp {1} s3://{2}/templates/{3}-{4}/{5}.vma.zst', secrets.R2_ENDPOINT, '{{file}}', secrets.R2_BUCKET, '{{name}}', '{{arch}}', '{{sha256}}') }}
           CF_SIDECAR_UPLOAD_CMD: ${{ vars.CF_SIDECAR_UPLOAD_CMD || format('aws --endpoint-url {0} s3 cp {1} s3://{2}/templates/{3}-{4}/{5}.json', secrets.R2_ENDPOINT, '{{file}}', secrets.R2_BUCKET, '{{name}}', '{{arch}}', '{{sha256}}') }}
-          CF_PUBLIC_URL_TMPL: ${{ vars.CF_PUBLIC_URL_TMPL || format('{0}/templates/{1}-{2}/{3}.vma.zst', secrets.CF_PUBLIC_BASE_URL, '{{name}}', '{{arch}}', '{{sha256}}') }}
+          CF_PUBLIC_URL_TMPL: ${{ vars.CF_PUBLIC_URL_TMPL }}
 
       # ── Smoke-test artifact ────────────────────────────────────────────────
       # Restores the just-built archive to a scratch VMID on the PVE node,

@@ -4,6 +4,7 @@ import { createRenderer, title, accent, dim } from '@cofoundry/ui'
 import type { Env } from './env.ts'
 import type { RecipeInfo } from './config.ts'
 import { shellQuote } from './util.ts'
+import { buildRemoteOutDir } from './build/packer.ts'
 
 const SCRATCH_VMID_BASE = 9500
 const GUEST_PING_TIMEOUT_S = 180
@@ -74,13 +75,28 @@ export const runVerify = async (
     env: Env,
     recipe: RecipeInfo
 ): Promise<void> => {
-    const local = join(env.CF_OUT_DIR, `${recipe.name}-${recipe.arch}.vma.zst`)
-    if (!(await Bun.file(local).exists())) {
-        throw new Error(`artifact not found: ${local}`)
+    const artifactName = `${recipe.name}-${recipe.arch}.vma.zst`
+    const local = join(env.CF_OUT_DIR, artifactName)
+    const remoteBuildFile = `${buildRemoteOutDir(env)}/${artifactName}`
+    const remoteTmp = `/var/tmp/cofoundry-verify-${process.pid}`
+
+    // Prefer the artifact already on the PVE node from the build step
+    // (CI sets CF_SKIP_SYNC_BACK=1, so it never lands locally). Fall back to
+    // uploading the local file when running outside CI.
+    const remoteHasBuildArtifact = await sshOk(
+        env.SSH_TARGET,
+        `test -f ${shellQuote(remoteBuildFile)}`
+    )
+    const localExists = await Bun.file(local).exists()
+    if (!remoteHasBuildArtifact && !localExists) {
+        throw new Error(
+            `artifact not found locally (${local}) or on ${env.SSH_TARGET} (${remoteBuildFile})`
+        )
     }
 
-    const remoteTmp = `/var/tmp/cofoundry-verify-${process.pid}`
-    const remoteFile = `${remoteTmp}/${basename(local)}`
+    const remoteFile = remoteHasBuildArtifact
+        ? remoteBuildFile
+        : `${remoteTmp}/${basename(local)}`
 
     const renderer = createRenderer({
         title: title(
@@ -93,12 +109,16 @@ export const runVerify = async (
     let vmid = 0
 
     try {
-        task.setPhase(`uploading artifact ${dim('→')} ${env.SSH_TARGET}`)
-        await ssh(env.SSH_TARGET, `mkdir -p ${shellQuote(remoteTmp)}`)
-        await execa('scp', [local, `${env.SSH_TARGET}:${remoteFile}`], {
-            stdin: 'inherit',
-            stderr: 'inherit',
-        })
+        if (remoteHasBuildArtifact) {
+            task.setPhase(`using remote artifact ${dim(remoteBuildFile)}`)
+        } else {
+            task.setPhase(`uploading artifact ${dim('→')} ${env.SSH_TARGET}`)
+            await ssh(env.SSH_TARGET, `mkdir -p ${shellQuote(remoteTmp)}`)
+            await execa('scp', [local, `${env.SSH_TARGET}:${remoteFile}`], {
+                stdin: 'inherit',
+                stderr: 'inherit',
+            })
+        }
 
         task.setPhase('allocating VMID')
         vmid = await pickScratchVmid(env.SSH_TARGET)
@@ -133,7 +153,9 @@ export const runVerify = async (
         throw err
     } finally {
         if (restored) await destroyVm(env.SSH_TARGET, vmid)
-        await sshOk(env.SSH_TARGET, `rm -rf ${shellQuote(remoteTmp)}`)
+        if (!remoteHasBuildArtifact) {
+            await sshOk(env.SSH_TARGET, `rm -rf ${shellQuote(remoteTmp)}`)
+        }
         renderer.finish()
     }
 }

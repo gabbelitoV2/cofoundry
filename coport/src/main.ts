@@ -11,6 +11,7 @@ import {
     type Renderer,
     type TaskHandle,
 } from '@cofoundry/ui'
+import pkg from '../package.json' with { type: 'json' }
 import { resolveConfig } from './config.ts'
 import { fetchRegistry } from './registry.ts'
 import { resolveVmids } from './vmid.ts'
@@ -106,7 +107,7 @@ const program = new Command()
 program
     .name('coport')
     .description('Install Cofoundry VM templates into Proxmox')
-    .version('0.1.0')
+    .version(pkg.version)
     .argument(
         '[registry]',
         'Registry URL, file path, or omit to use default/config'

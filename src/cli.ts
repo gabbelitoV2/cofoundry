@@ -13,6 +13,7 @@ import { type Env, loadEnv } from './env.ts'
 import { log } from './log.ts'
 import { redactSensitive } from './util.ts'
 import pc from 'picocolors'
+import pkg from '../package.json' with { type: 'json' }
 
 type BuildCommandOptions = {
     skipArtifactSync?: boolean
@@ -69,7 +70,7 @@ const buildAction = async (
 }
 
 const program = new Command()
-program.name('cf').description('Proxmox template builder').version('0.0.1')
+program.name('cf').description('Proxmox template builder').version(pkg.version)
 
 program
     .command('list')

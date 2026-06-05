@@ -44,16 +44,23 @@ jobs:
           oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
           tags: ${{ vars.TS_TAG || 'tag:ci' }}
 
+      # ── SSH config (always) ───────────────────────────────────────────────
+      # Disable strict host-key checking so first-contact SSH (whether
+      # authenticated by a key or by Tailscale SSH) doesn't fail on the
+      # missing known_hosts entry.
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "StrictHostKeyChecking=no" >> ~/.ssh/config
+
       # ── SSH key (optional; skipped when using Tailscale SSH) ──────────────
       - name: Set up SSH key
         if: env.SSH_PRIVATE_KEY != ''
         env:
           SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
         run: |
-          mkdir -p ~/.ssh
           printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
-          echo "StrictHostKeyChecking=no" >> ~/.ssh/config
 
       # ── Build template ─────────────────────────────────────────────────────
       # inject-placeholders.sh generates an ephemeral SSH key (Linux) or

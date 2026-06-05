@@ -78,7 +78,10 @@ export const runVerify = async (
     const artifactName = `${recipe.name}-${recipe.arch}.vma.zst`
     const local = join(env.CF_OUT_DIR, artifactName)
     const remoteBuildFile = `${buildRemoteOutDir(env)}/${artifactName}`
-    const remoteTmp = `/var/tmp/cofoundry-verify-${process.pid}`
+    // Scratch dir lives under PVE_DUMP_DIR so hard-linking the artifact into
+    // it always works (same filesystem). /var/tmp on the node may be on a
+    // different mount.
+    const remoteTmp = `${env.PVE_DUMP_DIR}/cofoundry-verify-${process.pid}`
 
     // Prefer the artifact already on the PVE node from the build step
     // (CI sets CF_SKIP_SYNC_BACK=1, so it never lands locally). Fall back to
@@ -98,15 +101,17 @@ export const runVerify = async (
         ? remoteBuildFile
         : `${remoteTmp}/${basename(local)}`
     // qmrestore parses the basename to extract VMID/type and rejects anything
-    // not matching `vzdump-qemu-<vmid>-<timestamp>.vma.zst`. Our artifact is
-    // named `<recipe>-<arch>.vma.zst`, so expose it to qmrestore under a
-    // vzdump-shaped symlink in our scratch dir.
-    const ts = new Date()
-        .toISOString()
-        .replace(/[-:T]/g, '_')
-        .replace(/\..+$/, '')
-    const vzdumpName = `vzdump-qemu-0-${ts}.vma.zst`
-    const restoreFile = `${remoteTmp}/${vzdumpName}`
+    // that doesn't match Proxmox's vzdump regex:
+    //   /vzdump-(qemu|lxc|openvz)-(\d+)-(\d{4}_\d{2}_\d{2}-\d{2}_\d{2}_\d{2})\.…/
+    // (date/time separator is a dash, not an underscore.) It also resolves
+    // realpath() before parsing, so a symlink won't help — we need a hard
+    // link with the right name. Hard linking requires the same filesystem,
+    // hence remoteTmp under PVE_DUMP_DIR.
+    const d = new Date()
+    const pad = (n: number): string => String(n).padStart(2, '0')
+    const ts =
+        `${d.getUTCFullYear()}_${pad(d.getUTCMonth() + 1)}_${pad(d.getUTCDate())}` +
+        `-${pad(d.getUTCHours())}_${pad(d.getUTCMinutes())}_${pad(d.getUTCSeconds())}`
 
     const renderer = createRenderer({
         title: title(
@@ -131,14 +136,14 @@ export const runVerify = async (
             })
         }
 
-        // qmrestore reads the file via its argument path; a symlink is enough.
-        await ssh(
-            env.SSH_TARGET,
-            `ln -sf ${shellQuote(sourceFile)} ${shellQuote(restoreFile)}`
-        )
-
         task.setPhase('allocating VMID')
         vmid = await pickScratchVmid(env.SSH_TARGET)
+
+        const restoreFile = `${remoteTmp}/vzdump-qemu-${vmid}-${ts}.vma.zst`
+        await ssh(
+            env.SSH_TARGET,
+            `ln -f ${shellQuote(sourceFile)} ${shellQuote(restoreFile)}`
+        )
 
         task.setPhase(`qmrestore ${dim('→')} VMID ${accent(String(vmid))}`)
         await ssh(

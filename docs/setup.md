@@ -163,7 +163,49 @@ ssh-copy-id -i ~/.ssh/cofoundry_ci.pub root@<pve-host>
 > access to the node as the user `SSH_TARGET` connects as (e.g. `root`).
 > `action: "check"` rules won't work — they require interactive reauth.
 
-### 2. Set repo secrets
+### 2. Tailscale (optional)
+
+If the node sits on a tailnet and you've closed its public SSH port, the
+workflow can reach it over Tailscale. The `Connect to Tailscale` step uses
+an OAuth client to spin up an ephemeral tagged node per job.
+
+**a. ACL tags + SSH rule** (Tailscale admin → **Access Controls**):
+
+```hujson
+"tagOwners": {
+  "tag:cofoundry": ["autogroup:owner"],
+},
+"ssh": [
+  { "action": "accept", "src": ["tag:cofoundry"], "dst": ["tag:cofoundry"], "users": ["root"] },
+],
+```
+
+Tag the PVE node `tag:cofoundry` (admin → **Machines** → node → Edit ACL
+tags). Tagging detaches the node from your user — fine for a server, but
+add a separate rule if you also want to SSH from your laptop via Tailscale
+SSH. Must be `action: "accept"` — `"check"` requires interactive reauth and
+won't work in CI.
+
+**b. Create the OAuth client** (admin → **Settings → OAuth clients →
+Generate**):
+
+- Scopes: **Devices → Core → Write**
+- Tags: `tag:cofoundry`
+- Copy the client ID and secret (secret is shown once).
+
+**c. Set repo secrets:**
+
+| Secret | Value |
+|---|---|
+| `TS_OAUTH_CLIENT_ID` | OAuth client ID |
+| `TS_OAUTH_SECRET` | OAuth client secret |
+
+**d. Point `SSH_TARGET` / `PVE_HOST` at the tailnet address** — MagicDNS
+name (`root@pve.tail-scale.ts.net`) or the 100.x IP. With Tailscale SSH
+enabled on the node, you can also omit `SSH_PRIVATE_KEY` entirely; the
+workflow skips the key-setup step and auth is brokered by the tailnet.
+
+### 3. Set repo secrets
 
 Go to **Settings → Secrets and variables → Actions** and add:
 

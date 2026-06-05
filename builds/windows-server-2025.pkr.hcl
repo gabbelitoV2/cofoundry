@@ -96,6 +96,9 @@ source "proxmox-iso" "windows-server-2025" {
 
   scsi_controller = "virtio-scsi-single"
 
+  cloud_init              = true
+  cloud_init_storage_pool = var.proxmox_storage_pool
+
   tpm_config {
     tpm_storage_pool = var.proxmox_storage_pool
     tpm_version      = "v2.0"

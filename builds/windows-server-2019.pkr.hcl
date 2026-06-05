@@ -94,6 +94,9 @@ source "proxmox-iso" "windows-server-2019" {
 
   scsi_controller = "virtio-scsi-single"
 
+  cloud_init              = true
+  cloud_init_storage_pool = var.proxmox_storage_pool
+
   disks {
     disk_size    = "15G"
     format       = "qcow2"

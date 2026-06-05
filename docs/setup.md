@@ -156,6 +156,13 @@ ssh-copy-id -i ~/.ssh/cofoundry_ci.pub root@<pve-host>
 # or manually: cat ~/.ssh/cofoundry_ci.pub | ssh root@<pve-host> "cat >> ~/.ssh/authorized_keys"
 ```
 
+> **Using Tailscale SSH?** You can skip this step. If `SSH_PRIVATE_KEY` is
+> unset, the workflow's key-setup step is skipped and the runner authenticates
+> to the node via Tailscale SSH (the `Connect to Tailscale` step runs first).
+> Requires a tailnet ACL `ssh` rule with `action: "accept"` granting `tag:ci`
+> access to the node as the user `SSH_TARGET` connects as (e.g. `root`).
+> `action: "check"` rules won't work — they require interactive reauth.
+
 ### 2. Set repo secrets
 
 Go to **Settings → Secrets and variables → Actions** and add:
@@ -167,7 +174,7 @@ Go to **Settings → Secrets and variables → Actions** and add:
 | `PVE_TOKEN_ID` | `root@pam!cofoundry` |
 | `PVE_TOKEN_SECRET` | Token secret from Part 1 step 1 |
 | `SSH_TARGET` | e.g. `root@pve.example.com` |
-| `SSH_PRIVATE_KEY` | Contents of `~/.ssh/cofoundry_ci` (the private key file) |
+| `SSH_PRIVATE_KEY` | Contents of `~/.ssh/cofoundry_ci` (the private key file). Omit if using Tailscale SSH. |
 | `TS_OAUTH_CLIENT_ID` | Tailscale OAuth client ID (if node is on Tailscale) |
 | `TS_OAUTH_SECRET` | Tailscale OAuth secret (if node is on Tailscale) |
 | `R2_ACCOUNT_ID` | Cloudflare account ID (used to derive the R2 endpoint) |

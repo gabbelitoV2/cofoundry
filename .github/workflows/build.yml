@@ -42,11 +42,14 @@ jobs:
           oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
           tags: tag:ci
 
-      # ── SSH key (for vzdump post-processor → PVE node) ────────────────────
+      # ── SSH key (optional; skipped when using Tailscale SSH) ──────────────
       - name: Set up SSH key
+        if: env.SSH_PRIVATE_KEY != ''
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
         run: |
           mkdir -p ~/.ssh
-          printf '%s\n' "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
           echo "StrictHostKeyChecking=no" >> ~/.ssh/config
 

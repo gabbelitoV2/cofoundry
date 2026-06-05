@@ -11,6 +11,8 @@ import {
     tempPath,
     cleanupTempDir,
     cleanupTempDirSync,
+    removeTempFile,
+    sweepStaleTempDirs,
 } from './download.ts'
 import { qmrestore } from './install.ts'
 import {
@@ -221,6 +223,8 @@ const installTemplate = async (
         signal
     )
 
+    await removeTempFile(dest)
+
     progress.update(template.name, 'done', 100, `VMID ${vmid}`)
 }
 
@@ -304,6 +308,7 @@ program
             process.exit(0)
         }
 
+        await sweepStaleTempDirs()
         await ensureTempDir()
 
         const progress = new ProgressRenderer(

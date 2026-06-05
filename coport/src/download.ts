@@ -1,4 +1,4 @@
-import { mkdir, rm } from 'node:fs/promises'
+import { mkdir, readdir, rm } from 'node:fs/promises'
 import { rmSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { join } from 'node:path'
@@ -28,6 +28,40 @@ export const cleanupTempDir = async (): Promise<void> => {
     if (!tempDir) return
     await rm(tempDir, { recursive: true, force: true })
     tempDir = undefined
+}
+
+export const removeTempFile = async (filePath: string): Promise<void> => {
+    await rm(filePath, { force: true })
+}
+
+export const sweepStaleTempDirs = async (): Promise<void> => {
+    let entries: string[]
+    try {
+        entries = await readdir(TEMP_ROOT)
+    } catch {
+        return
+    }
+    await Promise.all(
+        entries.map(async name => {
+            const match = name.match(/^(\d+)-\d+$/)
+            if (!match) return
+            const pid = Number(match[1])
+            if (pidAlive(pid)) return
+            await rm(join(TEMP_ROOT, name), {
+                recursive: true,
+                force: true,
+            }).catch(() => {})
+        })
+    )
+}
+
+const pidAlive = (pid: number): boolean => {
+    try {
+        process.kill(pid, 0)
+        return true
+    } catch {
+        return false
+    }
 }
 
 export const cleanupTempDirSync = (): void => {

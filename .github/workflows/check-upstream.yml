@@ -4,6 +4,11 @@ on:
   schedule:
     - cron: "0 6 * * 1" # weekly on Monday at 06:00 UTC
   workflow_dispatch:
+    inputs:
+      force:
+        description: "Rebuild all recipes regardless of upstream changes"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -22,8 +27,14 @@ jobs:
       - run: bun install --frozen-lockfile
 
       - id: check
+        env:
+          FORCE: ${{ inputs.force }}
         run: |
-          CHANGED=$(bun run cf check --json)
+          if [ "$FORCE" = "true" ]; then
+            CHANGED=$(ls builds/*.pkr.hcl | xargs -n1 basename | sed 's/\.pkr\.hcl$//' | jq -R . | jq -sc .)
+          else
+            CHANGED=$(bun run cf check --json)
+          fi
           echo "matrix={\"recipe\":$CHANGED}" >> "$GITHUB_OUTPUT"
           if [ "$CHANGED" = "[]" ]; then
             echo "any_changed=false" >> "$GITHUB_OUTPUT"
@@ -43,6 +54,7 @@ jobs:
     if: needs.check.outputs.any_changed == 'true'
     strategy:
       fail-fast: false
+      max-parallel: 1
       matrix: ${{ fromJson(needs.check.outputs.matrix) }}
     uses: ./.github/workflows/build.yml
     with:

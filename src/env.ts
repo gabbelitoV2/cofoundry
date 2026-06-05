@@ -1,6 +1,17 @@
 import { z } from 'zod'
 import { addSensitiveValues } from './util.ts'
 
+// CI passes unset secrets/vars as empty strings, which would defeat
+// `.default(...)` (Zod only applies defaults when the value is undefined).
+// Strip empty-string values before parsing so defaults engage.
+const stripEmpty = (input: NodeJS.ProcessEnv): Record<string, unknown> => {
+    const out: Record<string, unknown> = {}
+    for (const [k, v] of Object.entries(input)) {
+        if (v !== '') out[k] = v
+    }
+    return out
+}
+
 const EnvSchema = z.object({
     PVE_HOST: z.string().min(1),
     PVE_PORT: z.coerce.number().int().default(8006),
@@ -47,7 +58,7 @@ const EnvSchema = z.object({
 export type Env = z.infer<typeof EnvSchema>
 
 export const loadEnv = (): Env => {
-    const env = EnvSchema.parse(process.env)
+    const env = EnvSchema.parse(stripEmpty(process.env))
     addSensitiveValues(
         env.PVE_TOKEN_ID,
         env.PVE_TOKEN_SECRET,
@@ -65,7 +76,7 @@ const PartialEnvSchema = EnvSchema.partial()
 export type PartialEnv = z.infer<typeof PartialEnvSchema>
 
 export const loadEnvPartial = (): PartialEnv => {
-    const env = PartialEnvSchema.parse(process.env)
+    const env = PartialEnvSchema.parse(stripEmpty(process.env))
     addSensitiveValues(
         env.PVE_TOKEN_ID,
         env.PVE_TOKEN_SECRET,

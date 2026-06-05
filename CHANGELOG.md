@@ -1,5 +1,17 @@
 # Changelog
 
+## v1.2.0
+
+### Added
+
+- Adopt the shared `@cofoundry/ui` renderer used by `cf build` so multi-template installs show a live spinner-driven row per template with phase, elapsed time, and download/restore progress.
+- Add `--verbose` to force the line-oriented stream output (for CI or copy-paste) over the in-place TUI.
+
+### Fixed
+
+- Delete each downloaded `.vma.zst` as soon as its restore completes instead of holding the whole batch on disk until the end. Peak temp usage now scales with in-flight concurrency, not total template count — `coport <all>` peaked at ~38 GB before and stayed under 20 GB after, preventing mid-run exits when disk space was tight.
+- Sweep orphaned `${pid}-${ts}` subdirectories under `/var/lib/vz/dump/coport-tmp/` on startup so crashed runs no longer leak gigabytes of temp archives.
+
 ## v1.1.0
 
 ### Added

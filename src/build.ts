@@ -57,12 +57,22 @@ const buildVmWatchdog = (
     communicatorPort: number
 ): string => `
 (
-  _n=0 _max=5
+  _n=0 _max=5 _up=0 _need=3
   while true; do
     sleep 10
     if timeout 3 bash -c "echo >/dev/tcp/${buildIp}/${communicatorPort}" 2>/dev/null; then
-      echo "[watchdog] port ${communicatorPort} up on ${buildIp} — exiting"; exit 0
+      # Require the communicator port to stay up across several checks before
+      # standing down. Windows Setup opens WinRM briefly during OOBE then may
+      # reboot/power off for a later phase; exiting on the first hit leaves that
+      # shutdown unhandled and Packer waits out its full timeout ("no route to
+      # host"). Once the port is *stably* up Packer has connected — safe to exit.
+      _up=$((_up + 1))
+      if [ "$_up" -ge "$_need" ]; then
+        echo "[watchdog] port ${communicatorPort} up on ${buildIp} (stable) — exiting"; exit 0
+      fi
+      continue
     fi
+    _up=0
     _s=$(qm status ${vmid} 2>/dev/null | awk 'NR==1{print $2}') || continue
     [ "$_s" = "stopped" ] || continue
     sleep 20

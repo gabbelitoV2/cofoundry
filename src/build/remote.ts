@@ -30,8 +30,12 @@ export const captureRemote = async (
     cmd: string
 ): Promise<string> => {
     try {
+        // stdin: 'ignore' (≈ ssh -n), never 'inherit'. Concurrent ssh calls that
+        // inherit the shared interactive stdin fight over fd 0 and block — the
+        // classic "parallel ssh eats stdin" deadlock that stalls prefetch
+        // (mkdir/file-check) for later recipes while an earlier build streams.
         const { stdout } = await execa('ssh', [...SSH_OPTS, target, cmd], {
-            stdin: 'inherit',
+            stdin: 'ignore',
             stderr: 'inherit',
         })
         return stdout
@@ -134,7 +138,9 @@ export const streaming = async (
             return
         }
         const proc = execa(cmd, args, {
-            stdin: 'inherit',
+            // ignore (not inherit): a long packer stream must not hold the shared
+            // stdin and starve concurrent prefetch ssh calls. See captureRemote.
+            stdin: 'ignore',
             stdout: 'pipe',
             stderr: 'pipe',
         })

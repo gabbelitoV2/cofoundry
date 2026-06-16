@@ -25,7 +25,10 @@ BASE_VMID="${CF_BUILT_VMID:?CF_BUILT_VMID not set}"
 DUMP_DIR="${PVE_DUMP_DIR:-/var/lib/vz/dump}"
 
 # --- knobs (edit to taste) -------------------------------------------------
-STORAGE="${CF_TEMPLATE_STORAGE:-local}"        # per-node disk storage for the template
+# Preferred per-node disk storage. Nodes that don't have it (e.g. a ZFS node
+# with local-zfs instead of local-lvm) auto-pick their best images-capable
+# storage: local over shared, then most free space.
+STORAGE="${CF_TEMPLATE_STORAGE:-local-lvm}"
 OFFSET="${CF_TEMPLATE_VMID_OFFSET:-10000}"     # per-node VMID spacing
 # ---------------------------------------------------------------------------
 
@@ -48,7 +51,7 @@ mapfile -t NODES < <(
 )
 [ "${#NODES[@]}" -gt 0 ] || { echo "cf-cluster-templates: no online cluster nodes found"; exit 0; }
 
-echo "==> $BN -> clonable template on ${#NODES[@]} node(s) (storage=$STORAGE)"
+echo "==> $BN -> clonable template on ${#NODES[@]} node(s) (preferred storage=$STORAGE)"
 
 for line in "${NODES[@]}"; do
   read -r ID IP <<<"$line"
@@ -70,6 +73,29 @@ for line in "${NODES[@]}"; do
   # to skip the ssh roundtrip.
   RESTORE_SCRIPT=$(cat <<EOF
 set -e
+# Pick this node's storage, in order: the preferred one, then the standard
+# Proxmox-installer storages (local-lvm, local-zfs), then as a last resort the
+# best active images-capable storage (local over shared, VM-native types over
+# dir, most free first).
+STG=\$(pvesh get /nodes/\$(hostname)/storage --content images --output-format json 2>/dev/null | python3 -c "
+import json, sys
+rows = [s for s in json.load(sys.stdin) if s.get('active')]
+names = [s['storage'] for s in rows]
+for pref in ('$STORAGE', 'local-lvm', 'local-zfs'):
+    if pref in names:
+        print(pref)
+        break
+else:
+    local = [s for s in rows if not s.get('shared')]
+    rows = local if local else rows
+    vm_native = ('lvmthin', 'zfspool', 'btrfs', 'rbd', 'lvm')
+    rows.sort(key=lambda s: (0 if s.get('type') in vm_native else 1, -s.get('avail', 0)))
+    print(rows[0]['storage'] if rows else '')
+")
+if [ -z "\$STG" ]; then
+  echo "    [fail] no active images-capable storage on \$(hostname)"
+  exit 1
+fi
 if qm status $VMID >/dev/null 2>&1; then
   if ! qm config $VMID 2>/dev/null | grep -q '^template:'; then
     echo "    [skip] VMID $VMID is a real (non-template) VM — leaving it alone"
@@ -81,11 +107,11 @@ fi
 # qmrestore only accepts vzdump-style filenames, so rename before restoring
 VZ="$DUMP_DIR/vzdump-qemu-$VMID-$STAMP.vma.zst"
 mv "$DUMP_DIR/$BN" "\$VZ"
-qmrestore "\$VZ" $VMID --storage $STORAGE --unique 1 >/dev/null
+qmrestore "\$VZ" $VMID --storage "\$STG" --unique 1 >/dev/null
 rm -f "\$VZ"
 # cofoundry artifacts are already templates after restore; only convert if not
 qm config $VMID 2>/dev/null | grep -q '^template:' || qm template $VMID >/dev/null
-echo "    [ok] template $VMID on $STORAGE"
+echo "    [ok] template $VMID on \$STG"
 EOF
 )
   if [[ "$LOCAL_IPS" == *" $IP "* ]]; then

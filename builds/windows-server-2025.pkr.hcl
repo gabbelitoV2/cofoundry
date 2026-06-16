@@ -56,6 +56,8 @@ locals {
   build_vmid     = 2002
   recipe_name    = "windows-server-2025"
   recipe_display = "Windows Server 2025 Datacenter"
+
+  ps_execute = "powershell -executionpolicy bypass \"& { $ErrorActionPreference='Stop'; $_p='{{.Path}}'; $_dl=[DateTime]::Now.AddSeconds(120); while (-not (Test-Path $_p) -and [DateTime]::Now -lt $_dl) { Start-Sleep 2 }; . {{.Vars}}; & $_p; exit $LastExitCode }\""
 }
 
 source "proxmox-iso" "windows-server-2025" {
@@ -164,15 +166,17 @@ build {
   sources = ["source.proxmox-iso.windows-server-2025"]
 
   provisioner "powershell" {
-    script = "${path.root}/_shared/windows/Install.ps1"
+    execute_command = local.ps_execute
+    script          = "${path.root}/_shared/windows/Install.ps1"
   }
   provisioner "windows-restart" {
     restart_timeout = "30m"
   }
 
   provisioner "powershell" {
-    pause_before = "30s"
-    script       = "${path.root}/_shared/windows/WU.ps1"
+    pause_before    = "30s"
+    execute_command = local.ps_execute
+    script          = "${path.root}/_shared/windows/WU.ps1"
   }
   provisioner "windows-restart" {
     restart_timeout = "90m"
@@ -180,8 +184,9 @@ build {
   }
 
   provisioner "powershell" {
-    pause_before = "30s"
-    script       = "${path.root}/_shared/windows/WU.ps1"
+    pause_before    = "30s"
+    execute_command = local.ps_execute
+    script          = "${path.root}/_shared/windows/WU.ps1"
   }
   provisioner "windows-restart" {
     restart_timeout = "90m"
@@ -189,14 +194,18 @@ build {
   }
 
   provisioner "powershell" {
-    script = "${path.root}/_shared/windows/PreFinalize.ps1"
+    pause_before    = "30s"
+    execute_command = local.ps_execute
+    script          = "${path.root}/_shared/windows/PreFinalize.ps1"
   }
   provisioner "windows-restart" {
     restart_timeout = "15m"
   }
 
   provisioner "powershell" {
-    script = "${path.root}/_shared/windows/Finalize.ps1"
+    pause_before    = "30s"
+    execute_command = local.ps_execute
+    script          = "${path.root}/_shared/windows/Finalize.ps1"
   }
 
   post-processor "shell-local" {

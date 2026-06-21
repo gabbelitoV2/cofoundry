@@ -213,6 +213,21 @@ name (`root@pve.tail-scale.ts.net`) or the 100.x IP. With Tailscale SSH
 enabled on the node, you can also omit `SSH_PRIVATE_KEY` entirely; the
 workflow skips the key-setup step and auth is brokered by the tailnet.
 
+> **Gotcha — Tailscale MagicDNS on the node breaks DNS in cloned VMs.**
+> When MagicDNS is accepted, Tailscale overwrites the node's
+> `/etc/resolv.conf` to point at `100.100.100.100` (the tailnet-only
+> resolver). Proxmox uses the node's resolver as the *default* DNS for any
+> cloud-init VM that doesn't set its own nameserver — so a clone that isn't
+> on the tailnet inherits `100.100.100.100`, can't reach it, and fails to
+> resolve anything. (On Ubuntu the clone's `/etc/resolv.conf` shows
+> `127.0.0.53`, the systemd-resolved stub — that part is normal and not the
+> problem; check `resolvectl status` for the real upstream.) The templates
+> themselves ship DNS-agnostic — nothing is baked in — so this is purely a
+> node/deploy-environment issue. Avoid it either by **deploying clones with
+> an explicit, reachable nameserver** (the fallback never triggers), or by
+> keeping the node off MagicDNS: `tailscale set --accept-dns=false` and set
+> a public node resolver (Datacenter → DNS, e.g. `1.1.1.1`).
+
 ### 3. Set repo secrets and variables
 
 Go to **Settings → Secrets and variables → Actions**. Secrets hide values

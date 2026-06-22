@@ -73,6 +73,14 @@
       </DiskConfiguration>
       <ImageInstall>
         <OSImage>
+          <!-- Required despite AGENTS.md's old warning: on this 2025 ISO MOSETUP
+               enables CompactOS regardless of disk size (32G AND 64G both apply
+               compact), and a compact apply deterministically fails servicing
+               with "phase 71"/DISM 0x80071160. <Compact>false> is the only value
+               that reaches specialize and can complete. It does intermittently
+               corrupt the component store there ("computer restarted
+               unexpectedly"); cf retries ride that out. See docs handoff. -->
+          <Compact>false</Compact>
           <InstallFrom>
             <MetaData wcm:action="add">
               <Key>/IMAGE/NAME</Key>

@@ -107,15 +107,10 @@ source "proxmox-iso" "windows-server-2025" {
   }
 
   disks {
-    # 64G (not 32G): Windows Setup auto-enables CompactOS when it judges the disk
-    # "small" — it evaluates ~8 GB below physical, so 32-40G is still seen as
-    # small and forces a WOF-compressed apply. A compressed apply that we then
-    # service/specialize intermittently corrupts the component-store transaction
-    # log → "computer restarted unexpectedly." 64G is seen as ~56G, so MOSETUP
-    # does a plain full apply and the autounattend no longer needs (the harmful)
-    # <Compact>false>. Install.ps1 still runs Compact.exe /CompactOS:never, and
-    # vzdump only stores used blocks, so the artifact stays small.
-    disk_size    = "64G"
+    # 32G. Bumping to 64G to dodge CompactOS was tried and FAILED — MOSETUP still
+    # did a compact apply at 64G (confirmed in setupact.log), so disk size does
+    # not escape CompactOS on this 2025 ISO. Final footprint is ~25-27 GB.
+    disk_size    = "32G"
     format       = "qcow2"
     storage_pool = var.proxmox_storage_pool
     type         = "scsi"

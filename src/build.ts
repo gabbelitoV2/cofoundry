@@ -311,10 +311,16 @@ export const buildPhase = async (
         // hasn't started yet, so matching the recipe's HCL path only hits stale
         // processes. Kill them first, then clean the VM (so a lingering watchdog
         // can't restart it after we destroy).
-        const recipeHclMatch = `builds/${recipe.name}.pkr.hcl`
+        // Match packer (and its watchdog subshell, whose argv embeds the packer
+        // command) by command line. The leading [p] character class is the
+        // classic self-exclusion trick: this pkill's OWN shell has the pattern
+        // string in its argv, but "[p]acker" matches the literal "packer", not
+        // the bracketed "[p]acker" in our own command line — so it can't SIGKILL
+        // itself (which previously failed the build with ssh exit 255).
+        const staleMatch = `[p]acker build .*${recipe.name}`
         await captureRemote(
             env.SSH_TARGET,
-            `pkill -9 -f ${shellQuote(recipeHclMatch)} >/dev/null 2>&1 || true; ` +
+            `pkill -9 -f ${shellQuote(staleMatch)} >/dev/null 2>&1 || true; ` +
                 `sleep 1; ` +
                 `qm stop ${recipe.buildVmid} --skiplock 1 >/dev/null 2>&1 || true; ` +
                 `qm unlock ${recipe.buildVmid} >/dev/null 2>&1 || true; ` +

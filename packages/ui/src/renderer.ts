@@ -219,9 +219,21 @@ class StreamRenderer implements Renderer {
         const write = (s: string): void => {
             this.stream.write(`${tag} ${s}\n`)
         }
+        // Progress arrives many times a second (wget bars, transfer ticks).
+        // Stream mode has no in-place updates, so throttle to one line/sec to
+        // keep prefetch/sync visible without flooding CI logs.
+        let lastProgressMs = 0
         return {
-            setPhase: phase => write(`${pc.dim('→')} ${phase}`),
-            setProgress: () => {},
+            setPhase: phase => {
+                lastProgressMs = 0
+                write(`${pc.dim('→')} ${phase}`)
+            },
+            setProgress: progress => {
+                const now = Date.now()
+                if (now - lastProgressMs < 1000) return
+                lastProgressMs = now
+                write(`${pc.dim('·')} ${progress}`)
+            },
             log: line => write(line),
             succeed: message => {
                 const d = fmtDuration(Date.now() - start)

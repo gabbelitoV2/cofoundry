@@ -56,6 +56,8 @@ locals {
   build_vmid     = 2000
   recipe_name    = "windows-server-2019"
   recipe_display = "Windows Server 2019 Datacenter"
+
+  ps_execute = "powershell -executionpolicy bypass \"& { $ErrorActionPreference='Stop'; $_p='{{.Path}}'; $_dl=[DateTime]::Now.AddSeconds(120); while (-not (Test-Path $_p) -and [DateTime]::Now -lt $_dl) { Start-Sleep 2 }; . {{.Vars}}; & $_p; exit $LastExitCode }\""
 }
 
 source "proxmox-iso" "windows-server-2019" {
@@ -140,8 +142,14 @@ source "proxmox-iso" "windows-server-2019" {
     unmount  = true
   }
 
-  boot_wait    = "3s"
-  boot_command = ["<enter><wait2><enter><wait2><enter><wait2><enter><wait2><enter><wait2><enter><wait2><enter><wait2><enter><wait2><enter><wait2><enter><wait2>"]
+  # The OVMF "Press any key to boot from CD or DVD" prompt is a short (~5s)
+  # window whose start drifts with POST speed — on a busy node it can land well
+  # after a short keypress burst, leaving the VM at "no bootable device" until
+  # winrm_timeout (4h) expires. Blanket ~60s with a press every 2s so a slow
+  # POST can't fall outside the window; stray <enter>s during WinPE load are
+  # harmless (autounattend drives Setup non-interactively).
+  boot_wait    = "2s"
+  boot_command = ["<enter><wait2><enter><wait2><enter><wait2><enter><wait2><enter><wait2><enter><wait2><enter><wait2><enter><wait2><enter><wait2><enter><wait2><enter><wait2><enter><wait2><enter><wait2><enter><wait2><enter><wait2><enter><wait2><enter><wait2><enter><wait2><enter><wait2><enter><wait2><enter><wait2><enter><wait2><enter><wait2><enter><wait2><enter><wait2><enter><wait2><enter><wait2><enter><wait2><enter><wait2><enter><wait2>"]
 
   communicator   = "winrm"
   winrm_host     = var.build_ip
@@ -157,7 +165,8 @@ build {
   sources = ["source.proxmox-iso.windows-server-2019"]
 
   provisioner "powershell" {
-    script = "${path.root}/_shared/windows/Install.ps1"
+    execute_command = local.ps_execute
+    script          = "${path.root}/_shared/windows/Install.ps1"
   }
 
   provisioner "windows-restart" {
@@ -165,7 +174,9 @@ build {
   }
 
   provisioner "powershell" {
-    script = "${path.root}/_shared/windows/WU.ps1"
+    pause_before    = "30s"
+    execute_command = local.ps_execute
+    script          = "${path.root}/_shared/windows/WU.ps1"
   }
   provisioner "windows-restart" {
     restart_timeout = "90m"
@@ -173,7 +184,9 @@ build {
   }
 
   provisioner "powershell" {
-    script = "${path.root}/_shared/windows/WU.ps1"
+    pause_before    = "30s"
+    execute_command = local.ps_execute
+    script          = "${path.root}/_shared/windows/WU.ps1"
   }
   provisioner "windows-restart" {
     restart_timeout = "90m"
@@ -181,14 +194,18 @@ build {
   }
 
   provisioner "powershell" {
-    script = "${path.root}/_shared/windows/PreFinalize.ps1"
+    pause_before    = "30s"
+    execute_command = local.ps_execute
+    script          = "${path.root}/_shared/windows/PreFinalize.ps1"
   }
   provisioner "windows-restart" {
     restart_timeout = "15m"
   }
 
   provisioner "powershell" {
-    script = "${path.root}/_shared/windows/Finalize.ps1"
+    pause_before    = "30s"
+    execute_command = local.ps_execute
+    script          = "${path.root}/_shared/windows/Finalize.ps1"
   }
 
   post-processor "shell-local" {

@@ -16,3 +16,7 @@ if ($cs.AutomaticManagedPagefile) {
 }
 Get-CimInstance -ClassName Win32_PageFileSetting -ErrorAction SilentlyContinue |
   Remove-CimInstance -ErrorAction SilentlyContinue
+
+# All failure paths above throw; reaching here is success. Explicit exit 0 so a
+# stale $LastExitCode from an earlier native command can't fail the provisioner.
+exit 0

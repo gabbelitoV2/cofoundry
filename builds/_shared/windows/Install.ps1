@@ -39,48 +39,13 @@ if (-not (Test-Path "\\.\Global\org.qemu.guest_agent.0")) {
 }
 Write-Step "QEMU Guest Agent: running, channel open"
 
-Write-Step "install Cloudbase-Init"
-$cloudbaseMsi = Find-FileOnMedia "CloudbaseInitSetup_x64.msi"
-if (-not $cloudbaseMsi) {
-  $cloudbaseMsi = "$env:TEMP\CloudbaseInitSetup_x64.msi"
-  $msiUrl = "https://github.com/cloudbase/cloudbase-init/releases/latest/download/CloudbaseInitSetup_x64.msi"
-  Write-Step "downloading Cloudbase-Init from $msiUrl"
-  [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-  (New-Object System.Net.WebClient).DownloadFile($msiUrl, $cloudbaseMsi)
-}
-$p = Start-Process -FilePath "msiexec.exe" `
-  -ArgumentList "/i", $cloudbaseMsi, "/qn", "/norestart", "RUN_SERVICE_AS_LOCAL_SYSTEM=1" `
-  -Wait -PassThru
-if ($p.ExitCode -ne 0 -and $p.ExitCode -ne 3010) {
-  throw "Cloudbase-Init MSI exited $($p.ExitCode)"
-}
-
-Write-Step "verify Cloudbase-Init"
-$svc = Get-Service -Name "cloudbase-init" -ErrorAction SilentlyContinue
-if (-not $svc) { throw "cloudbase-init service not found after install" }
-
-$cloudbaseConfDir = "C:\Program Files\Cloudbase Solutions\Cloudbase-Init\conf"
-New-Item -ItemType Directory -Force -Path $cloudbaseConfDir | Out-Null
-@"
-[DEFAULT]
-username=Administrator
-groups=Administrators
-inject_user_password=true
-first_logon_behaviour=no
-config_drive_raw_hhd=true
-config_drive_cdrom=true
-bsdtar_path=C:\Program Files\Cloudbase Solutions\Cloudbase-Init\bin\bsdtar.exe
-mtools_path=C:\Program Files\Cloudbase Solutions\Cloudbase-Init\bin\
-verbose=true
-debug=false
-logdir=C:\Program Files\Cloudbase Solutions\Cloudbase-Init\log\
-logfile=cloudbase-init.log
-metadata_services=cloudbaseinit.metadata.services.configdrive.ConfigDriveService,cloudbaseinit.metadata.services.nocloudservice.NoCloudConfigDriveService
-plugins=cloudbaseinit.plugins.common.mtu.MTUPlugin,cloudbaseinit.plugins.windows.ntpclient.NTPClientPlugin,cloudbaseinit.plugins.common.sethostname.SetHostNamePlugin,cloudbaseinit.plugins.windows.createuser.CreateUserPlugin,cloudbaseinit.plugins.common.networkconfig.NetworkConfigPlugin,cloudbaseinit.plugins.windows.licensing.WindowsLicensingPlugin,cloudbaseinit.plugins.common.sshpublickeys.SetUserSSHPublicKeysPlugin,cloudbaseinit.plugins.windows.extendvolumes.ExtendVolumesPlugin,cloudbaseinit.plugins.common.userdata.UserDataPlugin,cloudbaseinit.plugins.common.localscripts.LocalScriptsPlugin
-"@ | Set-Content -Path (Join-Path $cloudbaseConfDir "cloudbase-init.conf") -Encoding ASCII
-
 Write-Step "enable services"
-Set-Service -Name cloudbase-init -StartupType Automatic -ErrorAction SilentlyContinue
+# Cloudbase-Init is deliberately NOT installed here. Install.ps1 runs before
+# the Windows Update passes, and on Server 2025 the monthly checkpoint
+# cumulative (applied via UpdateAgent) re-deploys the OS -- software installed
+# this early does not reliably survive to the final image. Cloudbase-Init is
+# installed in Finalize.ps1 instead, after the last WU pass and right before
+# sysprep, where nothing destructive can run after it.
 Set-Service -Name QEMU-GA -StartupType Automatic -ErrorAction SilentlyContinue
 
 Write-Step "pin WinRM Basic/unencrypted via Group Policy registry"
@@ -94,16 +59,18 @@ New-Item -Path $wmPolicyPath -Force | Out-Null
 Set-ItemProperty -Path $wmPolicyPath -Name "AllowBasic"       -Value 1 -Type DWord -Force
 Set-ItemProperty -Path $wmPolicyPath -Name "AllowUnencrypted" -Value 1 -Type DWord -Force
 # Immediately re-apply so the current session sees the new policy values.
-winrm set winrm/config/service @{AllowUnencrypted="true"} 2>&1 | Out-Null
-winrm set winrm/config/service/auth @{Basic="true"} 2>&1 | Out-Null
+# Must go through cmd.exe: from PowerShell the @{...} argument is parsed as a
+# hashtable and winrm.cmd receives "System.Collections.Hashtable".
+cmd.exe /c 'winrm set winrm/config/service @{AllowUnencrypted="true"} >nul 2>&1'
+cmd.exe /c 'winrm set winrm/config/service/auth @{Basic="true"} >nul 2>&1'
 
 Write-Step "register WinRM keepalive startup task"
 # Belt-and-suspenders: run the winrm set commands at every subsequent startup
 # as well, in case a future Defender version learns to clear the Policies hive.
 $winrmFixPath = "C:\Windows\System32\packer-winrm-keepalive.ps1"
 @'
-winrm set winrm/config/service @{AllowUnencrypted="true"} 2>&1 | Out-Null
-winrm set winrm/config/service/auth @{Basic="true"} 2>&1 | Out-Null
+cmd.exe /c 'winrm set winrm/config/service @{AllowUnencrypted="true"} >nul 2>&1'
+cmd.exe /c 'winrm set winrm/config/service/auth @{Basic="true"} >nul 2>&1'
 '@ | Set-Content $winrmFixPath -Encoding UTF8
 $action    = New-ScheduledTaskAction -Execute "powershell.exe" `
                -Argument "-ExecutionPolicy Bypass -NonInteractive -File `"$winrmFixPath`""
@@ -130,3 +97,7 @@ foreach ($block in $blocks) {
   }
 }
 bcdedit.exe /set '{fwbootmgr}' displayorder '{bootmgr}' /addfirst 2>&1 | Out-Null
+
+# All failure paths above throw; reaching here is success. Explicit exit 0 so a
+# stale $LastExitCode from an earlier native command can't fail the provisioner.
+exit 0

@@ -47,7 +47,7 @@ for ($iter = 1; $iter -le $maxIterations; $iter++) {
   try {
     # IsInstalled=0: not yet installed. Type=Software: skip drivers (template should
     # stay generic). IsHidden=0: skip anything an admin would have hidden. We do NOT
-    # filter on BrowseOnly here — that excludes legitimate optional updates that
+    # filter on BrowseOnly here -- that excludes legitimate optional updates that
     # may be required for cumulative chains.
     $found = $searcher.Search("IsInstalled=0 and Type='Software' and IsHidden=0")
   } catch {
@@ -171,3 +171,7 @@ if (Test-Path $WURebootFlag) {
 } else {
   Write-Step "no reboot required - conditional windows-restart will skip"
 }
+
+# All failure paths above throw; reaching here is success. Explicit exit 0 so a
+# stale $LastExitCode from an earlier native command can't fail the provisioner.
+exit 0

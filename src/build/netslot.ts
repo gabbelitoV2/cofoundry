@@ -2,6 +2,12 @@ import { captureRemote, registerCleanup } from './remote.ts'
 import { spawnSync } from 'node:child_process'
 import type { Env } from '../env.ts'
 import { shellQuote } from '../util.ts'
+import {
+    BUILD_NET_GATEWAY,
+    BUILD_NET_PREFIX,
+    BUILD_SLOT_BASE,
+    BUILD_SLOT_COUNT,
+} from './buildnet.ts'
 
 // Per-build network slot allocated on the node's NAT bridge (vmbr1, 10.0.0.0/24).
 // Each slot owns one IP + a deterministic MAC, registered with dnsmasq as a
@@ -10,7 +16,7 @@ import { shellQuote } from '../util.ts'
 // so builds can run in parallel on a single node.
 //
 // Layout:
-//   IP  = 10.0.0.<100 + slotIndex>     for slotIndex in [0, SLOT_COUNT)
+//   IP  = 10.0.0.<100 + slotIndex>     for slotIndex in [0, BUILD_SLOT_COUNT)
 //   MAC = 02:50:4B:00:00:<slot byte>
 //   Reservation file: /etc/dnsmasq.d/cofoundry-hosts.d/slot-<NN>
 //
@@ -22,16 +28,26 @@ import { shellQuote } from '../util.ts'
 //
 // Free-slot discovery is `flock`-serialised on the node so concurrent
 // `cf build` invocations can't pick the same slot.
+//
+// Orphan reclaim: a build killed by anything other than a clean exit or SIGINT
+// (SIGTERM/SIGKILL, OOM, host reboot, power loss) leaves its snippet behind,
+// silently leaking a slot forever. So allocation first reconciles: any snippet
+// with no live DHCP lease for its IP, whose file is older than
+// STALE_RECLAIM_SECS, belongs to a build that's long gone and is swept. A live
+// build always holds a non-expired lease (12h lease time, far longer than any
+// build), and the age guard keeps us from racing a just-allocated slot whose VM
+// hasn't booted and DHCP'd yet.
 
-const SUBNET_PREFIX = '10.0.0'
-const SLOT_BASE = 100
-const SLOT_COUNT = 50
-export const BUILD_BRIDGE_GATEWAY = `${SUBNET_PREFIX}.1`
 const LOCK_DIR = '/var/lib/cofoundry'
 const LOCK_FILE = `${LOCK_DIR}/netslot.lock`
 const SNIPPET_DIR = '/etc/dnsmasq.d/cofoundry-hosts.d'
 const SNIPPET_PREFIX = 'slot-'
 const LEASES_FILE = '/var/lib/misc/dnsmasq.leases'
+
+// A snippet with no active lease is only reclaimed once it's older than this —
+// comfortably longer than the worst-case gap between allocating a slot and the
+// build VM acquiring its DHCP lease (slow Windows PE boot is still minutes).
+const STALE_RECLAIM_SECS = 1800
 
 export type BuildSlot = {
     ip: string
@@ -42,10 +58,10 @@ export type BuildSlot = {
 }
 
 const slotIp = (slotIndex: number): string =>
-    `${SUBNET_PREFIX}.${SLOT_BASE + slotIndex}`
+    `${BUILD_NET_PREFIX}.${BUILD_SLOT_BASE + slotIndex}`
 
 const slotMac = (slotIndex: number): string => {
-    const byte = (SLOT_BASE + slotIndex).toString(16).padStart(2, '0')
+    const byte = (BUILD_SLOT_BASE + slotIndex).toString(16).padStart(2, '0')
     return `02:50:4B:00:00:${byte}`
 }
 
@@ -66,6 +82,23 @@ set -e
 mkdir -p ${shellQuote(LOCK_DIR)} ${shellQuote(SNIPPET_DIR)}
 exec 9>${shellQuote(LOCK_FILE)}
 flock 9
+now=$(date +%s)
+# Reclaim orphaned snippets: no live (non-expired) lease for the reserved IP and
+# the file is older than the boot/DHCP grace window, so the owning build is gone.
+for f in ${shellQuote(SNIPPET_DIR)}/${SNIPPET_PREFIX}*; do
+    [ -e "$f" ] || continue
+    sip=$(cut -d, -f2 "$f")
+    active=0
+    if [ -f ${shellQuote(LEASES_FILE)} ] && awk -v ip="$sip" -v now="$now" \\
+        '$3==ip && ($1+0==0 || $1+0>now){f=1} END{exit !f}' ${shellQuote(LEASES_FILE)}; then
+        active=1
+    fi
+    mt=$(stat -c %Y "$f" 2>/dev/null || echo "$now")
+    if [ "$active" -eq 0 ] && [ "$(( now - mt ))" -gt ${STALE_RECLAIM_SECS} ]; then
+        echo "reclaiming stale netslot \${f##*/} ($sip): no lease, age $(( now - mt ))s" >&2
+        rm -f "$f"
+    fi
+done
 used=" "
 for f in ${shellQuote(SNIPPET_DIR)}/${SNIPPET_PREFIX}*; do
     [ -e "$f" ] || continue
@@ -75,7 +108,7 @@ for f in ${shellQuote(SNIPPET_DIR)}/${SNIPPET_PREFIX}*; do
 done
 pick=""
 i=0
-while [ "$i" -lt ${SLOT_COUNT} ]; do
+while [ "$i" -lt ${BUILD_SLOT_COUNT} ]; do
     pad=$(printf '%02d' "$i")
     case "$used" in
         *" $pad "*) ;;
@@ -84,12 +117,12 @@ while [ "$i" -lt ${SLOT_COUNT} ]; do
     i=$((i + 1))
 done
 if [ -z "$pick" ]; then
-    echo "no free slot (all ${SLOT_COUNT} reservations in use)" >&2
+    echo "no free slot (all ${BUILD_SLOT_COUNT} reservations in use)" >&2
     exit 1
 fi
 pad=$(printf '%02d' "$pick")
-ip="${SUBNET_PREFIX}.$(( ${SLOT_BASE} + pick ))"
-byte=$(printf '%02x' "$(( ${SLOT_BASE} + pick ))")
+ip="${BUILD_NET_PREFIX}.$(( ${BUILD_SLOT_BASE} + pick ))"
+byte=$(printf '%02x' "$(( ${BUILD_SLOT_BASE} + pick ))")
 mac="02:50:4b:00:00:$byte"
 printf '%s,%s\\n' "$mac" "$ip" > ${shellQuote(SNIPPET_DIR)}/${SNIPPET_PREFIX}"$pad"
 # Purge any stale lease holding the reserved IP or matching the reserved MAC,
@@ -109,7 +142,7 @@ echo "$pick"
     if (
         !Number.isFinite(slotIndex) ||
         slotIndex < 0 ||
-        slotIndex >= SLOT_COUNT
+        slotIndex >= BUILD_SLOT_COUNT
     ) {
         throw new Error(`netslot allocator returned invalid index: ${out}`)
     }
@@ -137,5 +170,5 @@ echo "$pick"
         await captureRemote(env.SSH_TARGET, releaseScript).catch(() => {})
     }
 
-    return { ip, gw: BUILD_BRIDGE_GATEWAY, mac, slotIndex, release }
+    return { ip, gw: BUILD_NET_GATEWAY, mac, slotIndex, release }
 }

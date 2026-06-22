@@ -1,6 +1,11 @@
 import { execa, ExecaError } from 'execa'
 import { redactSensitive } from '../util.ts'
 
+// Keep idle SSH sessions alive — and detect a dead peer — so a long quiet remote
+// step (e.g. a multi-hundred-MB artifact upload in CF_UPLOAD_CMD) can't leave the
+// build hanging forever on a half-open connection.
+const SSH_OPTS = ['-o', 'ServerAliveInterval=15', '-o', 'ServerAliveCountMax=6']
+
 // ── SIGINT cleanup ────────────────────────────────────────────────────────────
 
 type KillableProc = { kill: (signal?: string) => boolean }
@@ -14,19 +19,31 @@ export const registerCleanup = (fn: () => void): (() => void) => {
     return () => cleanupCallbacks.delete(fn)
 }
 
-process.once('SIGINT', () => {
+// Run cleanup on any signal that would otherwise terminate the process without
+// unwinding the build's `finally` blocks — SIGTERM (default `kill`, CI cancel/
+// timeout) and SIGHUP (terminal/SSH session hangup) as well as SIGINT (Ctrl-C).
+// This is best-effort: SIGKILL, OOM, and power loss can't be trapped, which is
+// why netslot allocation also reclaims orphaned slots. Exit code is 128 + signo.
+const onFatalSignal = (signo: number) => (): void => {
     for (const p of activeProcs) p.kill('SIGKILL')
     for (const fn of cleanupCallbacks) fn()
-    process.exit(130)
-})
+    process.exit(128 + signo)
+}
+process.once('SIGINT', onFatalSignal(2))
+process.once('SIGTERM', onFatalSignal(15))
+process.once('SIGHUP', onFatalSignal(1))
 
 export const captureRemote = async (
     target: string,
     cmd: string
 ): Promise<string> => {
     try {
-        const { stdout } = await execa('ssh', [target, cmd], {
-            stdin: 'inherit',
+        // stdin: 'ignore' (≈ ssh -n), never 'inherit'. Concurrent ssh calls that
+        // inherit the shared interactive stdin fight over fd 0 and block — the
+        // classic "parallel ssh eats stdin" deadlock that stalls prefetch
+        // (mkdir/file-check) for later recipes while an earlier build streams.
+        const { stdout } = await execa('ssh', [...SSH_OPTS, target, cmd], {
+            stdin: 'ignore',
             stderr: 'inherit',
         })
         return stdout
@@ -45,14 +62,14 @@ export const remoteStreaming = (
     target: string,
     cmd: string,
     onLine?: (line: string) => void
-): Promise<void> => streaming('ssh', [target, cmd], onLine)
+): Promise<void> => streaming('ssh', [...SSH_OPTS, target, cmd], onLine)
 
 // Allocates a PTY so remote programs (e.g. wget) detect a terminal and show
 // their native progress bar rather than falling back to dot-style output.
 export const remoteStreamingPty = (
     target: string,
     cmd: string
-): Promise<void> => streaming('ssh', ['-t', '-t', target, cmd])
+): Promise<void> => streaming('ssh', [...SSH_OPTS, '-t', '-t', target, cmd])
 
 // Wget exit codes worth surfacing. See man wget(1) EXIT STATUS.
 const WGET_EXIT: Record<number, string> = {
@@ -75,7 +92,7 @@ export const remoteWgetCapture = async (
     onLine: (line: string) => void,
     context?: { url?: string; what?: string }
 ): Promise<void> => {
-    const proc = execa('ssh', ['-t', '-t', target, `{ ${cmd}; } 2>&1`], {
+    const proc = execa('ssh', [...SSH_OPTS, '-t', '-t', target, `{ ${cmd}; } 2>&1`], {
         stdin: 'pipe',
         stdout: 'pipe',
         stderr: 'ignore',
@@ -129,7 +146,9 @@ export const streaming = async (
             return
         }
         const proc = execa(cmd, args, {
-            stdin: 'inherit',
+            // ignore (not inherit): a long packer stream must not hold the shared
+            // stdin and starve concurrent prefetch ssh calls. See captureRemote.
+            stdin: 'ignore',
             stdout: 'pipe',
             stderr: 'pipe',
         })

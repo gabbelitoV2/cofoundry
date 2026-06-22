@@ -57,17 +57,34 @@ const buildVmWatchdog = (
     communicatorPort: number
 ): string => `
 (
-  _n=0 _max=5
+  _n=0 _max=5 _up=0 _need=3
   while true; do
     sleep 10
     if timeout 3 bash -c "echo >/dev/tcp/${buildIp}/${communicatorPort}" 2>/dev/null; then
-      echo "[watchdog] port ${communicatorPort} up on ${buildIp} — exiting"; exit 0
+      # Require the communicator port to stay up across several checks before
+      # standing down. Windows Setup opens WinRM briefly during OOBE then may
+      # reboot/power off for a later phase; exiting on the first hit leaves that
+      # shutdown unhandled and Packer waits out its full timeout ("no route to
+      # host"). Once the port is *stably* up Packer has connected — safe to exit.
+      _up=$((_up + 1))
+      if [ "$_up" -ge "$_need" ]; then
+        echo "[watchdog] port ${communicatorPort} up on ${buildIp} (stable) — exiting"; exit 0
+      fi
+      continue
     fi
+    _up=0
     _s=$(qm status ${vmid} 2>/dev/null | awk 'NR==1{print $2}') || continue
     [ "$_s" = "stopped" ] || continue
     sleep 20
     _s=$(qm status ${vmid} 2>/dev/null | awk 'NR==1{print $2}') || continue
     [ "$_s" = "stopped" ] || continue
+    # A template also reports "stopped". Never qm start it — that fails with
+    # "you can't start a vm if it's a template". A template at this point means
+    # packer already finished and converted the VM, so there's nothing to
+    # restart: exit cleanly instead of burning restart attempts on an error.
+    if qm config ${vmid} 2>/dev/null | grep -q '^template:'; then
+      echo "[watchdog] VM ${vmid} is now a template — exiting"; exit 0
+    fi
     _n=$((_n + 1))
     if [ "$_n" -gt "$_max" ]; then
       echo "[watchdog] VM ${vmid}: restart limit reached, giving up" >&2; exit 1

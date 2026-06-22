@@ -67,6 +67,12 @@ const buildVmWatchdog = (
 (
   _n=0 _max=5 _up=0 _need=3
   while true; do
+    # If the launching shell is gone (run torn down, or packer killed by the
+    # next build's pre-clean), we get reparented to init — stop instead of
+    # churning the shared VMID forever as an orphan.
+    if [ "$(ps -o ppid= -p $BASHPID 2>/dev/null | tr -d ' ')" = "1" ]; then
+      echo "[watchdog] launching shell gone — exiting"; exit 0
+    fi
     sleep 10
     if timeout 3 bash -c "echo >/dev/tcp/${buildIp}/${communicatorPort}" 2>/dev/null; then
       # Require the communicator port to stay up across several checks before
@@ -112,7 +118,11 @@ ${
 }  done
 ) &
 _WDOG_PID=$!
-trap 'kill "$_WDOG_PID" 2>/dev/null || true' EXIT INT TERM
+trap 'kill "$_WDOG_PID" 2>/dev/null || true' EXIT
+# On a delivered termination signal (incl. SSH hangup), tear down the watchdog
+# *and* the whole process group (packer included) so a torn-down run leaves
+# nothing churning the shared VMID.
+trap 'kill "$_WDOG_PID" 2>/dev/null || true; kill 0 2>/dev/null || true; exit 143' HUP INT TERM
 `
 
 export type SyncRepoOptions = {
@@ -291,9 +301,22 @@ export const buildPhase = async (
     }
 
     if (recipe.buildVmid) {
+        // Kill any orphaned packer build (and its watchdog subshells) for THIS
+        // recipe left over from a cancelled/failed/timed-out run. Remote SSH
+        // doesn't reliably signal the node-side packer when a run is torn down,
+        // so it keeps running — and because every recipe uses a fixed build_vmid,
+        // a stale `packer build -force` will stop/destroy this VM out from under
+        // the live build (and stale watchdogs will `qm start` it), causing
+        // mid-install stops and OVMF "no bootable device" hangs. Our own packer
+        // hasn't started yet, so matching the recipe's HCL path only hits stale
+        // processes. Kill them first, then clean the VM (so a lingering watchdog
+        // can't restart it after we destroy).
+        const recipeHclMatch = `builds/${recipe.name}.pkr.hcl`
         await captureRemote(
             env.SSH_TARGET,
-            `qm stop ${recipe.buildVmid} --skiplock 1 >/dev/null 2>&1 || true; ` +
+            `pkill -9 -f ${shellQuote(recipeHclMatch)} >/dev/null 2>&1 || true; ` +
+                `sleep 1; ` +
+                `qm stop ${recipe.buildVmid} --skiplock 1 >/dev/null 2>&1 || true; ` +
                 `qm unlock ${recipe.buildVmid} >/dev/null 2>&1 || true; ` +
                 `qm destroy ${recipe.buildVmid} --purge 1 --destroy-unreferenced-disks 1 --skiplock 1 >/dev/null 2>&1 || true`
         )

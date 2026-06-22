@@ -141,13 +141,21 @@ $logOffset = 0
 while (-not (Test-Path $WUFlag) -and [DateTime]::Now -lt $deadline) {
   Start-Sleep 30
 
-  if (Test-Path $WULog) {
-    $lines = Get-Content $WULog
-    if ($lines.Count -gt $logOffset) {
-      $lines[$logOffset..($lines.Count - 1)] | ForEach-Object { Write-Host "    $_" }
-      $logOffset = $lines.Count
+  # The SYSTEM task writes this log via Add-Content while we read it. A read that
+  # collides with its write throws a sharing violation, which $ErrorActionPreference
+  # = 'Stop' would turn fatal — failing the whole build (and triggering a full
+  # ~1.5h reinstall retry) over a cosmetic progress tail. Read defensively and
+  # skip the tick on any error. @() forces array semantics so a single-line log
+  # indexes correctly.
+  try {
+    if (Test-Path $WULog) {
+      $lines = @(Get-Content $WULog -ErrorAction Stop)
+      if ($lines.Count -gt $logOffset) {
+        $lines[$logOffset..($lines.Count - 1)] | ForEach-Object { Write-Host "    $_" }
+        $logOffset = $lines.Count
+      }
     }
-  }
+  } catch {}
 
   $elapsed = [DateTime]::Now - $start
   Write-Host "    (elapsed $([int]$elapsed.TotalMinutes)m, waiting...)"
@@ -155,12 +163,15 @@ while (-not (Test-Path $WUFlag) -and [DateTime]::Now -lt $deadline) {
 
 Unregister-ScheduledTask -TaskName $WUTaskName -Confirm:$false -ErrorAction SilentlyContinue
 
-if (Test-Path $WULog) {
-  $lines = Get-Content $WULog
-  if ($lines.Count -gt $logOffset) {
-    $lines[$logOffset..($lines.Count - 1)] | ForEach-Object { Write-Host "    $_" }
+# Final flush of any tail lines. Defensive read for the same reason as the loop.
+try {
+  if (Test-Path $WULog) {
+    $lines = @(Get-Content $WULog -ErrorAction Stop)
+    if ($lines.Count -gt $logOffset) {
+      $lines[$logOffset..($lines.Count - 1)] | ForEach-Object { Write-Host "    $_" }
+    }
   }
-}
+} catch {}
 
 if (-not (Test-Path $WUFlag)) {
   throw "Windows Update timed out after 3h"

@@ -49,12 +49,20 @@ const fileExists = (path: string): Promise<boolean> => Bun.file(path).exists()
  * A shell EXIT trap ensures the watchdog subprocess is also killed if Packer
  * exits for any other reason (success, failure, or signal).
  *
+ * For Windows, a `qm start` restart can't replay Packer's boot_command, so if
+ * the installer shut down before the disk became bootable the VM would hang at
+ * the OVMF "Press any key to boot from CD" prompt. When `feedBootKeys` is set
+ * the watchdog feeds <enter> across a wide window after each restart to clear
+ * that prompt.
+ *
  * @param communicatorPort  22 for SSH (Linux), 5985 for WinRM (Windows)
+ * @param feedBootKeys      send post-restart boot keypresses (Windows/OVMF)
  */
 const buildVmWatchdog = (
     vmid: number,
     buildIp: string,
-    communicatorPort: number
+    communicatorPort: number,
+    feedBootKeys: boolean
 ): string => `
 (
   _n=0 _max=5 _up=0 _need=3
@@ -91,7 +99,17 @@ const buildVmWatchdog = (
     fi
     echo "[watchdog] VM ${vmid} stopped unexpectedly (attempt $_n/$_max) — restarting"
     qm start ${vmid} 2>&1 || true
-  done
+${
+    feedBootKeys
+        ? `    # The restart can't replay Packer's boot_command. If the installer shut
+    # down before the disk was bootable, OVMF lands on "Press any key to boot
+    # from CD" and would hang until the communicator timeout. Feed <enter>
+    # across a wide window to catch that prompt (sent in the background so the
+    # poll loop keeps running; stray keys once Windows is booting are harmless).
+    ( for _k in $(seq 1 60); do qm sendkey ${vmid} ret 2>/dev/null || true; sleep 1; done ) &
+`
+        : ''
+}  done
 ) &
 _WDOG_PID=$!
 trap 'kill "$_WDOG_PID" 2>/dev/null || true' EXIT INT TERM
@@ -352,7 +370,12 @@ export const buildPhase = async (
         const communicatorPort = isWindows ? 5985 : 22
         const watchdog =
             recipe.buildVmid && slot
-                ? buildVmWatchdog(recipe.buildVmid, slot.ip, communicatorPort)
+                ? buildVmWatchdog(
+                      recipe.buildVmid,
+                      slot.ip,
+                      communicatorPort,
+                      isWindows
+                  )
                 : ''
         // Windows builds intermittently fail mid-install (component-store
         // corruption in the specialize pass) on busy nodes. Retry the whole

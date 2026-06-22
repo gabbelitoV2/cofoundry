@@ -21,7 +21,8 @@ export const buildPackerVars = (
     env: Env,
     _recipe: RecipeInfo,
     buildBridge: string,
-    net: BuildNet | null
+    net: BuildNet | null,
+    buildVmid?: number
 ): string[] => {
     const apiUrl = `https://${env.PVE_HOST}:${env.PVE_PORT}/api2/json`
     const vars = [
@@ -51,6 +52,9 @@ export const buildPackerVars = (
             '-var',
             `build_dns=${env.CF_BUILD_DNS}`
         )
+    }
+    if (buildVmid !== undefined) {
+        vars.push('-var', `build_vmid=${buildVmid}`)
     }
     return vars
 }

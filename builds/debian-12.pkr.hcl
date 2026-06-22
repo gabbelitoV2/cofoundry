@@ -66,13 +66,18 @@ variable "build_dns" {
 
 variable "build_mac" { type = string }
 
+variable "build_vmid" {
+  type    = number
+  default = 4001
+}
+
 variable "packer_ssh_private_key_file" {
   type      = string
   sensitive = true
 }
 
 locals {
-  build_vmid     = 4001
+  build_vmid     = var.build_vmid
   recipe_name    = "debian-12"
   recipe_display = "Debian 12 (Bookworm)"
 }

@@ -92,11 +92,15 @@ export const remoteWgetCapture = async (
     onLine: (line: string) => void,
     context?: { url?: string; what?: string }
 ): Promise<void> => {
-    const proc = execa('ssh', [...SSH_OPTS, '-t', '-t', target, `{ ${cmd}; } 2>&1`], {
-        stdin: 'pipe',
-        stdout: 'pipe',
-        stderr: 'ignore',
-    })
+    const proc = execa(
+        'ssh',
+        [...SSH_OPTS, '-t', '-t', target, `{ ${cmd}; } 2>&1`],
+        {
+            stdin: 'pipe',
+            stdout: 'pipe',
+            stderr: 'ignore',
+        }
+    )
     proc.stdin?.end() // wget doesn't use stdin; close to avoid a dangling fd
     activeProcs.add(proc as unknown as KillableProc)
 

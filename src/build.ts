@@ -30,6 +30,14 @@ export const REPO_ROOT = fileURLToPath(new URL('../', import.meta.url))
 
 const fileExists = (path: string): Promise<boolean> => Bun.file(path).exists()
 
+const buildSlotVmid = (baseVmid: number, slot: BuildSlot | null): number =>
+    slot ? baseVmid * 100 + slot.slotIndex : baseVmid
+
+const destroyVmCmd = (vmid: number): string =>
+    `qm stop ${vmid} --skiplock 1 >/dev/null 2>&1 || true; ` +
+    `qm unlock ${vmid} >/dev/null 2>&1 || true; ` +
+    `qm destroy ${vmid} --purge 1 --destroy-unreferenced-disks 1 --skiplock 1 >/dev/null 2>&1 || true`
+
 /**
  * Returns a shell fragment that starts a background watchdog alongside Packer.
  *
@@ -299,18 +307,19 @@ export const buildPhase = async (
     if (usesBuildBridge) {
         slot = await allocateBuildSlot(env)
     }
+    const effectiveBuildVmid = recipe.buildVmid
+        ? buildSlotVmid(recipe.buildVmid, slot)
+        : undefined
 
     if (recipe.buildVmid) {
         // Kill any orphaned packer build (and its watchdog subshells) for THIS
         // recipe left over from a cancelled/failed/timed-out run. Remote SSH
         // doesn't reliably signal the node-side packer when a run is torn down,
-        // so it keeps running — and because every recipe uses a fixed build_vmid,
-        // a stale `packer build -force` will stop/destroy this VM out from under
-        // the live build (and stale watchdogs will `qm start` it), causing
-        // mid-install stops and OVMF "no bootable device" hangs. Our own packer
-        // hasn't started yet, so matching the recipe's HCL path only hits stale
-        // processes. Kill them first, then clean the VM (so a lingering watchdog
-        // can't restart it after we destroy).
+        // so it keeps running. Historically every recipe used a fixed
+        // build_vmid, so stale packers/watchdogs could stop/start the next live
+        // build's VM. New builds use a slot-derived VMID, but we still kill stale
+        // recipe-local packers to prevent artifact races, then clean the legacy
+        // VMID and this build's assigned VMID.
         // Match packer (and its watchdog subshell, whose argv embeds the packer
         // command) by command line. The leading [p] character class is the
         // classic self-exclusion trick: this pkill's OWN shell has the pattern
@@ -318,13 +327,14 @@ export const buildPhase = async (
         // the bracketed "[p]acker" in our own command line — so it can't SIGKILL
         // itself (which previously failed the build with ssh exit 255).
         const staleMatch = `[p]acker build .*${recipe.name}`
+        const vmidsToClean = [recipe.buildVmid, effectiveBuildVmid]
+            .filter((vmid): vmid is number => vmid !== undefined)
+            .filter((vmid, i, vmids) => vmids.indexOf(vmid) === i)
         await captureRemote(
             env.SSH_TARGET,
             `pkill -9 -f ${shellQuote(staleMatch)} >/dev/null 2>&1 || true; ` +
                 `sleep 1; ` +
-                `qm stop ${recipe.buildVmid} --skiplock 1 >/dev/null 2>&1 || true; ` +
-                `qm unlock ${recipe.buildVmid} >/dev/null 2>&1 || true; ` +
-                `qm destroy ${recipe.buildVmid} --purge 1 --destroy-unreferenced-disks 1 --skiplock 1 >/dev/null 2>&1 || true`
+                vmidsToClean.map(destroyVmCmd).join('; ')
         )
     }
 
@@ -361,7 +371,8 @@ export const buildPhase = async (
                 env,
                 recipe,
                 buildBridge,
-                slot ? { ip: slot.ip, gw: slot.gw, mac: slot.mac } : null
+                slot ? { ip: slot.ip, gw: slot.gw, mac: slot.mac } : null,
+                effectiveBuildVmid
             ),
             recipeHcl,
         ]
@@ -374,15 +385,12 @@ export const buildPhase = async (
         )
 
         const unregisterVmCleanup =
-            recipe.buildVmid && !options.keepVm
+            effectiveBuildVmid && !options.keepVm
                 ? registerCleanup(() => {
                       process.stderr.write(
-                          `\ncancelled — destroying build VM ${recipe.buildVmid}\n`
+                          `\ncancelled — destroying build VM ${effectiveBuildVmid}\n`
                       )
-                      const destroyCmd =
-                          `qm stop ${recipe.buildVmid} --skiplock 1 >/dev/null 2>&1 || true; ` +
-                          `qm unlock ${recipe.buildVmid} >/dev/null 2>&1 || true; ` +
-                          `qm destroy ${recipe.buildVmid} --purge 1 --destroy-unreferenced-disks 1 --skiplock 1 >/dev/null 2>&1 || true`
+                      const destroyCmd = destroyVmCmd(effectiveBuildVmid)
                       spawnSync('ssh', [env.SSH_TARGET, destroyCmd], {
                           stdio: 'inherit',
                       })
@@ -398,9 +406,9 @@ export const buildPhase = async (
         // (e.g. Windows sysprep at the end of Finalize.ps1).
         const communicatorPort = isWindows ? 5985 : 22
         const watchdog =
-            recipe.buildVmid && slot
+            effectiveBuildVmid && slot
                 ? buildVmWatchdog(
-                      recipe.buildVmid,
+                      effectiveBuildVmid,
                       slot.ip,
                       communicatorPort,
                       isWindows

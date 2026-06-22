@@ -61,6 +61,11 @@ variable "build_dns" {
 
 variable "build_mac" { type = string }
 
+variable "build_vmid" {
+  type    = number
+  default = 6001
+}
+
 variable "iso_cache_dir" {
   type    = string
   default = "/var/lib/vz/template/iso"
@@ -72,7 +77,7 @@ variable "packer_ssh_private_key_file" {
 }
 
 locals {
-  build_vmid     = 6001
+  build_vmid     = var.build_vmid
   recipe_name    = "almalinux-9"
   recipe_display = "AlmaLinux 9"
 }

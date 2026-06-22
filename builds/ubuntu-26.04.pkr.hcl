@@ -61,6 +61,11 @@ variable "build_dns" {
 
 variable "build_mac" { type = string }
 
+variable "build_vmid" {
+  type    = number
+  default = 1005
+}
+
 variable "iso_cache_dir" {
   type    = string
   default = "/var/lib/vz/template/iso"
@@ -72,7 +77,7 @@ variable "packer_ssh_private_key_file" {
 }
 
 locals {
-  build_vmid     = 1005
+  build_vmid     = var.build_vmid
   recipe_name    = "ubuntu-26.04"
   recipe_display = "Ubuntu 26.04 LTS (Resolute Raccoon)"
 }

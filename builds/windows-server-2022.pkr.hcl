@@ -52,8 +52,13 @@ variable "build_gw" { type = string }
 variable "build_dns" { type = string }
 variable "build_mac" { type = string }
 
+variable "build_vmid" {
+  type    = number
+  default = 2001
+}
+
 locals {
-  build_vmid     = 2001
+  build_vmid     = var.build_vmid
   recipe_name    = "windows-server-2022"
   recipe_display = "Windows Server 2022 Datacenter"
 

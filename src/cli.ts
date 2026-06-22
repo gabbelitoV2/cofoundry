@@ -59,7 +59,9 @@ const buildAction = async (
     const { passed, failed } = await runPipeline(env, recipes, pipelineOpts)
 
     log.blank()
-    log.ok(`${passed.length} succeeded${passed.length > 0 ? `: ${passed.join(', ')}` : ''}`)
+    log.ok(
+        `${passed.length} succeeded${passed.length > 0 ? `: ${passed.join(', ')}` : ''}`
+    )
     if (failed.length > 0) {
         log.err(
             `${failed.length} failed: ${failed.map(f => f.name).join(', ')}`
@@ -213,7 +215,9 @@ program
             log.ok(`Updated ${updated.length}/${updatable.length}.`)
         else log.info('No changes.')
         if (failed.length > 0) {
-            log.err(`${failed.length} failed: ${failed.map(f => f.name).join(', ')}`)
+            log.err(
+                `${failed.length} failed: ${failed.map(f => f.name).join(', ')}`
+            )
             process.exit(1)
         }
     })

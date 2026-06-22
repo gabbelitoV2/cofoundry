@@ -354,12 +354,48 @@ export const buildPhase = async (
             recipe.buildVmid && slot
                 ? buildVmWatchdog(recipe.buildVmid, slot.ip, communicatorPort)
                 : ''
+        // Windows builds intermittently fail mid-install (component-store
+        // corruption in the specialize pass) on busy nodes. Retry the whole
+        // packer build — `-force` recreates the VM from scratch each attempt,
+        // so a retry is a clean install, not a resume. Override with
+        // CF_BUILD_ATTEMPTS; keepVm (debug/inspect) disables retries.
+        const maxAttempts = options.keepVm
+            ? 1
+            : Math.max(
+                  1,
+                  Number.parseInt(
+                      process.env.CF_BUILD_ATTEMPTS ?? (isWindows ? '3' : '1'),
+                      10
+                  ) || 1
+              )
         try {
-            await remoteStreaming(
-                env.SSH_TARGET,
-                `${watchdog}${remoteEnv} ${packerArgs.join(' ')}`,
-                onLine
-            )
+            let lastErr: unknown
+            for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+                try {
+                    if (attempt > 1) {
+                        onLine?.(
+                            `[retry] build attempt ${attempt}/${maxAttempts}`
+                        )
+                    }
+                    await remoteStreaming(
+                        env.SSH_TARGET,
+                        `${watchdog}${remoteEnv} ${packerArgs.join(' ')}`,
+                        onLine
+                    )
+                    lastErr = undefined
+                    break
+                } catch (err) {
+                    lastErr = err
+                    const msg =
+                        err instanceof Error ? err.message.split('\n')[0] : err
+                    if (attempt < maxAttempts) {
+                        onLine?.(
+                            `[retry] attempt ${attempt}/${maxAttempts} failed: ${msg}`
+                        )
+                    }
+                }
+            }
+            if (lastErr) throw lastErr
         } finally {
             unregisterVmCleanup?.()
         }

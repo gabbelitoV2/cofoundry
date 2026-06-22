@@ -164,7 +164,12 @@ source "proxmox-iso" "windows-server-2025" {
   winrm_password = var.winrm_password
   winrm_use_ssl  = false
   winrm_insecure = true
-  winrm_timeout  = "4h"
+  # A healthy install reaches WinRM in ~15 min. Keep this tight so a failed
+  # install (setup error dialog leaves the VM "running" with WinRM never coming
+  # up) fails the attempt in ~45 min instead of hanging the full timeout —
+  # cf retries the build (CF_BUILD_ATTEMPTS) to ride out intermittent
+  # specialize-pass corruption on this node.
+  winrm_timeout  = "45m"
   winrm_port     = 5985
 }
 

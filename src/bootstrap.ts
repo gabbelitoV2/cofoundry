@@ -2,6 +2,13 @@ import { execa } from 'execa'
 import { confirm, input, select } from '@inquirer/prompts'
 import pc from 'picocolors'
 import { remoteStreaming } from './build/remote.ts'
+import {
+    BUILD_DHCP_RANGE_END,
+    BUILD_DHCP_RANGE_START,
+    BUILD_NET_BRIDGE_ADDR,
+    BUILD_NET_CIDR,
+    BUILD_NET_GATEWAY,
+} from './build/buildnet.ts'
 import { log } from './log.ts'
 import { addSensitiveValues, shellQuote } from './util.ts'
 
@@ -200,13 +207,13 @@ const stepIsoCache: Step = {
 const VMBR1_STANZA = `
 auto vmbr1
 iface vmbr1 inet static
-    address 10.0.0.1/24
+    address ${BUILD_NET_BRIDGE_ADDR}
     bridge-ports none
     bridge-stp off
     bridge-fd 0
     post-up   echo 1 > /proc/sys/net/ipv4/ip_forward
-    post-up   iptables -t nat -A POSTROUTING -s 10.0.0.0/24 -o vmbr0 -j MASQUERADE
-    post-down iptables -t nat -D POSTROUTING -s 10.0.0.0/24 -o vmbr0 -j MASQUERADE
+    post-up   iptables -t nat -A POSTROUTING -s ${BUILD_NET_CIDR} -o vmbr0 -j MASQUERADE
+    post-down iptables -t nat -D POSTROUTING -s ${BUILD_NET_CIDR} -o vmbr0 -j MASQUERADE
 `
 
 const stepVmbr1: Step = {
@@ -232,7 +239,6 @@ const stepVmbr1: Step = {
     },
 }
 
-const BUILD_NET_SUBNET = '10.0.0.0/24'
 const BUILD_NET_FW_COMMENT = 'cofoundry build network (packer HTTP)'
 
 // When the Proxmox firewall is enabled, the host's PVEFW-INPUT chain drops the
@@ -267,9 +273,9 @@ const stepBuildNetFirewall: Step = {
     apply: async plan => {
         await remoteStreaming(
             plan.target,
-            `pvesh create /nodes/$(hostname)/firewall/rules --action ACCEPT --type in --source ${BUILD_NET_SUBNET} --enable 1 --comment ${shellQuote(BUILD_NET_FW_COMMENT)}`
+            `pvesh create /nodes/$(hostname)/firewall/rules --action ACCEPT --type in --source ${BUILD_NET_CIDR} --enable 1 --comment ${shellQuote(BUILD_NET_FW_COMMENT)}`
         )
-        return { note: `allowed ${BUILD_NET_SUBNET} in (host firewall rule)` }
+        return { note: `allowed ${BUILD_NET_CIDR} in (host firewall rule)` }
     },
 }
 
@@ -296,10 +302,10 @@ const stepDnsmasq: Step = {
 const DNSMASQ_HOSTS_DIR = '/etc/dnsmasq.d/cofoundry-hosts.d'
 const DNSMASQ_CONF = `interface=vmbr1
 bind-interfaces
-dhcp-range=10.0.0.200,10.0.0.250,12h
-dhcp-option=3,10.0.0.1
+dhcp-range=${BUILD_DHCP_RANGE_START},${BUILD_DHCP_RANGE_END},12h
+dhcp-option=3,${BUILD_NET_GATEWAY}
 dhcp-option=6,8.8.8.8
-dhcp-option=option:router,10.0.0.1
+dhcp-option=option:router,${BUILD_NET_GATEWAY}
 dhcp-hostsfile=${DNSMASQ_HOSTS_DIR}
 `
 
@@ -603,7 +609,9 @@ export const runBootstrap = async (): Promise<void> => {
     let createdTokenId: string | undefined
     for (const { step, result } of probes) {
         if (result.done) {
-            log.info(`${step.label} ${pc.dim('·')} ${result.note ?? 'already done'}`)
+            log.info(
+                `${step.label} ${pc.dim('·')} ${result.note ?? 'already done'}`
+            )
             continue
         }
         log.step(step.label)

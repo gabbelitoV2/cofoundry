@@ -19,11 +19,19 @@ export const registerCleanup = (fn: () => void): (() => void) => {
     return () => cleanupCallbacks.delete(fn)
 }
 
-process.once('SIGINT', () => {
+// Run cleanup on any signal that would otherwise terminate the process without
+// unwinding the build's `finally` blocks — SIGTERM (default `kill`, CI cancel/
+// timeout) and SIGHUP (terminal/SSH session hangup) as well as SIGINT (Ctrl-C).
+// This is best-effort: SIGKILL, OOM, and power loss can't be trapped, which is
+// why netslot allocation also reclaims orphaned slots. Exit code is 128 + signo.
+const onFatalSignal = (signo: number) => (): void => {
     for (const p of activeProcs) p.kill('SIGKILL')
     for (const fn of cleanupCallbacks) fn()
-    process.exit(130)
-})
+    process.exit(128 + signo)
+}
+process.once('SIGINT', onFatalSignal(2))
+process.once('SIGTERM', onFatalSignal(15))
+process.once('SIGHUP', onFatalSignal(1))
 
 export const captureRemote = async (
     target: string,

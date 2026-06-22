@@ -383,3 +383,61 @@ provisioner "powershell" {
 ```
 
 Applied to all three WU.ps1 provisioner steps in `windows-server-2025.pkr.hcl` that follow a `windows-restart`. If the race condition recurs, bump to `60s`.
+
+---
+
+## Problem 17: Server 2025 cumulative update re-deploys the OS (creates `C:\Windows.old`) — Cloudbase-Init install moved to Finalize
+
+**Symptom / concern:** Software installed in `Install.ps1` (which runs *before* the Windows Update passes) was suspected not to survive into the final image, because Server 2025 appeared to "reset" itself during the WU passes.
+
+**Root cause:** On Windows Server 2025, a large cumulative update (LCU) is applied via UpdateAgent as a near-full **OS re-deploy** — it lays down a fresh OS and creates `C:\Windows.old`. Crucially this happens for an ordinary cumulative, i.e. a *revision* bump within the same base build (e.g. `26100.32230 → 26100.32995` via KB5094125), **not** only for a feature/version upgrade. This is Server 2025's checkpoint-cumulative servicing model. The common "an LCU never creates `Windows.old`" intuition is **wrong for Server 2025.**
+
+**Empirically verified (build on 2026-06-21, instrumented with a probe + offline artifact inspection):**
+- `C:\Windows.old` **is** created by the cumulative — confirmed both mid-WU and at Finalize.
+- But `C:\Windows.old` ends up **empty (0 bytes)** by Finalize time — the servicing reboot empties it. **There is nothing to clean up; do not add a `Windows.old` removal step** (it would reclaim nothing). The `0 GB` reading is real, not an ACL artifact.
+- Pre-WU software **survived** the re-deploy: QEMU-GA (installed in `Install.ps1`) was present in the final image. So the re-deploy did **not** wipe installed software in this run — it's disk churn, not data loss.
+
+**Fix / decision:** Install **Cloudbase-Init in `Finalize.ps1`** (after the last WU pass, immediately before sysprep) instead of `Install.ps1`. This is belt-and-suspenders: it guarantees the cloud-init agent is present in the exported template regardless of any re-deploy, since nothing destructive runs between that install and the vzdump. VirtIO/QEMU-GA stay in `Install.ps1` (they're needed earlier and were observed to survive).
+
+**Production note:** A deployed clone ships fully patched at a GA build, so routine **monthly** CUs keep it current without drama. A large **catch-up** CU (e.g. a long-unpatched VM) can trigger the re-deploy, but installed software survived it in testing — so this is not a data-loss event for end users, and there is no recurring "Cloudbase-Init gets deleted on update" risk.
+
+**How to measure deadweight in an exported artifact (offline, ignores Windows ACLs):**
+```bash
+ssh ${SSH_TARGET}
+M=/var/lib/vz/dump/measure; mkdir -p $M
+zstd -dc /var/lib/vz/dump/cofoundry-out/<name>.vma.zst > $M/d.vma
+vma extract $M/d.vma $M/out
+modprobe nbd max_part=8
+qemu-nbd -r -c /dev/nbd0 $M/out/disk-drive-scsi0.raw
+mount -o ro -t ntfs-3g /dev/nbd0p3 /mnt/win    # p3 = Windows C: volume
+du -shx /mnt/win/* | sort -rh                  # top-level breakdown
+umount /mnt/win; qemu-nbd -d /dev/nbd0; rm -rf $M
+```
+For reference, a 2026-06 Server 2025 build was 17 GB used → 8.6 GB compressed: ~12 GB `WinSxS` (mostly hardlinked, irreducible after `/ResetBase`), the rest legitimate software + Defender. The only cleanly-reclaimable items are WinRE `Winre.wim` (~670 MB, `reagentc /disable`) and `WinSxS\Backup` (~200 MB) — judged not worth removing.
+
+---
+
+## Problem 18: VM stuck at "no bootable device" — OVMF boot-prompt window missed on a loaded node
+
+**Symptom:** Packer hangs on "Waiting for WinRM to become available..." indefinitely. A console screenshot shows:
+```
+Press any key to boot from CD or DVD......
+BdsDxe: No bootable option or device was found.
+BdsDxe: Press any key to enter the Boot Manager Menu.
+```
+The VM never started installing (disk writes stay near zero); it eventually fails after `winrm_timeout` (4h).
+
+**Root cause:** The OVMF "Press any key to boot from CD or DVD" prompt is a short (~5s) window whose **start time drifts with POST speed**. The old `boot_wait = "3s"` + 10 `<enter>`s at `<wait2>` only covered roughly t≈3–23s. On a busy node, POST is slow enough that the prompt appears *after* the last keypress, so every press misses and the firmware falls through to "no bootable device." (This supersedes the timing tuning in Problem 4 — same failure, more aggressive POST drift.)
+
+**Fix:** Widen the keypress blanket so a slow POST can't fall outside it — `boot_wait = "2s"` + 30 `<enter>`s at `<wait2>` (covers t≈2–62s). Applied to all three Windows recipes. Stray `<enter>`s during WinPE load are harmless (autounattend drives Setup non-interactively).
+
+**Rescue an already-stuck build without restarting it** (Packer is still waiting for WinRM, so the unattended install will proceed once it boots):
+```bash
+ssh ${SSH_TARGET}
+qm reset <vmid>
+sleep 4
+for i in $(seq 1 14); do echo "sendkey ret" | qm monitor <vmid> >/dev/null; sleep 1; done
+# confirm install started: diskwrite should climb
+qm status <vmid> --verbose | grep -E '^diskwrite'
+```
+Console screenshot for diagnosis: `echo "screendump /tmp/x.ppm" | qm monitor <vmid>` then convert with `pnmtopng` and copy off the node.

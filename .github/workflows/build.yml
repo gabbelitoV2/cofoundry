@@ -121,6 +121,18 @@ jobs:
       - name: Smoke-test artifact
         run: bun run cf verify ${{ inputs.recipe }}
 
+      # ── Sync to latest main ────────────────────────────────────────────────
+      # Subsequent serial matrix builds were checked out at the same stale
+      # dispatch SHA; an earlier build may have already pushed registry.json.
+      # Re-base onto latest main so the publish below regenerates on top of it
+      # and the commit push is a fast-forward (otherwise non-fast-forward
+      # rejection). Safe: registry.json is rebuilt from R2 sidecars, and the
+      # cofoundry-build concurrency group serializes builds (no push race).
+      - name: Sync to latest main
+        run: |
+          git fetch origin main
+          git reset --hard origin/main
+
       # ── Publish manifest ───────────────────────────────────────────────────
       # --r2: sidecars live in R2 (uploaded by CF_SIDECAR_UPLOAD_CMD during the
       # build step); the runner doesn't sync artifacts back, so reading from R2

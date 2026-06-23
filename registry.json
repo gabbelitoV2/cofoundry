@@ -2,7 +2,7 @@
   "schema_version": "1",
   "name": "Cofoundry Templates",
   "description": "Proxmox VM templates built with Cofoundry",
-  "generated_at": "2026-06-23T21:27:52.126Z",
+  "generated_at": "2026-06-23T22:55:06.211Z",
   "groups": [
     {
       "id": "almalinux",
@@ -171,10 +171,10 @@
           "name": "windows-server-2019-amd64",
           "display": "Windows Server 2019 Datacenter",
           "arch": "amd64",
-          "sha256": "c5475753ad15f2de08d24186c56ef4ed95768fa6cd444b2417c9e69a9b59d19c",
-          "size": 5740727660,
-          "url": "https://cofoundry.cdn.convoypanel.com/windows-server-2019/windows-server-2019-amd64-c5475753ad15f2de08d24186c56ef4ed95768fa6cd444b2417c9e69a9b59d19c.vma.zst",
-          "built_at": "2026-06-23T10:22:50Z",
+          "sha256": "9d768d10ebe6cadfa3c6044a7a228d1858e021f40cdce12524a797125640ac91",
+          "size": 5781657221,
+          "url": "https://cofoundry.cdn.convoypanel.com/windows-server-2019/windows-server-2019-amd64-9d768d10ebe6cadfa3c6044a7a228d1858e021f40cdce12524a797125640ac91.vma.zst",
+          "built_at": "2026-06-23T22:52:47Z",
           "suggested_vmid": 200000
         },
         {

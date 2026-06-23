@@ -134,11 +134,11 @@ Register-ScheduledTask -TaskName $WUTaskName -Action $action `
 Start-ScheduledTask -TaskName $WUTaskName
 
 Write-Step "waiting for Windows Update round to complete..."
-$deadline  = [DateTime]::Now.AddHours(3)
-$start     = [DateTime]::Now
+$timeout   = [TimeSpan]::FromHours(3)
+$stopwatch = [Diagnostics.Stopwatch]::StartNew()
 $logOffset = 0
 
-while (-not (Test-Path $WUFlag) -and [DateTime]::Now -lt $deadline) {
+while (-not (Test-Path $WUFlag) -and $stopwatch.Elapsed -lt $timeout) {
   Start-Sleep 30
 
   # The SYSTEM task writes this log via Add-Content while we read it. A read that
@@ -157,9 +157,12 @@ while (-not (Test-Path $WUFlag) -and [DateTime]::Now -lt $deadline) {
     }
   } catch {}
 
-  $elapsed = [DateTime]::Now - $start
+  $elapsed = $stopwatch.Elapsed
   Write-Host "    (elapsed $([int]$elapsed.TotalMinutes)m, waiting...)"
 }
+
+$task = Get-ScheduledTask -TaskName $WUTaskName -ErrorAction SilentlyContinue
+$taskInfo = if ($task) { Get-ScheduledTaskInfo -TaskName $WUTaskName -ErrorAction SilentlyContinue } else { $null }
 
 Unregister-ScheduledTask -TaskName $WUTaskName -Confirm:$false -ErrorAction SilentlyContinue
 
@@ -174,7 +177,10 @@ try {
 } catch {}
 
 if (-not (Test-Path $WUFlag)) {
-  throw "Windows Update timed out after 3h"
+  if ($taskInfo) {
+    Write-Host "Windows Update task state: $($task.State); last result: $($taskInfo.LastTaskResult); last run: $($taskInfo.LastRunTime)"
+  }
+  throw "Windows Update did not create $WUFlag after $([int]$stopwatch.Elapsed.TotalMinutes)m"
 }
 
 if (Test-Path $WURebootFlag) {

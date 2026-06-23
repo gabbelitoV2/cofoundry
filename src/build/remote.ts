@@ -26,7 +26,12 @@ export const registerCleanup = (fn: () => void): (() => void) => {
 // why netslot allocation also reclaims orphaned slots. Exit code is 128 + signo.
 const onFatalSignal = (signo: number) => (): void => {
     for (const p of activeProcs) p.kill('SIGKILL')
-    for (const fn of cleanupCallbacks) fn()
+    // Unwind LIFO, like nested `finally` blocks: the most-recently-acquired
+    // resource is released first. Build acquires a netslot, then the build VM,
+    // so VM-destroy must run before slot-release — otherwise a kill landing
+    // between them frees the slot while its VM lives on, leaving an unmarked
+    // orphan that squats the slot IP for whoever reuses it next.
+    for (const fn of [...cleanupCallbacks].reverse()) fn()
     process.exit(128 + signo)
 }
 process.once('SIGINT', onFatalSignal(2))

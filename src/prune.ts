@@ -313,13 +313,20 @@ export const runPrune = async (
     await remove(env, oldDumps, dryRun)
     report('stale vzdump archives', oldDumps, dryRun)
 
-    // 4. Orphaned build VMs (91xx/92xx, excluding templates).
-    log.step('orphaned build VMs (91xx / 92xx, excluding templates)')
+    // 4. Orphaned build VMs. Every build VM is named `packer-<recipe>` (the
+    // vm_name in every recipe), so match by name rather than a VMID range. The
+    // old range match (`9[12]xx`) silently missed the per-build VMID scheme
+    // (build_vmid base * 100 + slot, e.g. 600201), so cancelled/killed builds
+    // leaked VMs that nothing ever reaped. Exclude templates: a successful
+    // build destroys its VM after vzdump, so a lingering `packer-*` template is
+    // an intentional artifact we must not delete.
+    log.step('orphaned build VMs (packer-*, excluding templates)')
     const orphans = lines(
         await ssh(
             env.SSH_TARGET,
-            // `qm list` reports the template flag in column 6.
-            `qm list 2>/dev/null | awk 'NR>1 && $1 ~ /^9[12][0-9][0-9]$/ && $6 != "1" {print $1}' || true`
+            `for v in $(qm list 2>/dev/null | awk 'NR>1 && $2 ~ /^packer-/ {print $1}'); do ` +
+                `qm config "$v" 2>/dev/null | grep -q '^template:' || echo "$v"; ` +
+                `done`
         )
     )
 

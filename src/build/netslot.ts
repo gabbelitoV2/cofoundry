@@ -124,6 +124,21 @@ pad=$(printf '%02d' "$pick")
 ip="${BUILD_NET_PREFIX}.$(( ${BUILD_SLOT_BASE} + pick ))"
 byte=$(printf '%02x' "$(( ${BUILD_SLOT_BASE} + pick ))")
 mac="02:50:4b:00:00:$byte"
+# Evict any VM squatting this slot's MAC. A slot is exclusive, so the only VM
+# that can carry this deterministic MAC is an orphan from a previous build of the
+# same slot whose VM outlived a dirty teardown (SIGKILL/OOM/CI-cancel killed the
+# launcher before its VM-destroy ran, or its snippet was released first leaving
+# the VM unmarked). Left alive, it answers ARP for the slot IP and the new build
+# VM's traffic blackholes — Packer then waits out its full SSH/WinRM timeout.
+# qm config stores the MAC upper-cased, so match case-insensitively.
+for cf in /etc/pve/qemu-server/*.conf; do
+    [ -e "$cf" ] || continue
+    grep -iqF "$mac" "$cf" || continue
+    vid=\${cf##*/}; vid=\${vid%.conf}
+    echo "evicting orphan VM $vid squatting netslot $pad ($ip)" >&2
+    qm stop "$vid" --skiplock 1 >/dev/null 2>&1 || true
+    qm destroy "$vid" --purge 1 --destroy-unreferenced-disks 1 --skiplock 1 >/dev/null 2>&1 || true
+done
 printf '%s,%s\\n' "$mac" "$ip" > ${shellQuote(SNIPPET_DIR)}/${SNIPPET_PREFIX}"$pad"
 # Purge any stale lease holding the reserved IP or matching the reserved MAC,
 # so a previous build's lease can't squat on the slot. dnsmasq re-reads the

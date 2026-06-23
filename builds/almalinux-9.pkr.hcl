@@ -130,8 +130,9 @@ source "proxmox-iso" "almalinux-9" {
   }
 
   network_adapters {
-    bridge = var.proxmox_bridge
-    model  = "virtio"
+    bridge      = var.proxmox_bridge
+    model       = "virtio"
+    mac_address = var.build_mac
   }
 
   boot_iso {

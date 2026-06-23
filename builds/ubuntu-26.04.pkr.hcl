@@ -149,7 +149,7 @@ source "proxmox-iso" "ubuntu-26-04" {
     "e<wait>",
     "<down><down><down><end>",
     "<bs><bs><bs><wait>",
-    " autoinstall ds=nocloud-net\\;s=http://{{ .HTTPIP }}:{{ .HTTPPort }}/ ip=${var.build_ip}::${var.build_gw}:255.255.255.0::::${var.build_dns} console=tty0 console=ttyS0,115200 ---<wait>",
+    " autoinstall ds=nocloud-net\\;s=http://${var.build_gw}:{{ .HTTPPort }}/ ip=${var.build_ip}::${var.build_gw}:255.255.255.0::::${var.build_dns} console=tty0 console=ttyS0,115200 ---<wait>",
     "<f10><wait>",
   ]
 

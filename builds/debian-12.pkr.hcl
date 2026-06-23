@@ -156,7 +156,7 @@ source "proxmox-iso" "debian-12" {
     "netcfg/get_gateway=${var.build_gw} <wait>",
     "netcfg/get_nameservers=${var.build_dns} <wait>",
     "netcfg/confirm_static=true <wait>",
-    " preseed/url=http://{{ .HTTPIP }}:{{ .HTTPPort }}/preseed.cfg <wait>",
+    " preseed/url=http://${var.build_gw}:{{ .HTTPPort }}/preseed.cfg <wait>",
     "debian-installer=en_US.UTF-8 <wait>",
     "locale=en_US.UTF-8 <wait>",
     "kbd-chooser/method=us <wait>",

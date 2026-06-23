@@ -142,7 +142,8 @@ source "proxmox-iso" "debian-11" {
     unmount      = true
   }
 
-  http_directory = "${path.root}/${local.recipe_name}/http"
+  http_directory    = "${path.root}/${local.recipe_name}/http"
+  http_bind_address = var.build_gw
 
   boot_wait = "10s"
   boot_command = [

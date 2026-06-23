@@ -144,7 +144,8 @@ source "proxmox-iso" "debian-12" {
     unmount      = true
   }
 
-  http_directory = "${path.root}/debian-12/http"
+  http_directory    = "${path.root}/debian-12/http"
+  http_bind_address = var.build_gw
 
   boot_wait = "10s"
   boot_command = [

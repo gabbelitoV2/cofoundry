@@ -142,7 +142,8 @@ source "proxmox-iso" "almalinux-9" {
     unmount      = true
   }
 
-  http_directory = "${path.root}/${local.recipe_name}/http"
+  http_directory    = "${path.root}/${local.recipe_name}/http"
+  http_bind_address = var.build_gw
 
   boot_wait = "15s"
   boot_command = [

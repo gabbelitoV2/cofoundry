@@ -23,6 +23,7 @@ RECIPE_DIR="builds/${RECIPE}"
 PRESEED="${RECIPE_DIR}/http/preseed.cfg"
 USER_DATA="${RECIPE_DIR}/http/user-data"
 KS="${RECIPE_DIR}/http/ks.cfg"
+KS_ALIAS="${RECIPE_DIR}/http/ks"
 
 NEEDS_KEY=0
 [ -f "$PRESEED" ] && NEEDS_KEY=1
@@ -49,6 +50,10 @@ if [ "$NEEDS_KEY" = "1" ]; then
       "$f" >"$WORK"
     cp "$WORK" "$f"
   done
+
+  # Keep the kernel command-line kickstart URL short and punctuation-light. Some
+  # Anaconda boot paths have mangled `/ks.cfg` when typed through the bootloader.
+  [ -f "$KS" ] && cp "$KS" "$KS_ALIAS"
 
   printf 'packer_ssh_private_key_file = "%s"\n' "$KEY_FILE" >>"$VARS_FILE"
 fi

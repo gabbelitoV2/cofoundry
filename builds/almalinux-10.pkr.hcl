@@ -152,7 +152,7 @@ source "proxmox-iso" "almalinux-10" {
     "<down><wait>",
     "<down><wait>",
     "<end><wait>",
-    " inst.text console=tty0 console=ttyS0,115200 inst.ks=http://${var.build_gw}:{{ .HTTPPort }}/ks.cfg? inst.ks.sendmac ip=dhcp rd.neednet=1 inst.waitfornet=30<wait>",
+    " inst.text console=tty0 console=ttyS0,115200 inst.ks.sendmac ip=dhcp rd.neednet=1 inst.waitfornet=30 inst.ks=http://${var.build_gw}:{{ .HTTPPort }}/ks<wait>",
     "<leftCtrlOn>x<leftCtrlOff><wait>",
   ]
 

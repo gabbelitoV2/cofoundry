@@ -149,7 +149,7 @@ source "proxmox-iso" "almalinux-8" {
   boot_command = [
     "<up><wait>",
     "<tab><wait>",
-    " inst.text console=tty0 console=ttyS0,115200 inst.ks=http://${var.build_gw}:{{ .HTTPPort }}/ks.cfg? inst.ks.sendmac ip=dhcp rd.neednet=1 inst.waitfornet=30<enter><wait>",
+    " inst.text console=tty0 console=ttyS0,115200 inst.ks.sendmac ip=dhcp rd.neednet=1 inst.waitfornet=30 inst.ks=http://${var.build_gw}:{{ .HTTPPort }}/ks<enter><wait>",
   ]
 
   communicator           = "ssh"

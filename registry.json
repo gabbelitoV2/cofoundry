@@ -2,7 +2,7 @@
   "schema_version": "1",
   "name": "Cofoundry Templates",
   "description": "Proxmox VM templates built with Cofoundry",
-  "generated_at": "2026-06-23T20:28:06.890Z",
+  "generated_at": "2026-06-23T20:46:08.143Z",
   "groups": [
     {
       "id": "almalinux",
@@ -124,10 +124,10 @@
           "name": "ubuntu-22.04-amd64",
           "display": "Ubuntu 22.04 LTS (Jammy Jellyfish)",
           "arch": "amd64",
-          "sha256": "4159b8eaf871f0f6f50ccc64757b71481ba2143dff0ffa5090aa8c37f09d23e7",
-          "size": 1306584228,
-          "url": "https://cofoundry.cdn.convoypanel.com/ubuntu-22.04/ubuntu-22.04-amd64-4159b8eaf871f0f6f50ccc64757b71481ba2143dff0ffa5090aa8c37f09d23e7.vma.zst",
-          "built_at": "2026-06-23T08:07:48Z",
+          "sha256": "5eb4a98593cf1d3e42f123bf2b28f83ab7d49c7595f4a542fd90d77a4903978f",
+          "size": 1312402903,
+          "url": "https://cofoundry.cdn.convoypanel.com/ubuntu-22.04/ubuntu-22.04-amd64-5eb4a98593cf1d3e42f123bf2b28f83ab7d49c7595f4a542fd90d77a4903978f.vma.zst",
+          "built_at": "2026-06-23T20:42:56Z",
           "suggested_vmid": 100200
         },
         {

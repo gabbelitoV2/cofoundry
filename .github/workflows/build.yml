@@ -59,7 +59,7 @@ jobs:
         run: bun test
 
       - name: Setup Packer
-        uses: hashicorp/setup-packer@main
+        uses: hashicorp/setup-packer@v3
         with:
           version: latest
 
@@ -67,7 +67,7 @@ jobs:
       # Set TS_TAG (repo variable) to whatever tag your OAuth client is scoped
       # to and your ACL grants SSH from. Default: tag:ci.
       - name: Connect to Tailscale
-        uses: tailscale/github-action@v2
+        uses: tailscale/github-action@v4
         with:
           oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
           oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}

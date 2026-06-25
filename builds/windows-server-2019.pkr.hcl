@@ -150,7 +150,7 @@ source "proxmox-iso" "windows-server-2019" {
   # The OVMF "Press any key to boot from CD or DVD" prompt is a short (~5s)
   # window whose start drifts with POST speed — on a busy node it can land well
   # after a short keypress burst, leaving the VM at "no bootable device" until
-  # winrm_timeout (4h) expires. Blanket ~60s with a press every 2s so a slow
+  # winrm_timeout (45m) expires. Blanket ~60s with a press every 2s so a slow
   # POST can't fall outside the window; stray <enter>s during WinPE load are
   # harmless (autounattend drives Setup non-interactively).
   boot_wait    = "2s"
@@ -162,7 +162,11 @@ source "proxmox-iso" "windows-server-2019" {
   winrm_password = var.winrm_password
   winrm_use_ssl  = false
   winrm_insecure = true
-  winrm_timeout  = "4h"
+  # A healthy install reaches WinRM in ~15 min. Keep this tight so a failed
+  # install (setup error dialog leaves the VM "running" with WinRM never coming
+  # up) fails the attempt in ~45 min instead of hanging the full timeout —
+  # cf retries the build (CF_BUILD_ATTEMPTS) to ride out intermittent flakes.
+  winrm_timeout  = "45m"
   winrm_port     = 5985
 }
 
@@ -175,7 +179,7 @@ build {
   }
 
   provisioner "windows-restart" {
-    restart_timeout = "15m"
+    restart_timeout = "30m"
   }
 
   provisioner "powershell" {

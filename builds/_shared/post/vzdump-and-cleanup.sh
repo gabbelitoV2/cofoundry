@@ -28,6 +28,8 @@ set -euo pipefail
 : "${CF_ARCH:?}"
 : "${CF_GROUP:?}"
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 LOCAL_FILE="$CF_OUT_DIR/${CF_RECIPE_NAME}-${CF_ARCH}.vma.zst"
 LOCAL_MODE=0
 [ "$SSH_TARGET" = "local" ] && LOCAL_MODE=1
@@ -39,6 +41,10 @@ _pve() {
     ssh "$SSH_TARGET" "$*"
   fi
 }
+
+# shrink_disk() — defined here, invoked below only when CF_FINAL_DISK_SIZE is set.
+# shellcheck source=shrink-disk.sh
+. "$SCRIPT_DIR/shrink-disk.sh"
 
 cleanup() {
   if [ "${CF_KEEP_VM:-}" != "1" ]; then
@@ -66,6 +72,13 @@ esac
 
 echo "==> setting template name to $CF_RECIPE_NAME"
 _pve "qm set '$CF_BUILT_VMID' --name '$CF_RECIPE_NAME' >/dev/null"
+
+# Opt-in disk shrink: recipe declared `# final_disk_size:` and cf forwarded it
+# as CF_FINAL_DISK_SIZE. Must run while the VM is stopped, before vzdump.
+if [ -n "${CF_FINAL_DISK_SIZE:-}" ]; then
+  echo "==> shrinking disk to $CF_FINAL_DISK_SIZE before vzdump"
+  shrink_disk
+fi
 
 echo "==> vzdump VMID $CF_BUILT_VMID"
 _pve "vzdump $CF_BUILT_VMID --compress zstd --mode stop --dumpdir $PVE_DUMP_DIR"

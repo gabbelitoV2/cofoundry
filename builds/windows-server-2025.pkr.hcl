@@ -1,6 +1,7 @@
 # display: Windows Server 2025 Datacenter
 # group: windows-server
 # build_vmid: 2002
+# final_disk_size: 32G
 # iso_url: https://go.microsoft.com/fwlink/?linkid=2345730&clcid=0x409&culture=en-us&country=us
 # iso_target_path: /var/lib/vz/template/iso/packer-windows-server-2025-eval.iso
 
@@ -61,6 +62,10 @@ locals {
   build_vmid     = var.build_vmid
   recipe_name    = "windows-server-2025"
   recipe_display = "Windows Server 2025 Datacenter"
+  # Final exported disk size. Keep in sync with the `# final_disk_size:` header
+  # above — the header drives the host-side shrink (cf -> shrink-disk.sh), this
+  # local drives the guest-side partition shrink (Finalize.ps1).
+  final_disk_size = "32G"
 
   ps_execute = "powershell -executionpolicy bypass \"& { $ErrorActionPreference='Stop'; $_p='{{.Path}}'; $_dl=[DateTime]::Now.AddSeconds(120); while (-not (Test-Path $_p) -and [DateTime]::Now -lt $_dl) { Start-Sleep 2 }; . {{.Vars}}; & $_p; exit $LastExitCode }\""
 }
@@ -112,10 +117,12 @@ source "proxmox-iso" "windows-server-2025" {
   }
 
   disks {
-    # 32G. Bumping to 64G to dodge CompactOS was tried and FAILED — MOSETUP still
-    # did a compact apply at 64G (confirmed in setupact.log), so disk size does
-    # not escape CompactOS on this 2025 ISO. Final footprint is ~25-27 GB.
-    disk_size    = "32G"
+    # Build at 64G for installer/servicing headroom, then shrink to 32G for
+    # export (see `# final_disk_size: 32G` above + Finalize.ps1/shrink-disk.sh).
+    # Note: 64G does NOT dodge CompactOS — MOSETUP still compact-applies at 64G
+    # (confirmed in setupact.log), so the used footprint stays ~25-27 GB; this
+    # larger disk is purely temporary working room during the build.
+    disk_size    = "64G"
     format       = "qcow2"
     storage_pool = var.proxmox_storage_pool
     type         = "scsi"
@@ -177,8 +184,8 @@ source "proxmox-iso" "windows-server-2025" {
   # up) fails the attempt in ~45 min instead of hanging the full timeout —
   # cf retries the build (CF_BUILD_ATTEMPTS) to ride out intermittent
   # specialize-pass corruption on this node.
-  winrm_timeout  = "45m"
-  winrm_port     = 5985
+  winrm_timeout = "45m"
+  winrm_port    = 5985
 }
 
 build {
@@ -222,9 +229,10 @@ build {
   }
 
   provisioner "powershell" {
-    pause_before    = "30s"
-    execute_command = local.ps_execute
-    script          = "${path.root}/_shared/windows/Finalize.ps1"
+    pause_before     = "30s"
+    execute_command  = local.ps_execute
+    environment_vars = ["CF_FINAL_DISK_SIZE=${local.final_disk_size}"]
+    script           = "${path.root}/_shared/windows/Finalize.ps1"
   }
 
   post-processor "shell-local" {

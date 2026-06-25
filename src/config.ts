@@ -23,6 +23,13 @@ export interface RecipeInfo {
     arch: string
     /** Group id from `# group: ...` comment */
     group?: string
+    /**
+     * Final exported disk size from `# final_disk_size: <size>` (e.g. "32G").
+     * When set, the recipe's HCL `disk_size` is the larger *build-time* disk and
+     * the post-processor shrinks the disk to this size before vzdump. Absent =
+     * no shrink (build disk == final disk), preserving existing behavior.
+     */
+    finalDiskSize?: string
 }
 
 const parseMeta = (raw: string, key: string): string | undefined => {
@@ -90,6 +97,7 @@ export const loadRecipe = async (
         isoFilenameRe: parseMeta(raw, 'iso_filename_re'),
         arch: parseMeta(raw, 'arch') ?? 'amd64',
         group: parseMeta(raw, 'group'),
+        finalDiskSize: parseMeta(raw, 'final_disk_size'),
     }
 }
 

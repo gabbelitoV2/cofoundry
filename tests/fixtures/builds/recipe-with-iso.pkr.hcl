@@ -1,5 +1,6 @@
 # display: Recipe With ISO
 # build_vmid: 9101
+# final_disk_size: 16G
 # iso_url: https://example.com/foo-1.2.3-amd64.iso
 # iso_target_path: ${var.iso_cache_dir}/foo-1.2.3-amd64.iso
 

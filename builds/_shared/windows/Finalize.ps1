@@ -11,6 +11,48 @@ function Find-FileOnMedia($FileName) {
   return $null
 }
 
+function ConvertTo-Bytes($Size) {
+  # "32G" / "32768M" / "33285996544" -> bytes. G/M/K are 1024-based (GiB/MiB/KiB),
+  # matching Proxmox/qemu-img's interpretation of the same suffix on the host.
+  if ($Size -match '^\s*(\d+(?:\.\d+)?)\s*([KkMmGgTt]?)[Bb]?\s*$') {
+    $n = [double]$Matches[1]
+    switch ($Matches[2].ToUpper()) {
+      'K' { return [long]($n * 1KB) }
+      'M' { return [long]($n * 1MB) }
+      'G' { return [long]($n * 1GB) }
+      'T' { return [long]($n * 1TB) }
+      default { return [long]$n }
+    }
+  }
+  throw "unrecognized disk size '$Size'"
+}
+
+# Shrink C: so the partition ends below the final virtual-disk size, leaving a
+# margin for the GPT backup header + alignment. The host then truncates the
+# qcow2 to CF_FINAL_DISK_SIZE (shrink-disk.sh); cloudbase-init's
+# ExtendVolumesPlugin grows C: back to fill the disk on first boot of a clone.
+function Shrink-SystemPartition($FinalSize) {
+  $marginBytes = 1GB
+  $finalBytes  = ConvertTo-Bytes $FinalSize
+  $targetBytes = $finalBytes - $marginBytes
+
+  $supported = Get-PartitionSupportedSize -DriveLetter C
+  if ($supported.SizeMin -gt $targetBytes) {
+    throw ("C: needs at least {0:N0} bytes but final disk {1} (minus 1G margin) is only {2:N0} bytes -- raise final_disk_size." -f $supported.SizeMin, $FinalSize, $targetBytes)
+  }
+  # Round down to a MiB boundary so the partition end is cleanly below the disk end.
+  $targetBytes = [long]([math]::Floor($targetBytes / 1MB) * 1MB)
+
+  $current = (Get-Partition -DriveLetter C).Size
+  if ($current -le $targetBytes) {
+    Write-Step ("C: already {0:N0} bytes (<= target {1:N0}); no shrink needed" -f $current, $targetBytes)
+    return
+  }
+  Resize-Partition -DriveLetter C -Size $targetBytes
+  $after = (Get-Partition -DriveLetter C).Size
+  Write-Step ("C: shrunk {0:N0} -> {1:N0} bytes (final disk {2})" -f $current, $after, $FinalSize)
+}
+
 function Zero-FreeSpace($DriveLetter) {
   $root   = "${DriveLetter}:\"
   $target = Join-Path $root "zero.fill"
@@ -112,6 +154,11 @@ plugins=cloudbaseinit.plugins.common.mtu.MTUPlugin,cloudbaseinit.plugins.windows
 types=vfat,iso
 locations=cdrom,hdd,partition
 "@ | Set-Content -Path (Join-Path $cloudbaseConfDir "cloudbase-init.conf") -Encoding ASCII
+
+if ($env:CF_FINAL_DISK_SIZE) {
+  Write-Step "shrink C: for final disk $($env:CF_FINAL_DISK_SIZE)"
+  Shrink-SystemPartition $env:CF_FINAL_DISK_SIZE
+}
 
 Write-Step "zero free space"
 Zero-FreeSpace "C"

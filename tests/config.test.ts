@@ -28,6 +28,13 @@ describe('loadRecipe', () => {
         expect(r.isoTargetPath).not.toContain('virtio-win')
     })
 
+    test('parses final_disk_size when present, undefined otherwise', async () => {
+        const withSize = await loadRecipe('recipe-with-iso', FIXTURES)
+        expect(withSize.finalDiskSize).toBe('16G')
+        const minimal = await loadRecipe('recipe-minimal', FIXTURES)
+        expect(minimal.finalDiskSize).toBeUndefined()
+    })
+
     test('falls back to name when display header is missing', async () => {
         const r = await loadRecipe('recipe-nometa', FIXTURES)
         expect(r.display).toBe('recipe-nometa')

@@ -64,7 +64,8 @@ export const buildRemoteEnv = (
     remoteOutDir: string,
     remoteTmpDir: string,
     arch: string,
-    group: string
+    group: string,
+    finalDiskSize?: string
 ): string => {
     // Packer runs on the PVE node, so SSH_TARGET=local tells the post-processor
     // to run vzdump directly instead of SSHing back to itself.
@@ -77,6 +78,9 @@ export const buildRemoteEnv = (
         TMPDIR: remoteTmpDir,
         PACKER_CACHE_DIR: '/var/lib/vz/template/iso',
     }
+    // Opt-in: when set, the post-processor shrinks the OS disk to this size
+    // before vzdump (see builds/_shared/post/shrink-disk.sh).
+    if (finalDiskSize) pairs.CF_FINAL_DISK_SIZE = finalDiskSize
     if (env.CF_UPLOAD_CMD) pairs.CF_UPLOAD_CMD = env.CF_UPLOAD_CMD
     if (env.CF_PUBLIC_URL_TMPL)
         pairs.CF_PUBLIC_URL_TMPL = env.CF_PUBLIC_URL_TMPL

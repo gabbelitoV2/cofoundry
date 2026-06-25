@@ -49,7 +49,7 @@ jobs:
       R2_ENDPOINT: ${{ vars.R2_ENDPOINT || secrets.R2_ENDPOINT }}
       R2_BUCKET: ${{ vars.R2_BUCKET || secrets.R2_BUCKET }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: oven-sh/setup-bun@v2
 
@@ -144,7 +144,7 @@ jobs:
       # Canonical history: `git log registry.json` is the audit log of every
       # published version. Rollback = revert the commit.
       - name: Commit registry.json
-        uses: stefanzweifel/git-auto-commit-action@v5
+        uses: stefanzweifel/git-auto-commit-action@v6
         with:
           file_pattern: registry.json
           commit_message: "chore: publish ${{ inputs.recipe }} build"
@@ -175,7 +175,7 @@ jobs:
         run: bun run cf prune --r2 --keep 5
 
       # ── Upload artifact ────────────────────────────────────────────────────
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: ${{ inputs.recipe }}
           path: |

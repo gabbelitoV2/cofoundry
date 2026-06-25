@@ -20,7 +20,7 @@ jobs:
       matrix: ${{ steps.check.outputs.matrix }}
       any_changed: ${{ steps.check.outputs.any_changed }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: oven-sh/setup-bun@v2
 

@@ -44,8 +44,21 @@ shrink_disk() {
     echo "shrink: $path is not qcow2 — refusing to shrink"; return 1
   fi
 
+  # Packer converts the VM to a template before this post-processor runs, and
+  # Proxmox sets the immutable bit (chattr +i) on template disks — so qemu-img
+  # opens the file read-only fine (the guard above) but the resize write fails
+  # with "Operation not permitted". Clear it, resize, then restore it so the
+  # template is left in its normal protected state. (Same dance as verify.ts.)
+  echo "==> shrink: clearing immutable bit before resize"
+  _pve "chattr -i '$path' 2>/dev/null || true"
+
   echo "==> shrink: qemu-img resize --shrink $path $target"
-  _pve "qemu-img resize --shrink '$path' '$target'"
+  if ! _pve "qemu-img resize --shrink '$path' '$target'"; then
+    _pve "chattr +i '$path' 2>/dev/null || true"
+    echo "shrink: qemu-img resize failed"; return 1
+  fi
+
+  _pve "chattr +i '$path' 2>/dev/null || true"
 
   # Sync the VM config's size= field to the new image so clones get the smaller
   # geometry (qemu-img alone doesn't touch the config).

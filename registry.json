@@ -2,7 +2,7 @@
   "schema_version": "1",
   "name": "Cofoundry Templates",
   "description": "Proxmox VM templates built with Cofoundry",
-  "generated_at": "2026-06-24T04:14:30.306Z",
+  "generated_at": "2026-06-26T07:33:24.514Z",
   "groups": [
     {
       "id": "almalinux",
@@ -191,10 +191,10 @@
           "name": "windows-server-2025-amd64",
           "display": "Windows Server 2025 Datacenter",
           "arch": "amd64",
-          "sha256": "5986f22b4cfc4e9346810f71991698bea4a87d31201ce4c1341ac70e3ba9cea0",
-          "size": 9191046871,
-          "url": "https://cofoundry.cdn.convoypanel.com/windows-server-2025/windows-server-2025-amd64-5986f22b4cfc4e9346810f71991698bea4a87d31201ce4c1341ac70e3ba9cea0.vma.zst",
-          "built_at": "2026-06-24T04:12:32Z",
+          "sha256": "93faca374cc87bacb863e62dbc3eb139178fc47052f9ac14fa14bb3e588a2224",
+          "size": 9578787902,
+          "url": "https://cofoundry.cdn.convoypanel.com/windows-server-2025/windows-server-2025-amd64-93faca374cc87bacb863e62dbc3eb139178fc47052f9ac14fa14bb3e588a2224.vma.zst",
+          "built_at": "2026-06-26T07:31:18Z",
           "suggested_vmid": 200200
         }
       ]

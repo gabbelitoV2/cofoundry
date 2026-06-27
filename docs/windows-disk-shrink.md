@@ -8,20 +8,30 @@ declare a final size shrink. Currently enabled on `windows-server-2025` only
 Supersedes the old `WINDOWS_DISK_SHRINK_PLAN.md` (the plan it described is now
 implemented — this records what shipped and the gotchas hit along the way).
 
-> **STATUS (2026-06-26): A/B resolved — 64G exonerated; shrink path still
-> unvalidated.** The feature is code-complete on branch `windows-disk-shrink-plan`
-> (4 commits ahead of `main`, no PR). The earlier theory that the 64G build disk
-> *causes* the specialize-pass crash is now **disproven**: the A/B control run on
-> `main` (`28213641482`, 32G, no shrink) reproduced the **same ~46-minute WinRM
-> timeout** on one attempt, then went **green** on a `cf` retry. So the crash is
-> the node's **intermittent specialize-pass flakiness**, independent of disk size
-> — **do not revert 2025 to 32G** (cargo-cult). The shrink path (guest `C:` shrink
-> / host `qemu-img resize` / `cf verify`) still has *never run* — every 64G build
-> so far exhausted its `cf` retries before any attempt cleared specialize. Resume
-> plan: **re-dispatch the 64G shrink branch** so a healthy node window lands a
-> green attempt and finally exercises the shrink + `cf verify` gate. See
-> [A/B verdict](#current-blocker-resolved-the-ab-verdict). **Do not open a PR /
-> trust this feature until a 64G build clears specialize and `cf verify` passes.**
+> **STATUS (2026-06-26): VALIDATED end-to-end.** On branch
+> `windows-disk-shrink-plan`, build `28224709691` cleared specialize and ran the
+> **entire** shrink path successfully: guest `C:` shrink → host
+> `qemu-img resize --shrink … 32G` ("Image resized.") → `vzdump` →
+> **`cf verify` restored the shrunk 32G template, booted it, and the guest agent
+> responded (1m48s)**. The GPT-after-shrink risk is cleared — Windows rebuilt the
+> backup GPT and came up clean on the truncated disk. The immutable-bit fix
+> (`2f5227f`) worked in the wild.
+>
+> That run's *only* failure was the final **publish git-push**, which is
+> **non-fast-forward by design on any non-`main` branch**: the `Sync to latest
+> main` step does `git reset --hard origin/main`, then `Commit registry.json`
+> pushes a main-descended commit to the checked-out feature branch → rejected.
+> Nothing to do with the feature.
+>
+> Earlier theory that the 64G disk *causes* the specialize crash is **disproven**:
+> the A/B control on `main` (`28213641482`, 32G) reproduced the **same ~46-minute
+> WinRM timeout** on one attempt, then went **green** on a `cf` retry. The crash
+> is the node's **intermittent, size-independent specialize flakiness** — **do not
+> revert 2025 to 32G** (cargo-cult). See [A/B verdict](#current-blocker-resolved-the-ab-verdict).
+>
+> **Remaining to ship:** merge this branch to `main` and dispatch the build on
+> `main` (where publish works) to produce the published 32G artifact. The
+> build+shrink+verify stages are proven; `cf` retries absorb the intermittent CRU.
 
 ## How it works
 
@@ -156,10 +166,10 @@ Corrections to the original diagnosis (below), from the live task log:
 - **The "64G is the only pre-WinRM change ⟹ suspect" correlation is broken.** The
   failure reproduces at 32G, so disk size is not the variable.
 
-**Still unvalidated:** no 64G build has ever reached Finalize, so the shrink path
-and `cf verify` remain unexercised. Next action: re-dispatch the 64G shrink branch
-(`gh workflow run build.yml -f recipe=windows-server-2025 --ref windows-disk-shrink-plan`)
-and let `cf` retries land a green attempt, then watch `cf verify`.
+**Now validated.** The re-dispatched 64G build `28224709691` cleared specialize
+(via `cf` retry) and exercised the full shrink path + `cf verify` successfully
+(see STATUS at top). The only failure was the publish push (non-`main` branch).
+Next action: merge to `main`, dispatch on `main` to publish the 32G artifact.
 
 ---
 

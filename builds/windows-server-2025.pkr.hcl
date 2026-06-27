@@ -117,12 +117,13 @@ source "proxmox-iso" "windows-server-2025" {
   }
 
   disks {
-    # Build at 64G for installer/servicing headroom, then shrink to 32G for
+    # Build at 100G for installer/servicing headroom, then shrink to 32G for
     # export (see `# final_disk_size: 32G` above + Finalize.ps1/shrink-disk.sh).
-    # Note: 64G does NOT dodge CompactOS — MOSETUP still compact-applies at 64G
-    # (confirmed in setupact.log), so the used footprint stays ~25-27 GB; this
-    # larger disk is purely temporary working room during the build.
-    disk_size    = "64G"
+    # The large disk aims to land Setup above its CompactOS threshold (64G did
+    # NOT dodge it — MOSETUP compact-applied at 64G per setupact.log) and to give
+    # servicing/WU room; it is purely temporary working space, truncated back to
+    # final_disk_size before export.
+    disk_size    = "100G"
     format       = "qcow2"
     storage_pool = var.proxmox_storage_pool
     type         = "scsi"

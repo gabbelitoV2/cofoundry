@@ -1,6 +1,7 @@
 # display: Windows Server 2019 Datacenter
 # group: windows-server
 # build_vmid: 2000
+# final_disk_size: 30G
 # iso_url: https://software-static.download.prss.microsoft.com/pr/download/17763.737.190906-2324.rs5_release_svc_refresh_SERVER_EVAL_x64FRE_en-us_1.iso
 # iso_target_path: /var/lib/vz/template/iso/packer-windows-server-2019-eval.iso
 
@@ -61,6 +62,10 @@ locals {
   build_vmid     = var.build_vmid
   recipe_name    = "windows-server-2019"
   recipe_display = "Windows Server 2019 Datacenter"
+  # Final exported disk size. Keep in sync with the `# final_disk_size:` header
+  # above — the header drives the host-side shrink (cf -> shrink-disk.sh), this
+  # local drives the guest-side partition shrink (Finalize.ps1).
+  final_disk_size = "30G"
 
   ps_execute = "powershell -executionpolicy bypass \"& { $ErrorActionPreference='Stop'; $_p='{{.Path}}'; $_dl=[DateTime]::Now.AddSeconds(120); while (-not (Test-Path $_p) -and [DateTime]::Now -lt $_dl) { Start-Sleep 2 }; . {{.Vars}}; & $_p; exit $LastExitCode }\""
 }
@@ -105,7 +110,11 @@ source "proxmox-iso" "windows-server-2019" {
   cloud_init_storage_pool = var.proxmox_storage_pool
 
   disks {
-    disk_size    = "15G"
+    # Build at 100G for installer/servicing headroom (and to try to land Setup
+    # above its CompactOS threshold), then shrink to final_disk_size for export
+    # (see `# final_disk_size:` above + Finalize.ps1/shrink-disk.sh). The large
+    # disk is purely temporary working space, truncated back before export.
+    disk_size    = "100G"
     format       = "qcow2"
     storage_pool = var.proxmox_storage_pool
     type         = "scsi"
@@ -212,9 +221,10 @@ build {
   }
 
   provisioner "powershell" {
-    pause_before    = "30s"
-    execute_command = local.ps_execute
-    script          = "${path.root}/_shared/windows/Finalize.ps1"
+    pause_before     = "30s"
+    execute_command  = local.ps_execute
+    environment_vars = ["CF_FINAL_DISK_SIZE=${local.final_disk_size}"]
+    script           = "${path.root}/_shared/windows/Finalize.ps1"
   }
 
   post-processor "shell-local" {

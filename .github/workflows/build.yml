@@ -49,7 +49,15 @@ jobs:
       R2_ENDPOINT: ${{ vars.R2_ENDPOINT || secrets.R2_ENDPOINT }}
       R2_BUCKET: ${{ vars.R2_BUCKET || secrets.R2_BUCKET }}
     steps:
+      - uses: actions/create-github-app-token@v2
+        id: registry-app-token
+        with:
+          app-id: ${{ secrets.REGISTRY_APP_ID }}
+          private-key: ${{ secrets.REGISTRY_APP_PRIVATE_KEY }}
+
       - uses: actions/checkout@v7
+        with:
+          token: ${{ steps.registry-app-token.outputs.token }}
 
       - uses: oven-sh/setup-bun@v2
 
@@ -144,12 +152,11 @@ jobs:
       # Canonical history: `git log registry.json` is the audit log of every
       # published version. Rollback = revert the commit.
       - name: Commit registry.json
-        uses: stefanzweifel/git-auto-commit-action@v7
-        with:
-          file_pattern: registry.json
-          commit_message: "chore: publish ${{ inputs.recipe }} build"
-          commit_user_name: github-actions[bot]
-          commit_user_email: 41898282+github-actions[bot]@users.noreply.github.com
+        run: |
+          git config user.name "cofoundry-registry-writer[bot]"
+          git config user.email "cofoundry-registry-writer[bot]@users.noreply.github.com"
+          git add registry.json
+          git diff --cached --quiet || (git commit -m "chore: publish ${{ inputs.recipe }} build" && git push)
 
       # ── Mirror registry.json to R2 ─────────────────────────────────────────
       # Single fetch origin for consumers. Short TTL so rollbacks propagate

@@ -21,7 +21,7 @@
 set -uo pipefail
 
 ARTIFACT="${1:?usage: cf-cluster-templates.sh <artifact-path>}"
-BASE_VMID="${CF_BUILT_VMID:?CF_BUILT_VMID not set}"
+RAW_BUILT_VMID="${CF_BUILT_VMID:?CF_BUILT_VMID not set}"
 DUMP_DIR="${PVE_DUMP_DIR:-/var/lib/vz/dump}"
 
 # --- knobs (edit to taste) -------------------------------------------------
@@ -32,9 +32,19 @@ STORAGE="${CF_TEMPLATE_STORAGE:-local-lvm}"
 OFFSET="${CF_TEMPLATE_VMID_OFFSET:-10000}"     # per-node VMID spacing
 # ---------------------------------------------------------------------------
 
+# cf builds the VM under a slot-derived id (recipe base * 100 + slot index,
+# slot index 0..99) so parallel builds on a node don't collide on a fixed VMID.
+# The per-node template numbering needs the recipe BASE, so recover it. A plain
+# (non-slot) build passes the base directly, which is already < OFFSET.
+if [ "$RAW_BUILT_VMID" -ge "$OFFSET" ]; then
+  BASE_VMID=$(( RAW_BUILT_VMID / 100 ))
+else
+  BASE_VMID="$RAW_BUILT_VMID"
+fi
+
 # Adjacent nodes collide if BASE_VMID >= OFFSET (e.g. node1+14001 == node2+4001).
 if [ "$BASE_VMID" -ge "$OFFSET" ]; then
-  echo "cf-cluster-templates: CF_BUILT_VMID ($BASE_VMID) must be < CF_TEMPLATE_VMID_OFFSET ($OFFSET)" >&2
+  echo "cf-cluster-templates: derived base VMID ($BASE_VMID) must be < CF_TEMPLATE_VMID_OFFSET ($OFFSET)" >&2
   exit 1
 fi
 

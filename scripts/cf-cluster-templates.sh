@@ -11,8 +11,11 @@
 # Reads from the environment (set by the recipe's post-processor):
 #   CF_BUILT_VMID (required), CF_RECIPE_NAME, CF_ARCH
 #
-# Per-node VMID = node_id * OFFSET + CF_BUILT_VMID   (OFFSET default 10000)
-#   build_vmid 4001 -> node1=14001, node2=24001, node3=34001
+# CF_BUILT_VMID may be slot-derived (recipe base * 100 + slot index) for
+# parallel builds; we recover the recipe BASE_VMID from it below.
+#
+# Per-node VMID = node_id * OFFSET + BASE_VMID   (OFFSET default 10000)
+#   base 4001 -> node1=14001, node2=24001, node3=34001
 #
 # LOCAL/cluster convenience — not part of the upstream recipes.
 

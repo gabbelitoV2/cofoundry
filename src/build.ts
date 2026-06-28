@@ -382,7 +382,8 @@ export const buildPhase = async (
             remoteTmpDir,
             recipe.arch,
             recipe.group ?? '',
-            recipe.finalDiskSize
+            recipe.finalDiskSize,
+            recipe.buildVmid
         )
 
         const unregisterVmCleanup =

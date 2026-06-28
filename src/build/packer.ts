@@ -65,7 +65,8 @@ export const buildRemoteEnv = (
     remoteTmpDir: string,
     arch: string,
     group: string,
-    finalDiskSize?: string
+    finalDiskSize?: string,
+    baseVmid?: number
 ): string => {
     // Packer runs on the PVE node, so SSH_TARGET=local tells the post-processor
     // to run vzdump directly instead of SSHing back to itself.
@@ -78,6 +79,12 @@ export const buildRemoteEnv = (
         TMPDIR: remoteTmpDir,
         PACKER_CACHE_DIR: '/var/lib/vz/template/iso',
     }
+    // The post-processor's CF_BUILT_VMID is the slot-derived id (base*100+slot)
+    // for parallel builds; export the recipe BASE so downstream consumers
+    // (e.g. cf-cluster-templates.sh) get it directly instead of reverse-
+    // engineering it. Inherited by the shell-local post-processor and any
+    // CF_UPLOAD_CMD it spawns.
+    if (baseVmid !== undefined) pairs.CF_RECIPE_BASE_VMID = String(baseVmid)
     // Opt-in: when set, the post-processor shrinks the OS disk to this size
     // before vzdump (see builds/_shared/post/shrink-disk.sh).
     if (finalDiskSize) pairs.CF_FINAL_DISK_SIZE = finalDiskSize

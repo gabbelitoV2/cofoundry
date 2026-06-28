@@ -9,10 +9,11 @@
 #   CF_UPLOAD_CMD=bash $PVE_DUMP_DIR/cofoundry-work/scripts/cf-cluster-templates.sh {{file}}
 #
 # Reads from the environment (set by the recipe's post-processor):
-#   CF_BUILT_VMID (required), CF_RECIPE_NAME, CF_ARCH
+#   CF_RECIPE_BASE_VMID or CF_BUILT_VMID (required), CF_RECIPE_NAME, CF_ARCH
 #
-# CF_BUILT_VMID may be slot-derived (recipe base * 100 + slot index) for
-# parallel builds; we recover the recipe BASE_VMID from it below.
+# CF_BUILT_VMID is the slot-derived build id (recipe base * 100 + slot index)
+# for parallel builds; CF_RECIPE_BASE_VMID is the recipe base cf exports for
+# the per-node template numbering. Plain builds set only CF_BUILT_VMID = base.
 #
 # Per-node VMID = node_id * OFFSET + BASE_VMID   (OFFSET default 10000)
 #   base 4001 -> node1=14001, node2=24001, node3=34001
@@ -24,7 +25,11 @@
 set -uo pipefail
 
 ARTIFACT="${1:?usage: cf-cluster-templates.sh <artifact-path>}"
-RAW_BUILT_VMID="${CF_BUILT_VMID:?CF_BUILT_VMID not set}"
+# cf exports the recipe BASE directly. CF_BUILT_VMID is the slot-derived build
+# id (recipe base * 100 + slot index) for parallel builds; the per-node template
+# numbering needs the base, so prefer CF_RECIPE_BASE_VMID. A plain (non-slot)
+# build doesn't set it — CF_BUILT_VMID is then the base itself.
+BASE_VMID="${CF_RECIPE_BASE_VMID:-${CF_BUILT_VMID:?CF_BUILT_VMID or CF_RECIPE_BASE_VMID not set}}"
 DUMP_DIR="${PVE_DUMP_DIR:-/var/lib/vz/dump}"
 
 # --- knobs (edit to taste) -------------------------------------------------
@@ -34,16 +39,6 @@ DUMP_DIR="${PVE_DUMP_DIR:-/var/lib/vz/dump}"
 STORAGE="${CF_TEMPLATE_STORAGE:-local-lvm}"
 OFFSET="${CF_TEMPLATE_VMID_OFFSET:-10000}"     # per-node VMID spacing
 # ---------------------------------------------------------------------------
-
-# cf builds the VM under a slot-derived id (recipe base * 100 + slot index,
-# slot index 0..99) so parallel builds on a node don't collide on a fixed VMID.
-# The per-node template numbering needs the recipe BASE, so recover it. A plain
-# (non-slot) build passes the base directly, which is already < OFFSET.
-if [ "$RAW_BUILT_VMID" -ge "$OFFSET" ]; then
-  BASE_VMID=$(( RAW_BUILT_VMID / 100 ))
-else
-  BASE_VMID="$RAW_BUILT_VMID"
-fi
 
 # Adjacent nodes collide if BASE_VMID >= OFFSET (e.g. node1+14001 == node2+4001).
 if [ "$BASE_VMID" -ge "$OFFSET" ]; then

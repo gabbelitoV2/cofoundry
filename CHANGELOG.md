@@ -1,6 +1,44 @@
 # Changelog
 
-## v1.2.0
+All notable changes to the `coport` installer are documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0/).
+
+## [Unreleased]
+
+## [1.3.0] - 2026-06-28
+
+### Added
+
+- Replace the type-the-numbers template picker with an inline `@clack/prompts`
+  grouped multiselect: arrow-key navigation, space to toggle, group headers that
+  toggle a whole OS family, and `a` to select all.
+- Add a VMID review step before install. When a suggested VMID is taken you can now
+  **Proceed**, **Edit** the VMID inline (validated as free), or **Skip** the
+  template — instead of a silent auto-reassign behind a `[Y/n]`.
+- Add a local version cache at `~/.coport/cache.json` recording each installed
+  template's VMID, storage, and version (sha256/built_at). `-l, --list` prints it;
+  `--upgrade` re-pulls only templates whose registry version changed, reusing the
+  cached VMID so you never re-enter it.
+- Add `-a, --all` to install every template (respecting `--group`/`--filter`) with
+  suggested/cached VMIDs and no prompts, and `--select <spec>` for explicit
+  non-interactive selection (`all`, `1,3-5`, template names, or group ids — a
+  group id expands to its whole family).
+- Accept the registry inline or piped: `coport '{…}'` takes a JSON document
+  directly, and `coport -` (or any non-TTY stdin) reads it from stdin
+  (`cat registry.json | coport -a -`). Interactive prompts reopen `/dev/tty` so the
+  TUI still works when stdin carries the registry.
+
+### Fixed
+
+- Build the `coport-linux-x64` release binary with Bun's `bun-linux-x64-baseline`
+  target so it runs on pre-Haswell CPUs without AVX2 (e.g. Ivy Bridge Xeon E5 v2).
+  Previously the default target emitted AVX2 instructions and crashed immediately
+  with `Illegal instruction` on those nodes. coport is I/O-bound, so the baseline
+  ISA has no measurable cost.
+
+## [1.2.0] - 2026-06-04
 
 ### Added
 
@@ -15,7 +53,7 @@
 - Bring back the per-template progress bar and align the name / phase / VMID columns to a fixed width so 16 parallel rows scan cleanly instead of jittering between widths.
 - Throttle per-chunk progress callbacks to ~120 ms and slow the renderer redraw tick to match, cutting the periodic event-loop stalls users saw when many large downloads were active at once.
 
-## v1.1.0
+## [1.1.0] - 2026-06-03
 
 ### Added
 
@@ -32,7 +70,7 @@
 - Handle Ctrl-C by aborting active downloads, terminating active `qmrestore` processes, and removing temporary archives.
 - Store downloads in a per-run directory under `/var/lib/vz/dump/coport-tmp` and remove it after completion to avoid accumulated large archives.
 
-## v1.0.0
+## [1.0.0] - 2026-06-02
 
 Initial coport release.
 
@@ -50,3 +88,9 @@ Initial coport release.
 - Use Proxmox-compatible `vzdump-qemu-...vma.zst` temporary filenames so `qmrestore` can detect archive metadata.
 - Reduce progress log spam in non-TTY sessions.
 - Clarify VMID reassignment prompts so free fallback VMIDs are not presented as conflicts.
+
+[unreleased]: https://github.com/ConvoyPanel/cofoundry/compare/v1.3.0...HEAD
+[1.3.0]: https://github.com/ConvoyPanel/cofoundry/compare/v1.2.0...v1.3.0
+[1.2.0]: https://github.com/ConvoyPanel/cofoundry/compare/v1.1.0...v1.2.0
+[1.1.0]: https://github.com/ConvoyPanel/cofoundry/releases/tag/v1.1.0
+[1.0.0]: https://github.com/ConvoyPanel/cofoundry/releases/tag/v1.0.0

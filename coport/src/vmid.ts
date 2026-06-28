@@ -1,5 +1,5 @@
 import { access } from 'node:fs/promises'
-import type { Template } from '../../src/registry/schema.ts'
+import type { Template } from '@/registry/schema.ts'
 
 export const vmidTaken = async (vmid: number): Promise<boolean> => {
     const paths = [
@@ -38,25 +38,29 @@ export interface VmidAssignment {
 export const resolveVmids = async (
     templates: Template[],
     vmidStart: number,
-    overwriteTaken = false
+    overwriteTaken = false,
+    /** Preferred VMID per template name (e.g. from the install cache). */
+    preferred?: Map<string, number>
 ): Promise<VmidAssignment[]> => {
     const reserved = new Set<number>()
     const assignments: VmidAssignment[] = []
 
     for (const t of templates) {
-        const suggested = t.suggested_vmid
-        const suggestedTaken = suggested ? await vmidTaken(suggested) : false
+        // A cached VMID the user previously installed into wins over the
+        // registry's suggestion, so `--upgrade` lands in the same slot.
+        const desired = preferred?.get(t.name) ?? t.suggested_vmid
+        const desiredTaken = desired ? await vmidTaken(desired) : false
         if (
-            suggested &&
-            !reserved.has(suggested) &&
-            (!suggestedTaken || overwriteTaken)
+            desired &&
+            !reserved.has(desired) &&
+            (!desiredTaken || overwriteTaken)
         ) {
-            reserved.add(suggested)
+            reserved.add(desired)
             assignments.push({
                 template: t,
-                vmid: suggested,
+                vmid: desired,
                 conflict: false,
-                overwrite: suggestedTaken,
+                overwrite: desiredTaken,
             })
         } else {
             const free = await findFreeVmid(vmidStart, reserved)

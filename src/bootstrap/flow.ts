@@ -8,6 +8,8 @@ import type {
 } from '@/bootstrap/model.ts'
 import { sshCapture, sshOk } from '@/bootstrap/remote.ts'
 import { ALL_STEPS, stepToken } from '@/bootstrap/steps.ts'
+import { detectBuildGateway } from '@/bootstrap/network.ts'
+import { BUILD_NET_GATEWAY } from '@/build/buildnet.ts'
 import type { PartialEnv } from '@/env.ts'
 
 // ── .env updater ──────────────────────────────────────────────────────────────
@@ -100,12 +102,18 @@ export const runBootstrap = async (initialEnv: PartialEnv): Promise<void> => {
         }
     }
 
+    const buildBridge = initialEnv.CF_BUILD_BRIDGE ?? 'vmbr1'
+    const buildGateway =
+        (await detectBuildGateway(target, buildBridge)) ?? BUILD_NET_GATEWAY
+
     // 3. Token name — ask only if no 'cofoundry' token exists yet.
     // Probe with default first; if it exists, no question.
     let tokenName = 'cofoundry'
     const tokenProbe = await stepToken.probe({
         target,
         tokenName,
+        buildBridge,
+        buildGateway,
         buildDns: initialEnv.CF_BUILD_DNS ?? '1.1.1.1',
     })
     if (!tokenProbe.done) {
@@ -118,6 +126,8 @@ export const runBootstrap = async (initialEnv: PartialEnv): Promise<void> => {
     const plan: Plan = {
         target,
         tokenName,
+        buildBridge,
+        buildGateway,
         buildDns: initialEnv.CF_BUILD_DNS ?? '1.1.1.1',
     }
 

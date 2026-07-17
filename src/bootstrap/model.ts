@@ -1,6 +1,8 @@
 export type BootstrapPlan = {
     target: string
     tokenName: string
+    buildBridge: string
+    buildGateway: string
     buildDns: string
 }
 

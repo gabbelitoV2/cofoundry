@@ -1,12 +1,9 @@
 import { execa } from 'execa'
 import { remoteStreaming } from '@/build/remote.ts'
 import {
-    BUILD_DHCP_RANGE_END,
-    BUILD_DHCP_RANGE_START,
-    BUILD_NET_BRIDGE_ADDR,
-    BUILD_NET_CIDR,
     BUILD_NET_GATEWAY,
-    BUILD_NET_PREFIX,
+    buildNetworkFromGateway,
+    type BuildNetwork,
 } from '@/build/buildnet.ts'
 import { shellQuote } from '@/util.ts'
 import type { BootstrapStep } from '@/bootstrap/model.ts'
@@ -29,35 +26,88 @@ const rangeAddresses = (directive: string): string[] =>
         .split(',')
         .filter(part => /^\d+\.\d+\.\d+\.\d+$/.test(part))
 
-const isBuildRange = (directive: string): boolean => {
-    if (!directive.startsWith('dhcp-range=')) return false
+const buildRangeState = (
+    directive: string,
+    network: BuildNetwork
+): 'outside' | 'present' => {
+    if (!directive.startsWith('dhcp-range=')) return 'outside'
     const addresses = rangeAddresses(directive)
-    return (
-        addresses[0] === BUILD_DHCP_RANGE_START &&
-        addresses[1] === BUILD_DHCP_RANGE_END
+    if (
+        addresses.length < 2 ||
+        !addresses[0]?.startsWith(`${network.prefix}.`) ||
+        !addresses[1]?.startsWith(`${network.prefix}.`)
+    ) {
+        return 'outside'
+    }
+    return 'present'
+}
+
+export const findBuildSlotBase = (
+    activeConfig: string,
+    network: BuildNetwork
+): number | undefined => {
+    const occupied = new Set<number>()
+    occupied.add(Number.parseInt(network.gateway.split('.').at(-1) ?? '', 10))
+    for (const directive of activeDirectives(activeConfig)) {
+        if (buildRangeState(directive, network) === 'present') {
+            const addresses = rangeAddresses(directive)
+            const start = Number.parseInt(addresses[0]!.split('.').at(-1)!, 10)
+            const end = Number.parseInt(addresses[1]!.split('.').at(-1)!, 10)
+            for (let address = start; address <= end; address++) {
+                occupied.add(address)
+            }
+        }
+        if (directive.startsWith('dhcp-host=')) {
+            const address = directive
+                .split(',')
+                .find(part => part.startsWith(`${network.prefix}.`))
+            if (address) {
+                occupied.add(
+                    Number.parseInt(address.split('.').at(-1) ?? '', 10)
+                )
+            }
+        }
+    }
+    const candidates = [100, ...Array.from({ length: 204 }, (_, i) => i + 2)]
+    return candidates.find(base =>
+        Array.from({ length: 50 }, (_, i) => base + i).every(
+            address => address <= 254 && !occupied.has(address)
+        )
     )
 }
 
-export const dnsmasqConf = (buildDns: string, activeConfig = ''): string => {
+export const dnsmasqConf = (
+    buildDns: string,
+    activeConfig = '',
+    buildGateway = BUILD_NET_GATEWAY,
+    buildBridge = 'vmbr1'
+): string => {
+    const network = buildNetworkFromGateway(buildGateway)
     const directives = activeDirectives(activeConfig)
     const lines = ['# Managed by Cofoundry.']
-    if (!directives.includes('interface=vmbr1')) lines.push('interface=vmbr1')
+    if (!directives.includes(`interface=${buildBridge}`)) {
+        lines.push(`interface=${buildBridge}`)
+    }
     if (
         !directives.includes('bind-interfaces') &&
         !directives.includes('bind-dynamic')
     ) {
         lines.push('bind-interfaces')
     }
-    if (!directives.some(isBuildRange)) {
+    if (
+        !directives.some(
+            directive => buildRangeState(directive, network) === 'present'
+        )
+    ) {
         lines.push(
-            `dhcp-range=${BUILD_DHCP_RANGE_START},${BUILD_DHCP_RANGE_END},12h`
+            `dhcp-range=${network.dhcpRangeStart},${network.dhcpRangeEnd},12h`
         )
     }
     if (
-        !directives.includes(`dhcp-option=3,${BUILD_NET_GATEWAY}`) &&
-        !directives.includes(`dhcp-option=option:router,${BUILD_NET_GATEWAY}`)
+        !directives.includes(`dhcp-option=3,${network.gateway}`) &&
+        !directives.includes(`dhcp-option=option:router,${network.gateway}`)
     ) {
-        lines.push(`dhcp-option=option:router,${BUILD_NET_GATEWAY}`)
+        lines.push(`dhcp-option=option:router,${network.gateway}`)
     }
     const hasDnsOption = directives.some(
         directive =>
@@ -71,16 +121,16 @@ export const dnsmasqConf = (buildDns: string, activeConfig = ''): string => {
     return `${lines.join('\n')}\n`
 }
 
-const VMBR1_STANZA = `
-auto vmbr1
-iface vmbr1 inet static
-    address ${BUILD_NET_BRIDGE_ADDR}
+const bridgeStanza = (bridge: string, network: BuildNetwork): string => `
+auto ${bridge}
+iface ${bridge} inet static
+    address ${network.bridgeAddress}
     bridge-ports none
     bridge-stp off
     bridge-fd 0
     post-up   echo 1 > /proc/sys/net/ipv4/ip_forward
-    post-up   iptables -t nat -A POSTROUTING -s ${BUILD_NET_CIDR} -o vmbr0 -j MASQUERADE
-    post-down iptables -t nat -D POSTROUTING -s ${BUILD_NET_CIDR} -o vmbr0 -j MASQUERADE
+    post-up   iptables -t nat -A POSTROUTING -s ${network.cidr} -o vmbr0 -j MASQUERADE
+    post-down iptables -t nat -D POSTROUTING -s ${network.cidr} -o vmbr0 -j MASQUERADE
 `
 
 const activeDnsmasqConfigCmd = `{
@@ -95,8 +145,10 @@ const activeDnsmasqConfigCmd = `{
 export const dnsmasqConflict = (
     processState: string,
     activeConfig: string,
-    listeners: string
+    listeners: string,
+    buildGateway = BUILD_NET_GATEWAY
 ): string | undefined => {
+    const network = buildNetworkFromGateway(buildGateway)
     const [countRaw, serviceState = ''] = processState.trim().split('|')
     const processCount = Number.parseInt(countRaw ?? '0', 10) || 0
     if (processCount > 1) {
@@ -110,17 +162,8 @@ export const dnsmasqConflict = (
         .split('\n')
         .map(line => line.trim())
         .filter(Boolean)
-    const buildNetDirective = configLines.find(line => {
-        const directive = line.replace(/^.*?:\d+:/, '').replaceAll(/\s/g, '')
-        if (!directive.startsWith('dhcp-range=')) return false
-        const addresses = rangeAddresses(directive)
-        const touchesBuildNet = addresses.some(address =>
-            address.startsWith(`${BUILD_NET_PREFIX}.`)
-        )
-        return touchesBuildNet && !isBuildRange(directive)
-    })
-    if (buildNetDirective) {
-        return `existing dnsmasq configuration has a different DHCP range in ${BUILD_NET_CIDR}: ${buildNetDirective}`
+    if (findBuildSlotBase(activeConfig, network) === undefined) {
+        return `the existing dnsmasq ranges leave no contiguous 50-address build-slot block in ${network.cidr}`
     }
 
     const explicitlyScoped = configLines.some(line =>
@@ -151,9 +194,11 @@ export const dnsmasqConflict = (
             line =>
                 line !== '' &&
                 !/dnsmasq/i.test(line) &&
-                /(?:^|\s)(?:\*|0\.0\.0\.0|\[::\]|:::|10\.0\.0\.1):(53|67)(?:\s|$)/.test(
+                (/(?:^|\s)(?:\*|0\.0\.0\.0|\[::\]|:::):(53|67)(?:\s|$)/.test(
                     line
-                )
+                ) ||
+                    line.includes(`${network.gateway}:53`) ||
+                    line.includes(`${network.gateway}:67`))
         )
     if (conflictingListener) {
         return `another service is listening on a DNS/DHCP wildcard or build-network socket: ${conflictingListener}`
@@ -185,13 +230,21 @@ const cidrRange = (cidr: string): [number, number] | undefined => {
 }
 
 export const buildNetworkRouteConflict = (
-    routes: string
+    routes: string,
+    buildGateway = BUILD_NET_GATEWAY,
+    buildBridge = 'vmbr1'
 ): string | undefined => {
-    const wanted = cidrRange(BUILD_NET_CIDR)!
+    const network = buildNetworkFromGateway(buildGateway)
+    const wanted = cidrRange(network.cidr)!
+    const escapedBridge = buildBridge.replaceAll(/[.*+?^${}()|[\]\\]/g, '\\$&')
     return routes
         .split('\n')
         .map(line => line.trim())
-        .filter(line => line !== '' && !/(?:^|\s)dev vmbr1(?:\s|$)/.test(line))
+        .filter(
+            line =>
+                line !== '' &&
+                !new RegExp(`(?:^|\\s)dev ${escapedBridge}(?:\\s|$)`).test(line)
+        )
         .find(line => {
             const destination = line.split(/\s+/, 1)[0]
             if (!destination || destination === 'default') return false
@@ -204,9 +257,10 @@ export const buildNetworkRouteConflict = (
 
 export const hasBuildBridgeAddress = (
     configured: string,
-    runtime: string
+    runtime: string,
+    buildGateway = BUILD_NET_GATEWAY
 ): boolean => {
-    const escapedAddress = BUILD_NET_GATEWAY.replaceAll('.', '\\.')
+    const escapedAddress = buildGateway.replaceAll('.', '\\.')
     if (new RegExp(`\\binet\\s+${escapedAddress}/24\\b`).test(runtime)) {
         return true
     }
@@ -228,6 +282,38 @@ export const hasBuildBridgeAddress = (
     return hasAddressWithoutPrefix && (hasSlashNetmask || hasDottedNetmask)
 }
 
+export const bridgeGateway = (
+    configured: string,
+    runtime: string
+): string | undefined => {
+    const runtimeMatch = runtime.match(/\binet\s+(\d+\.\d+\.\d+\.\d+)\/24\b/)
+    if (runtimeMatch?.[1]) return runtimeMatch[1]
+    const cidrMatch = configured.match(
+        /^\s*address\s+(\d+\.\d+\.\d+\.\d+)\/24\s*$/m
+    )
+    if (cidrMatch?.[1]) return cidrMatch[1]
+    const address = configured.match(
+        /^\s*address\s+(\d+\.\d+\.\d+\.\d+)\s*$/m
+    )?.[1]
+    const is24 = /^\s*netmask\s+(?:24|255\.255\.255\.0)\s*$/m.test(configured)
+    return address && is24 ? address : undefined
+}
+
+export const detectBuildGateway = async (
+    target: string,
+    bridge: string
+): Promise<string | undefined> => {
+    const quotedBridge = shellQuote(bridge)
+    const [configured, runtime] = await Promise.all([
+        sshCapture(target, `ifquery ${quotedBridge} 2>/dev/null`),
+        sshCapture(
+            target,
+            `ip -4 -o addr show dev ${quotedBridge} 2>/dev/null`
+        ),
+    ])
+    return bridgeGateway(configured.stdout, runtime.stdout)
+}
+
 const detectedBridgeAddress = (configured: string, runtime: string): string => {
     const runtimeAddress = runtime.match(/\binet\s+(\S+)/)?.[1]
     if (runtimeAddress) return runtimeAddress
@@ -243,6 +329,7 @@ export const stepBuildNetworkPreflight: BootstrapStep = {
     id: 'build-network-preflight',
     label: 'check build-network conflicts',
     probe: async plan => {
+        const network = buildNetworkFromGateway(plan.buildGateway)
         const [route, configTest, processState, activeConfig, listeners] =
             await Promise.all([
                 sshCapture(
@@ -264,10 +351,14 @@ export const stepBuildNetworkPreflight: BootstrapStep = {
                 ),
             ])
 
-        const routeConflict = buildNetworkRouteConflict(route.stdout)
+        const routeConflict = buildNetworkRouteConflict(
+            route.stdout,
+            plan.buildGateway,
+            plan.buildBridge
+        )
         if (routeConflict) {
             throw new Error(
-                `${BUILD_NET_CIDR} overlaps an existing route outside vmbr1: ${routeConflict}`
+                `${network.cidr} overlaps an existing route outside ${plan.buildBridge}: ${routeConflict}`
             )
         }
         // Exit 1 means dnsmasq is installed but its current merged config is
@@ -286,7 +377,8 @@ export const stepBuildNetworkPreflight: BootstrapStep = {
         const conflict = dnsmasqConflict(
             processState.stdout,
             activeConfig.stdout,
-            listeners.stdout
+            listeners.stdout,
+            plan.buildGateway
         )
         if (conflict) throw new Error(`dnsmasq conflict: ${conflict}`)
         return {
@@ -299,34 +391,52 @@ export const stepBuildNetworkPreflight: BootstrapStep = {
 
 export const stepVmbr1: BootstrapStep = {
     id: 'vmbr1',
-    label: 'configure vmbr1 NAT bridge',
+    label: 'configure build NAT bridge',
     probe: async plan => {
+        const network = buildNetworkFromGateway(plan.buildGateway)
+        const quotedBridge = shellQuote(plan.buildBridge)
         const [configured, runtime] = await Promise.all([
-            sshCapture(plan.target, 'ifquery vmbr1 2>/dev/null'),
-            sshCapture(plan.target, 'ip -4 -o addr show dev vmbr1 2>/dev/null'),
+            sshCapture(plan.target, `ifquery ${quotedBridge} 2>/dev/null`),
+            sshCapture(
+                plan.target,
+                `ip -4 -o addr show dev ${quotedBridge} 2>/dev/null`
+            ),
         ])
         if (configured.ok) {
-            if (hasBuildBridgeAddress(configured.stdout, runtime.stdout)) {
-                return { done: true, note: 'vmbr1 has the Cofoundry address' }
+            if (
+                hasBuildBridgeAddress(
+                    configured.stdout,
+                    runtime.stdout,
+                    plan.buildGateway
+                )
+            ) {
+                return {
+                    done: true,
+                    note: `${plan.buildBridge} provides ${network.cidr}`,
+                }
             }
             throw new Error(
-                `vmbr1 uses ${detectedBridgeAddress(configured.stdout, runtime.stdout)}; Cofoundry requires ${BUILD_NET_BRIDGE_ADDR}`
+                `${plan.buildBridge} changed while probing: detected ${detectedBridgeAddress(configured.stdout, runtime.stdout)}, expected ${network.bridgeAddress}`
             )
         }
         if (runtime.ok && runtime.stdout.trim() !== '') {
             throw new Error(
-                'vmbr1 exists at runtime but is not managed by the node network configuration'
+                `${plan.buildBridge} exists at runtime but is not managed by the node network configuration`
             )
         }
         return { done: false }
     },
     apply: async plan => {
+        const network = buildNetworkFromGateway(plan.buildGateway)
         await execa('ssh', [plan.target, `cat >> /etc/network/interfaces`], {
-            input: VMBR1_STANZA,
+            input: bridgeStanza(plan.buildBridge, network),
             stderr: 'inherit',
         })
-        await remoteStreaming(plan.target, 'ifup vmbr1')
-        return { note: 'created vmbr1 + ifup' }
+        await remoteStreaming(
+            plan.target,
+            `ifup ${shellQuote(plan.buildBridge)}`
+        )
+        return { note: `created ${plan.buildBridge} + ifup` }
     },
 }
 
@@ -342,6 +452,7 @@ export const stepBuildNetFirewall: BootstrapStep = {
     id: 'build-net-firewall',
     label: 'allow build network through Proxmox firewall',
     probe: async plan => {
+        const network = buildNetworkFromGateway(plan.buildGateway)
         const status = await sshCapture(
             plan.target,
             'pve-firewall status 2>/dev/null'
@@ -356,16 +467,18 @@ export const stepBuildNetFirewall: BootstrapStep = {
             plan.target,
             `pvesh get /nodes/$(hostname)/firewall/rules --output-format json 2>/dev/null`
         )
-        return rules.stdout.includes('cofoundry build network')
+        return rules.stdout.includes('cofoundry build network') &&
+            rules.stdout.includes(network.cidr)
             ? { done: true, note: 'host firewall rule already present' }
             : { done: false, note: 'Proxmox firewall on — opening build net' }
     },
     apply: async plan => {
+        const network = buildNetworkFromGateway(plan.buildGateway)
         await remoteStreaming(
             plan.target,
-            `pvesh create /nodes/$(hostname)/firewall/rules --action ACCEPT --type in --source ${BUILD_NET_CIDR} --enable 1 --comment ${shellQuote(BUILD_NET_FW_COMMENT)}`
+            `pvesh create /nodes/$(hostname)/firewall/rules --action ACCEPT --type in --source ${network.cidr} --enable 1 --comment ${shellQuote(BUILD_NET_FW_COMMENT)}`
         )
-        return { note: `allowed ${BUILD_NET_CIDR} in (host firewall rule)` }
+        return { note: `allowed ${network.cidr} in (host firewall rule)` }
     },
 }
 
@@ -382,7 +495,7 @@ export const stepDnsmasq: BootstrapStep = {
     },
 }
 
-// Per-build static reservations (10.0.0.100-149) are written by
+// Per-build static reservations (.100-.149 on the build bridge's /24) are written by
 // src/build/netslot.ts at build time into /etc/dnsmasq.d/cofoundry-hosts.d/.
 // That directory is loaded via dhcp-hostsfile= rather than as regular config
 // files, because dnsmasq only honours SIGHUP for entries loaded that way —
@@ -392,6 +505,7 @@ export const stepDnsmasqConf: BootstrapStep = {
     id: 'dnsmasq-conf',
     label: 'write /etc/dnsmasq.d/vmbr1-nat.conf',
     probe: async plan => {
+        const network = buildNetworkFromGateway(plan.buildGateway)
         const [existing, otherConfig] = await Promise.all([
             sshCapture(
                 plan.target,
@@ -399,7 +513,12 @@ export const stepDnsmasqConf: BootstrapStep = {
             ),
             sshCapture(plan.target, activeDnsmasqConfigCmd),
         ])
-        const wanted = dnsmasqConf(plan.buildDns, otherConfig.stdout)
+        const wanted = dnsmasqConf(
+            plan.buildDns,
+            otherConfig.stdout,
+            plan.buildGateway,
+            plan.buildBridge
+        )
         if (existing.ok && existing.stdout.trim() === wanted.trim()) {
             return (await sshOk(
                 plan.target,
@@ -412,9 +531,9 @@ export const stepDnsmasqConf: BootstrapStep = {
             existing.ok &&
             !(
                 existing.stdout.includes('# Managed by Cofoundry.') ||
-                (existing.stdout.includes('interface=vmbr1') &&
+                (existing.stdout.includes(`interface=${plan.buildBridge}`) &&
                     existing.stdout.includes(
-                        `dhcp-range=${BUILD_DHCP_RANGE_START},${BUILD_DHCP_RANGE_END}`
+                        `dhcp-range=${network.dhcpRangeStart},${network.dhcpRangeEnd}`
                     ))
             )
         ) {
@@ -444,7 +563,12 @@ export const stepDnsmasqConf: BootstrapStep = {
         await writeRemoteFile(
             plan.target,
             candidate,
-            dnsmasqConf(plan.buildDns, otherConfig.stdout)
+            dnsmasqConf(
+                plan.buildDns,
+                otherConfig.stdout,
+                plan.buildGateway,
+                plan.buildBridge
+            )
         )
         await remoteStreaming(
             plan.target,

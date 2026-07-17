@@ -20,10 +20,12 @@ node, shows you a checklist of what it will change, asks for confirmation, then
 applies. The new API token secret is shown at the end with an offer to append it
 to `.env`. Safe to re-run — already-done steps are detected and skipped.
 
-Bootstrap verifies that `10.0.0.0/24`, `vmbr1`, dnsmasq configuration, and
-DNS/DHCP listeners do not conflict with existing node services. It stops with an
-actionable error instead of overwriting an unrecognized configuration. The
-dnsmasq change is validated before restart and rolled back if restart fails.
+Bootstrap adopts the configured build bridge's existing IPv4 `/24` (for example,
+`vmbr1` on `10.10.10.0/24`). For a new bridge it defaults to `10.0.0.0/24`.
+It verifies that the subnet, dnsmasq configuration, and DNS/DHCP listeners do
+not conflict with existing node services. It stops with an actionable error
+instead of overwriting an unrecognized configuration. The dnsmasq change is
+validated before restart and rolled back if restart fails.
 
 Bootstrap does not alter the node's `/tmp`. Build scratch data lives under
 `PVE_DUMP_DIR/cofoundry-tmp`. An older Cofoundry bootstrap may have added a
@@ -88,7 +90,14 @@ All current recipes are ISO installers and need this bridge. It can be skipped
 only for a custom recipe that boots an already-installed image and does not need
 the build-network allocator.
 
-ISO installers can't rely on the qemu-guest-agent for IP discovery and Windows has no agent during install at all. Cofoundry runs them on a dedicated NAT bridge (`vmbr1`, `10.0.0.0/24`) and allocates a per-build static DHCP reservation at build time (see `src/build/netslot.ts`). Up to 50 builds can run in parallel on a single node.
+ISO installers can't rely on the qemu-guest-agent for IP discovery and Windows
+has no agent during install at all. Cofoundry runs them on a dedicated NAT bridge
+(`vmbr1` by default) and allocates a per-build static DHCP reservation from the
+bridge's live IPv4 `/24` at build time (see `src/build/netslot.ts`). Existing
+bridges and non-overlapping dnsmasq pools are adopted. The allocator selects a
+free contiguous 50-address block outside existing DHCP ranges and static hosts.
+The manual configuration below shows the default for a new bridge. Up to 50
+builds can run in parallel on a single node.
 
 **Add to `/etc/network/interfaces`:**
 

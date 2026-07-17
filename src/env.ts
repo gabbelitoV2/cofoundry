@@ -35,7 +35,7 @@ const EnvSchema = z.object({
     CF_ISO_STORAGE: z.string().default('local'),
 
     // DNS resolver for ISO-installer build VMs. The IP and gateway are now
-    // allocated per-build from the vmbr1 NAT pool (see src/build/netslot.ts),
+    // allocated per-build from the configured NAT bridge (see src/build/netslot.ts),
     // so they no longer need static config.
     CF_BUILD_DNS: z.string().default('1.1.1.1'),
 

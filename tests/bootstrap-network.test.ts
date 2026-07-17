@@ -1,8 +1,11 @@
 import { describe, expect, test } from 'bun:test'
+import { buildNetworkFromGateway } from '@/build/buildnet.ts'
 import {
+    bridgeGateway,
     buildNetworkRouteConflict,
     dnsmasqConflict,
     dnsmasqConf,
+    findBuildSlotBase,
     hasBuildBridgeAddress,
 } from '@/bootstrap/network.ts'
 
@@ -25,6 +28,16 @@ describe('buildNetworkRouteConflict', () => {
             '10.0.0.0/24 dev vmbr1 proto kernel scope link',
         ].join('\n')
         expect(buildNetworkRouteConflict(routes)).toBeUndefined()
+    })
+
+    test('uses an adopted build subnet and bridge', () => {
+        const routes = [
+            '10.0.0.0/24 dev vmbr0 proto kernel scope link',
+            '10.10.10.0/24 dev vmbr1 proto kernel scope link',
+        ].join('\n')
+        expect(
+            buildNetworkRouteConflict(routes, '10.10.10.1', 'vmbr1')
+        ).toBeUndefined()
     })
 })
 
@@ -63,6 +76,20 @@ describe('hasBuildBridgeAddress', () => {
     })
 })
 
+describe('bridgeGateway', () => {
+    test('discovers an existing /24 gateway from runtime or configuration', () => {
+        expect(
+            bridgeGateway('', '7: vmbr1 inet 10.10.10.1/24 scope global vmbr1')
+        ).toBe('10.10.10.1')
+        expect(
+            bridgeGateway(
+                '    address 172.20.30.1\n    netmask 255.255.255.0\n',
+                ''
+            )
+        ).toBe('172.20.30.1')
+    })
+})
+
 describe('dnsmasqConflict', () => {
     test('allows one systemd-managed instance scoped to another interface', () => {
         const config = '/etc/dnsmasq.d/lan.conf:1:interface=vmbr0'
@@ -80,20 +107,28 @@ describe('dnsmasqConflict', () => {
         )
     })
 
-    test('rejects a different range on the build network', () => {
+    test('rejects ranges consuming every possible build-slot block', () => {
         expect(
             dnsmasqConflict(
                 '1|active',
-                '/etc/dnsmasq.d/lan.conf:3:dhcp-range=10.0.0.20,10.0.0.40,12h',
+                '/etc/dnsmasq.d/lan.conf:3:dhcp-range=10.0.0.2,10.0.0.254,12h',
                 ''
             )
-        ).toContain('different DHCP range')
+        ).toContain('no contiguous 50-address')
     })
 
     test('allows compatible vmbr1 and build-range directives', () => {
         const config = [
             '/etc/dnsmasq.d/vmbr1.conf:1:interface=vmbr1',
             '/etc/dnsmasq.d/vmbr1.conf:2:dhcp-range=10.0.0.200,10.0.0.250,12h',
+        ].join('\n')
+        expect(dnsmasqConflict('1|active', config, '')).toBeUndefined()
+    })
+
+    test('allows another non-overlapping range on the build subnet', () => {
+        const config = [
+            '/etc/dnsmasq.d/vmbr1.conf:1:interface=vmbr1',
+            '/etc/dnsmasq.d/vmbr1.conf:2:dhcp-range=10.0.0.20,10.0.0.80,12h',
         ].join('\n')
         expect(dnsmasqConflict('1|active', config, '')).toBeUndefined()
     })
@@ -125,6 +160,22 @@ describe('dnsmasqConflict', () => {
     })
 })
 
+describe('findBuildSlotBase', () => {
+    const network = buildNetworkFromGateway('10.10.10.1')
+
+    test('prefers .100 when the existing pool does not overlap it', () => {
+        const config =
+            '/etc/dnsmasq.d/vmbr1.conf:2:dhcp-range=10.10.10.200,10.10.10.250,12h'
+        expect(findBuildSlotBase(config, network)).toBe(100)
+    })
+
+    test('moves the slot block around an existing DHCP pool', () => {
+        const config =
+            '/etc/dnsmasq.d/vmbr1.conf:2:dhcp-range=10.10.10.100,10.10.10.200,12h'
+        expect(findBuildSlotBase(config, network)).toBe(2)
+    })
+})
+
 describe('dnsmasqConf', () => {
     test('writes only directives missing from a compatible alternate file', () => {
         const config = [
@@ -149,5 +200,16 @@ describe('dnsmasqConf', () => {
         expect(generated).toContain(
             'dhcp-hostsfile=/etc/dnsmasq.d/cofoundry-hosts.d'
         )
+    })
+
+    test('derives DHCP settings from an adopted bridge gateway', () => {
+        const generated = dnsmasqConf(
+            '1.1.1.1',
+            '/etc/dnsmasq.d/vmbr1.conf:1:interface=vmbr1',
+            '10.10.10.1',
+            'vmbr1'
+        )
+        expect(generated).toContain('dhcp-range=10.10.10.200,10.10.10.250,12h')
+        expect(generated).toContain('dhcp-option=option:router,10.10.10.1')
     })
 })

@@ -44,15 +44,7 @@ jobs:
       R2_ENDPOINT: ${{ vars.R2_ENDPOINT || secrets.R2_ENDPOINT }}
       R2_BUCKET: ${{ vars.R2_BUCKET || secrets.R2_BUCKET }}
     steps:
-      - uses: actions/create-github-app-token@v2
-        id: registry-app-token
-        with:
-          app-id: ${{ secrets.REGISTRY_APP_ID }}
-          private-key: ${{ secrets.REGISTRY_APP_PRIVATE_KEY }}
-
       - uses: actions/checkout@v7
-        with:
-          token: ${{ steps.registry-app-token.outputs.token }}
 
       - uses: oven-sh/setup-bun@v2
 
@@ -125,8 +117,21 @@ jobs:
       # and the commit push is a fast-forward (otherwise non-fast-forward
       # rejection). Safe: registry.json is rebuilt from R2 sidecars, and the
       # cofoundry-build concurrency group serializes builds (no push race).
+      # Mint the app token here—not at job start—because Windows builds can run
+      # longer than the token's one-hour lifetime.
+      - uses: actions/create-github-app-token@v2
+        id: registry-app-token
+        with:
+          app-id: ${{ secrets.REGISTRY_APP_ID }}
+          private-key: ${{ secrets.REGISTRY_APP_PRIVATE_KEY }}
+
       - name: Sync to latest main
+        env:
+          REGISTRY_TOKEN: ${{ steps.registry-app-token.outputs.token }}
         run: |
+          git config --local --unset-all http.https://github.com/.extraheader || true
+          AUTH=$(printf 'x-access-token:%s' "$REGISTRY_TOKEN" | base64 -w0)
+          git config --local http.https://github.com/.extraheader "AUTHORIZATION: basic $AUTH"
           git fetch origin main
           git reset --hard origin/main
 

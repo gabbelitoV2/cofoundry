@@ -20,15 +20,7 @@ jobs:
       matrix: ${{ steps.check.outputs.matrix }}
       any_changed: ${{ steps.check.outputs.any_changed }}
     steps:
-      - uses: actions/create-github-app-token@v2
-        id: registry-app-token
-        with:
-          app-id: ${{ secrets.REGISTRY_APP_ID }}
-          private-key: ${{ secrets.REGISTRY_APP_PRIVATE_KEY }}
-
       - uses: actions/checkout@v7
-        with:
-          token: ${{ steps.registry-app-token.outputs.token }}
 
       - uses: oven-sh/setup-bun@v2
 
@@ -50,12 +42,13 @@ jobs:
             echo "any_changed=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Commit updated checksums
-        run: |
-          git config user.name "cofoundry-registry-writer[bot]"
-          git config user.email "cofoundry-registry-writer[bot]@users.noreply.github.com"
-          git add upstream-checksums.json
-          git diff --staged --quiet || (git commit -m "chore: update upstream checksums" && git push)
+      # Do not commit this yet. If any build fails, leaving the old checksums on
+      # main makes the next scheduled run detect and retry the same update.
+      - uses: actions/upload-artifact@v7
+        with:
+          name: upstream-checksums
+          path: upstream-checksums.json
+          retention-days: 1
 
   build:
     needs: check
@@ -68,3 +61,39 @@ jobs:
     with:
       recipe: ${{ matrix.recipe }}
     secrets: inherit
+
+  commit-checksums:
+    needs: [check, build]
+    if: >-
+      always() &&
+      needs.check.result == 'success' &&
+      (needs.build.result == 'success' || needs.build.result == 'skipped')
+    runs-on: ubuntu-latest
+    # Serialize with template builds that push registry.json so both writers
+    # always start from the latest main and produce a fast-forward push.
+    concurrency:
+      group: cofoundry-build
+      cancel-in-progress: false
+    steps:
+      - uses: actions/create-github-app-token@v2
+        id: registry-app-token
+        with:
+          app-id: ${{ secrets.REGISTRY_APP_ID }}
+          private-key: ${{ secrets.REGISTRY_APP_PRIVATE_KEY }}
+
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+          token: ${{ steps.registry-app-token.outputs.token }}
+
+      - uses: actions/download-artifact@v7
+        with:
+          name: upstream-checksums
+          path: .
+
+      - name: Commit updated checksums
+        run: |
+          git config user.name "cofoundry-registry-writer[bot]"
+          git config user.email "cofoundry-registry-writer[bot]@users.noreply.github.com"
+          git add upstream-checksums.json
+          git diff --staged --quiet || (git commit -m "chore: update upstream checksums" && git push)

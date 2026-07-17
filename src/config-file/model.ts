@@ -32,7 +32,6 @@ export const FIELD_MAP: readonly (readonly [string, string])[] = [
     ['build.concurrency', 'CF_BUILD_CONCURRENCY'],
     ['build.memory_budget_mb', 'CF_BUILD_MEMORY_BUDGET_MB'],
     ['build.cpu_budget', 'CF_BUILD_CPU_BUDGET'],
-    ['build.upload_concurrency', 'CF_UPLOAD_CONCURRENCY'],
     ['build.download_concurrency', 'CF_DOWNLOAD_CONCURRENCY'],
     ['local.out_dir', 'CF_OUT_DIR'],
 ]
@@ -46,7 +45,6 @@ export const CONFIG_DEFAULTS: Readonly<Record<string, string>> = {
     CF_BUILD_BRIDGE: 'vmbr1',
     CF_BUILD_DNS: '1.1.1.1',
     CF_BUILD_CONCURRENCY: '1',
-    CF_UPLOAD_CONCURRENCY: '8',
     CF_DOWNLOAD_CONCURRENCY: '8',
     CF_OUT_DIR: './dist',
 }

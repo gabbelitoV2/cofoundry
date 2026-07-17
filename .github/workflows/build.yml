@@ -18,8 +18,8 @@ jobs:
   build:
     runs-on: ubuntu-latest
     # Serialize all build runs. The PVE node has shared state that doesn't
-    # tolerate parallel access: the cofoundry-out / cofoundry-work dirs,
-    # the 9100-9299 builder/scratch VMID pool, and registry.json on main.
+    # tolerate parallel access: build outputs, upload publication state, and
+    # registry.json on main. Repository snapshots themselves are atomic.
     concurrency:
       group: cofoundry-build
       cancel-in-progress: false

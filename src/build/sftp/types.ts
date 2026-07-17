@@ -15,7 +15,6 @@ export type LocalFile = {
     localPath: string
     relPath: string
     size: number
-    mtimeMs: number
     mode: number
 }
 

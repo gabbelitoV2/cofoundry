@@ -8,7 +8,6 @@ type BuildCommandOptions = {
     skipArtifactSync?: boolean
     skipRepoSync?: boolean
     keepVm?: boolean
-    uploadConcurrency?: string
     downloadConcurrency?: string
     prefetchConcurrency?: string
     buildConcurrency?: string
@@ -58,7 +57,6 @@ export const runBuildCommand = async (
         syncBack: shouldSyncBack(env, opts),
         skipRepoSync: opts.skipRepoSync,
         keepVm: opts.keepVm || env.CF_KEEP_VM,
-        uploadConcurrency: parseNumber(opts.uploadConcurrency),
         downloadConcurrency: parseNumber(opts.downloadConcurrency),
         prefetchConcurrency: parseNumber(opts.prefetchConcurrency),
         buildConcurrency:
@@ -102,10 +100,6 @@ export const registerBuildCommand = (program: Command): void => {
         .option(
             '--keep-vm',
             'Do not destroy the build VM if the build is cancelled (also: CF_KEEP_VM=1)'
-        )
-        .option(
-            '--upload-concurrency <n>',
-            'Parallel SFTP connections for repo upload (overrides CF_UPLOAD_CONCURRENCY)'
         )
         .option(
             '--download-concurrency <n>',

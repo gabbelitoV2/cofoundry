@@ -5,6 +5,8 @@ export type RemotePaths = {
     out: string
     work: string
     tmp: string
+    snapshots: string
+    assetCache: string
     isoStore: string
     downloadedIsoCache: string
 }
@@ -14,6 +16,8 @@ export const remotePaths = (env: Pick<Env, 'PVE_DUMP_DIR'>): RemotePaths => ({
     out: `${env.PVE_DUMP_DIR}/cofoundry-out`,
     work: `${env.PVE_DUMP_DIR}/cofoundry-work`,
     tmp: `${env.PVE_DUMP_DIR}/cofoundry-tmp`,
+    snapshots: `${env.PVE_DUMP_DIR}/cofoundry-snapshots`,
+    assetCache: `${env.PVE_DUMP_DIR}/cofoundry-cache`,
     isoStore: '/var/lib/vz/template/iso',
     downloadedIsoCache: '/root/downloaded_iso_path',
 })
@@ -26,3 +30,8 @@ export const buildRemoteWorkDir = (env: Pick<Env, 'PVE_DUMP_DIR'>): string =>
 
 export const buildRemoteTmpDir = (env: Pick<Env, 'PVE_DUMP_DIR'>): string =>
     remotePaths(env).tmp
+
+export const buildRemoteSnapshotDir = (
+    env: Pick<Env, 'PVE_DUMP_DIR'>,
+    hash: string
+): string => `${remotePaths(env).snapshots}/${hash}`

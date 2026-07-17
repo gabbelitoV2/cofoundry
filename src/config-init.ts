@@ -78,7 +78,6 @@ ${attempts}
 concurrency          = ${val('CF_BUILD_CONCURRENCY', fromEnv, '1')}
 ${memoryBudget}
 ${cpuBudget}
-upload_concurrency   = ${val('CF_UPLOAD_CONCURRENCY', fromEnv, '8')}
 download_concurrency = ${val('CF_DOWNLOAD_CONCURRENCY', fromEnv, '8')}
 
 [local]

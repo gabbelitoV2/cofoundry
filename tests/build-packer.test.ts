@@ -18,7 +18,6 @@ const env: Env = {
     CF_STORAGE: 'local-lvm',
     CF_ISO_STORAGE: 'local',
     CF_BUILD_DNS: '1.1.1.1',
-    CF_UPLOAD_CONCURRENCY: 8,
     CF_DOWNLOAD_CONCURRENCY: 8,
     CF_KEEP_VM: false,
 }

@@ -39,9 +39,6 @@ const EnvSchema = z.object({
     // so they no longer need static config.
     CF_BUILD_DNS: z.string().default('1.1.1.1'),
 
-    // Parallel SFTP connections for syncing the repo up to the node (default 8).
-    CF_UPLOAD_CONCURRENCY: z.coerce.number().int().min(1).default(8),
-
     // Parallel SFTP connections for syncing artifacts back down (default 8).
     CF_DOWNLOAD_CONCURRENCY: z.coerce.number().int().min(1).default(8),
 

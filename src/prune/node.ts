@@ -114,8 +114,14 @@ export const runClean = async (env: Env): Promise<void> => {
         log.info(`removed ${dumps.length} dump file(s)`)
     }
 
-    log.step(`removing build output dirs from ${paths.dump}`)
-    for (const dir of [paths.out, paths.tmp, paths.work]) {
+    log.step(`removing build data from ${paths.dump}`)
+    for (const dir of [
+        paths.out,
+        paths.tmp,
+        paths.work,
+        paths.snapshots,
+        paths.assetCache,
+    ]) {
         const sz = await ssh(env.SSH_TARGET, sizeOrAbsent(dir))
         if (sz !== '(absent)') {
             await ssh(env.SSH_TARGET, `rm -rf ${shellQuote(dir)}`)
@@ -212,11 +218,28 @@ export const runPrune = async (
         )
     }
 
-    // 5. Current working dir (only if no other build appears to be using it).
+    // 5. Content-addressed repository snapshots older than --days. Keep the
+    // snapshot selected by the stable work symlink even if it is old.
+    log.step(`repository snapshots older than ${days} day(s)`)
+    const oldSnapshots = lines(
+        await ssh(
+            env.SSH_TARGET,
+            `current=$(readlink -f ${shellQuote(paths.work)} 2>/dev/null || true); ` +
+                `find ${shellQuote(paths.snapshots)} -mindepth 1 -maxdepth 1 -type d -mtime +${days} 2>/dev/null | ` +
+                `while IFS= read -r snapshot; do [ "$snapshot" = "$current" ] || echo "$snapshot"; done`
+        )
+    )
+    if (!dryRun) {
+        for (const snapshot of oldSnapshots) {
+            await ssh(env.SSH_TARGET, `rm -rf ${shellQuote(snapshot)}`)
+        }
+    }
+    report('repository snapshots', oldSnapshots, dryRun)
+
+    // 6. Current working link (only if no other process is using its target).
     log.step(`working dir ${paths.work}`)
     const workInUse = await ssh(
         env.SSH_TARGET,
-        // pgrep for packer/rsync touching the dir; non-zero exit means none.
         `lsof +D ${shellQuote(paths.work)} 2>/dev/null | tail -n +2 | head -1 | wc -l`
     )
     if (workInUse.trim() !== '0') {

@@ -35,7 +35,6 @@ export const walkLocal = async (
                 localPath: full,
                 relPath: rel,
                 size: info.size,
-                mtimeMs: info.mtimeMs,
                 mode: info.mode,
             })
         }
@@ -64,24 +63,4 @@ export const walkRemote = async (
             })
     }
     return results
-}
-
-export const pruneRemote = async (
-    client: SftpClient,
-    remoteBase: string,
-    remoteDir: string,
-    keep: Set<string>,
-    excludes: string[]
-): Promise<void> => {
-    const entries = await client.list(remoteDir).catch(() => undefined)
-    if (!entries) return
-    for (const entry of entries) {
-        const remotePath = posix.join(remoteDir, entry.name)
-        const relPath = posix.relative(remoteBase, remotePath)
-        if (matchesExclude(relPath, excludes)) continue
-        if (entry.type === 'd')
-            await pruneRemote(client, remoteBase, remotePath, keep, excludes)
-        else if (!keep.has(relPath))
-            await client.delete(remotePath).catch(() => {})
-    }
 }

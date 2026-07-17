@@ -2,7 +2,7 @@ import pRetry from 'p-retry'
 import type { RecipeInfo } from '@/config.ts'
 import type { Env } from '@/env.ts'
 import { shellQuote } from '@/util.ts'
-import { buildRemoteWorkDir } from '@/build/paths.ts'
+import { remotePaths } from '@/build/paths.ts'
 import { captureRemote, remoteWgetCapture } from '@/build/remote.ts'
 
 export type PrefetchProgress = (slot: string, line: string) => void
@@ -38,7 +38,7 @@ const fetchCloudbaseInit = async (
     onLine?: PrefetchProgress
 ): Promise<void> => {
     if (await remoteFileExists(env, destination)) return
-    const command = `url=$(curl -s https://api.github.com/repos/cloudbase/cloudbase-init/releases/latest | python3 -c "import sys,json; r=json.load(sys.stdin); print(next(a['browser_download_url'] for a in r['assets'] if 'x64' in a['name'] and a['name'].endswith('.msi')))") && wget -q --show-progress --progress=bar:force:noscroll -O ${shellQuote(destination)} "$url"`
+    const command = `tmp=${shellQuote(`${destination}.tmp`)}.$$; trap 'rm -f "$tmp"' EXIT; url=$(curl -s https://api.github.com/repos/cloudbase/cloudbase-init/releases/latest | python3 -c "import sys,json; r=json.load(sys.stdin); print(next(a['browser_download_url'] for a in r['assets'] if 'x64' in a['name'] and a['name'].endswith('.msi')))") && wget -q --show-progress --progress=bar:force:noscroll -O "$tmp" "$url" && mv "$tmp" ${shellQuote(destination)}`
     await pRetry(
         () =>
             remoteWgetCapture(
@@ -72,9 +72,11 @@ export const prefetchPhase = async (
 
     if (!recipe.name.startsWith('windows-')) return
 
+    const assetCache = remotePaths(env).assetCache
+    await captureRemote(env.SSH_TARGET, `mkdir -p ${shellQuote(assetCache)}`)
     await fetchCloudbaseInit(
         env,
-        `${buildRemoteWorkDir(env)}/recipes/_shared/CloudbaseInitSetup_x64.msi`,
+        `${assetCache}/CloudbaseInitSetup_x64.msi`,
         onLine
     )
     await fetchAsset(

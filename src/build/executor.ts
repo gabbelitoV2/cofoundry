@@ -13,14 +13,11 @@ import {
     buildRemoteOutDir,
     buildRemoteTmpDir,
     buildRemoteWorkDir,
+    remotePaths,
 } from '@/build/paths.ts'
 import { allocateBuildSlot, type BuildSlot } from '@/build/netslot.ts'
 import { buildVmWatchdog } from '@/build/watchdog.ts'
-import {
-    bridgeForRecipe,
-    injectedRecipeFiles,
-    inspectRecipeLayout,
-} from '@/build/recipe.ts'
+import { bridgeForRecipe, inspectRecipeLayout } from '@/build/recipe.ts'
 import { buildAttemptCount, runWithRetries } from '@/build/retry.ts'
 import { buildSlotVmid, destroyVmCommand } from '@/build/vm.ts'
 import { log } from '@/log.ts'
@@ -31,6 +28,23 @@ export type BuildPhaseResult = {
     /** Remote epoch (seconds) captured before packer ran. Used by syncPhase
      *  to filter out stale artifacts left by prior runs. */
     startedAt: number
+}
+
+export const buildWritableRepoCommand = (
+    snapshotWorkDir: string,
+    buildWorkDir: string,
+    cloudbaseCache?: string
+): string => {
+    const commands = [
+        `cp -aL ${shellQuote(snapshotWorkDir)} ${shellQuote(buildWorkDir)}`,
+        `chmod -R u+w ${shellQuote(buildWorkDir)}`,
+    ]
+    if (cloudbaseCache) {
+        commands.push(
+            `install -m 0644 ${shellQuote(cloudbaseCache)} ${shellQuote(`${buildWorkDir}/recipes/_shared/CloudbaseInitSetup_x64.msi`)}`
+        )
+    }
+    return commands.join(' && ')
 }
 
 export const buildPhase = async (
@@ -73,10 +87,8 @@ export const buildPhase = async (
     // parent protects even tools that create individual files as 0644, and so
     // cleanup never races another recipe's active build.
     const remoteBuildTmpDir = `${remoteTmpDir}/build-${recipe.name}-${effectiveBuildVmid ?? 'plain'}`
-    const injectedFiles = injectedRecipeFiles(remoteWorkDir, recipe, layout)
-    const secretCleanupCmd = `rm -rf ${[remoteBuildTmpDir, ...injectedFiles]
-        .map(shellQuote)
-        .join(' ')}`
+    const remoteBuildWorkDir = `${remoteBuildTmpDir}/repo`
+    const secretCleanupCmd = `rm -rf ${shellQuote(remoteBuildTmpDir)}`
     let unregisterSecretCleanup: (() => void) | undefined
 
     if (recipe.buildVmid) {
@@ -109,7 +121,13 @@ export const buildPhase = async (
     try {
         await captureRemote(
             env.SSH_TARGET,
-            `rm -rf ${shellQuote(remoteBuildTmpDir)} && install -d -m 700 ${shellQuote(remoteBuildTmpDir)}`
+            `rm -rf ${shellQuote(remoteBuildTmpDir)} && install -d -m 700 ${shellQuote(remoteBuildTmpDir)} && ${buildWritableRepoCommand(
+                remoteWorkDir,
+                remoteBuildWorkDir,
+                layout.isWindows
+                    ? `${remotePaths(env).assetCache}/CloudbaseInitSetup_x64.msi`
+                    : undefined
+            )}`
         )
         unregisterSecretCleanup = registerCleanup(() => {
             spawnSync('ssh', [env.SSH_TARGET, secretCleanupCmd], {
@@ -125,11 +143,11 @@ export const buildPhase = async (
         const varsFile = (
             await captureRemote(
                 env.SSH_TARGET,
-                `cd ${remoteWorkDir} && ${injectEnv} bash scripts/inject-placeholders.sh ${recipe.name}`
+                `cd ${remoteBuildWorkDir} && ${injectEnv} bash scripts/inject-placeholders.sh ${recipe.name}`
             )
         ).trim()
 
-        const recipeHcl = `${remoteWorkDir}/recipes/${recipe.name}.pkr.hcl`
+        const recipeHcl = `${remoteBuildWorkDir}/recipes/${recipe.name}.pkr.hcl`
 
         await remoteStreaming(
             env.SSH_TARGET,
@@ -219,10 +237,9 @@ export const buildPhase = async (
             unregisterVmCleanup?.()
         }
     } finally {
-        // The injector modifies the remote recipe copy in place. Delete those
-        // generated copies after Packer has consumed them; the next repo sync
-        // restores the committed placeholder versions. The private temp tree
-        // contains vars files, private keys, and generated answer-file ISOs.
+        // The injector modifies only this build's writable snapshot copy. The
+        // private temp tree also contains vars files, private keys, and
+        // generated answer-file ISOs, so remove the whole tree together.
         unregisterSecretCleanup?.()
         await captureRemote(env.SSH_TARGET, secretCleanupCmd).catch(() => {})
         await slot?.release()

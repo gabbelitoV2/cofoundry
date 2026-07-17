@@ -45,18 +45,3 @@ export const bridgeForRecipe = (
         layout.hasAutoinstall,
         layout.hasKickstart
     )
-
-export const injectedRecipeFiles = (
-    remoteWorkDir: string,
-    recipe: RecipeInfo,
-    layout: RecipeLayout
-): string[] => {
-    const root = `${remoteWorkDir}/recipes/${recipe.name}`
-    return [
-        layout.hasPreseed ? `${root}/http/preseed.cfg` : undefined,
-        layout.hasAutoinstall ? `${root}/http/user-data` : undefined,
-        layout.hasKickstart ? `${root}/http/ks.cfg` : undefined,
-        layout.hasKickstart ? `${root}/http/ks` : undefined,
-        layout.isWindows ? `${root}/autounattend.xml` : undefined,
-    ].filter((path): path is string => path !== undefined)
-}

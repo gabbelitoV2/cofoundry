@@ -22,7 +22,6 @@ export type PipelineOptions = {
     syncBack: boolean
     skipRepoSync?: boolean
     keepVm?: boolean
-    uploadConcurrency?: number
     downloadConcurrency?: number
     prefetchConcurrency?: number
     buildConcurrency?: number
@@ -234,7 +233,6 @@ const runRepoSync = async (
     const handle = renderer.task('sync repo to remote')
     try {
         await dependencies.syncRepo(env, {
-            concurrency: opts.uploadConcurrency,
             onPhase: phase => handle.setPhase(phase),
             onProgress: ev => {
                 handle.setProgress(

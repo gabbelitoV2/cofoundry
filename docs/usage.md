@@ -94,10 +94,13 @@ cf prune --days 7  # stricter cache cutoff
 
 Removes:
 
-- Build VMs in the 91xx/92xx VMID range left over from interrupted builds
-- ISO cache files older than N days (ISOs are re-downloaded automatically on next build)
+- non-template VMs named `packer-*` left by interrupted builds, regardless of
+  their slot-derived VMID;
+- ephemeral Packer ISO files and its download cache;
+- vzdump archives and working data older than the selected cutoff.
 
-A cron job on the node handles this automatically — see [Setup §8](setup.md#8-set-up-the-weekly-cleanup-cron).
+A cron job on the node handles this automatically — see
+[Setup: weekly cleanup cron](setup.md#6-weekly-cleanup-cron).
 
 ## CDN upload
 

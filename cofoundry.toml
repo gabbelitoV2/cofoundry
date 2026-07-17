@@ -26,7 +26,7 @@ disks = "local"   # Proxmox storage pool for VM disks (was CF_STORAGE)
 isos  = "local"   # Proxmox storage pool for ISOs   (was CF_ISO_STORAGE)
 
 [network]
-bridge       = "vmbr0"     # cloud-image builds (DHCP via guest agent)
+bridge       = "vmbr0"     # direct-network recipes that do not need a build slot
 build_bridge = "vmbr1"     # ISO-installer + Windows NAT bridge
 build_dns    = "1.1.1.1"   # resolver for ISO-installer build VMs
 

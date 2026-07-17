@@ -74,7 +74,9 @@ Recipes download their boot ISO into `/var/lib/vz/template/iso` (Proxmox's stand
 
 ### 5. NAT bridge for ISO-installer builds
 
-> Skip if you only plan to build cloud-image recipes (`ubuntu-cloud-*`, etc.). Every ISO-installer recipe — Debian/Ubuntu live/Alma/Rocky/Windows — needs this.
+All current recipes are ISO installers and need this bridge. It can be skipped
+only for a custom recipe that boots an already-installed image and does not need
+the build-network allocator.
 
 ISO installers can't rely on the qemu-guest-agent for IP discovery and Windows has no agent during install at all. Cofoundry runs them on a dedicated NAT bridge (`vmbr1`, `10.0.0.0/24`) and allocates a per-build static DHCP reservation at build time (see `src/build/netslot.ts`). Up to 50 builds can run in parallel on a single node.
 

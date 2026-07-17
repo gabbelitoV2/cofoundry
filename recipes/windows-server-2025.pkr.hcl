@@ -91,7 +91,7 @@ source "proxmox-iso" "windows-server-2025" {
 
   bios    = "ovmf"
   machine = "q35"
-  # 2025 shares the Windows 11 install kernel; win2k22 causes a bootloop
+  # Proxmox maps Windows Server 2022/2025 to its win11 OS type.
   os = "win11"
 
   # 2025 installer probes SSE4.1/4.2; kvm64 bootloops
@@ -119,10 +119,8 @@ source "proxmox-iso" "windows-server-2025" {
   disks {
     # Build at 100G for installer/servicing headroom, then shrink to 32G for
     # export (see `# final_disk_size: 32G` above + Finalize.ps1/shrink-disk.sh).
-    # The large disk aims to land Setup above its CompactOS threshold (64G did
-    # NOT dodge it — MOSETUP compact-applied at 64G per setupact.log) and to give
-    # servicing/WU room; it is purely temporary working space, truncated back to
-    # final_disk_size before export.
+    # Disk size does not solve the CompactOS issue (64G still compact-applied).
+    # This is servicing/WU working space only and is truncated before export.
     disk_size    = "100G"
     format       = "qcow2"
     storage_pool = var.proxmox_storage_pool

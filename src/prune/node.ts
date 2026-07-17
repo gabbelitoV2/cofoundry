@@ -165,8 +165,8 @@ export const runPrune = async (
     report('Packer download cache', downloadedIsos, dryRun)
 
     // 3. Stale vzdump archives in the dump dir older than --days.
-    // Catches both build-VMID-prefixed dumps (91xx/92xx) and any vzdump-qemu-*
-    // that failed to move to the artifact dir.
+    // Match every VMID because installer builds use slot-derived IDs. Any dump
+    // that failed to move to the artifact directory is eligible by age.
     log.step(`stale vzdump archives in ${paths.dump} older than ${days} day(s)`)
     const oldDumps = lines(
         await ssh(

@@ -59,7 +59,7 @@ disks = ${q(val('CF_STORAGE', fromEnv, 'local'))}
 isos  = ${q(val('CF_ISO_STORAGE', fromEnv, 'local'))}
 
 [network]
-bridge       = ${q(val('CF_BRIDGE', fromEnv, 'vmbr0'))}   # cloud-image builds
+bridge       = ${q(val('CF_BRIDGE', fromEnv, 'vmbr0'))}   # direct-network builds
 build_bridge = ${q(val('CF_BUILD_BRIDGE', fromEnv, 'vmbr1'))}   # ISO-installer + Windows NAT bridge
 build_dns    = ${q(val('CF_BUILD_DNS', fromEnv, '1.1.1.1'))}
 

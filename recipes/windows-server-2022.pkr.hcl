@@ -115,8 +115,8 @@ source "proxmox-iso" "windows-server-2022" {
   }
 
   disks {
-    # Build at 100G for installer/servicing headroom (and to try to land Setup
-    # above its CompactOS threshold), then shrink to final_disk_size for export
+    # Build at 100G for installer/servicing headroom, then shrink to
+    # final_disk_size for export
     # (see `# final_disk_size:` above + Finalize.ps1/shrink-disk.sh). The large
     # disk is purely temporary working space, truncated back before export.
     disk_size    = "100G"

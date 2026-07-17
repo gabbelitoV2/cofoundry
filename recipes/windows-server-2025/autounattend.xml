@@ -79,7 +79,8 @@
                with "phase 71"/DISM 0x80071160. <Compact>false> is the only value
                that reaches specialize and can complete. It does intermittently
                corrupt the component store there ("computer restarted
-               unexpectedly"); cf retries ride that out. See docs handoff. -->
+               unexpectedly"); cf retries ride that out. See
+               docs/windows.md. -->
           <Compact>false</Compact>
           <InstallFrom>
             <MetaData wcm:action="add">

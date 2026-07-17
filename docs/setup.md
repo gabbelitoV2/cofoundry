@@ -59,7 +59,8 @@ apt-get update && apt-get install -y packer
 
 > Skip if you're not uploading artifacts to R2 / S3.
 
-The vzdump post-processor runs `CF_UPLOAD_CMD` on the node, so the `aws` binary must exist there:
+The vzdump post-processor runs the upload command derived from `[upload]` on
+the node, so the `aws` binary must exist there:
 
 ```sh
 apt-get install -y awscli
@@ -260,14 +261,19 @@ GitHub rulesets cannot allow bypass for only specific paths, so this app can
 bypass the branch ruleset for the whole branch. The workflows still stage only
 `registry.json` or `upstream-checksums.json` before pushing.
 
-### 4. Set repo secrets and variables
+### 4. Commit `cofoundry.toml`, then set repo secrets
 
-Go to **Settings → Secrets and variables → Actions**. Secrets hide values
-(use for credentials); Variables show values in the UI (use for resource
-names). The workflow reads each non-credential field from `vars.X` and
-falls back to `secrets.X`, so anything listed under **Variables** below
-can also be set as a Secret if you'd rather keep it hidden (e.g.
-`SSH_TARGET`, `PVE_HOST`) — set it in one place, not both.
+Non-secret deployment config (ports, storage, bridges, upload layout) lives in
+the committed **`cofoundry.toml`** — CI checks it out and reads it directly, so
+it is **not** duplicated into repo Variables. Sensitive coordinates in that file
+use `${VAR}` and are supplied from the environment below.
+
+Commit a `cofoundry.toml` (see [Part 3](#part-3--local-development-optional) or
+run `cf init`). Its `[upload]` block controls the R2 layout — `layout = "grouped"`
+produces `templates/{{group}}/{{recipe}}-{{arch}}/{{sha256}}.vma.zst`; see
+[Usage → CDN upload](usage.md#cdn-upload).
+
+Then go to **Settings → Secrets and variables → Actions**.
 
 **Secrets** (Secrets tab):
 
@@ -281,66 +287,32 @@ can also be set as a Secret if you'd rather keep it hidden (e.g.
 | `REGISTRY_APP_ID`          | App ID for the `cofoundry-registry-writer` GitHub App                |
 | `REGISTRY_APP_PRIVATE_KEY` | Private key generated for the `cofoundry-registry-writer` GitHub App |
 
-**Variables** (Variables tab):
+**Coordinates referenced by `${VAR}` in `cofoundry.toml`.** Set each as a repo
+**Variable** (visible/reviewable) or a **Secret** if you'd rather hide it — the
+workflow reads `vars.X || secrets.X`, so set it in one place, not both:
 
-| Variable             | Value                                                                                                                |
-| -------------------- | -------------------------------------------------------------------------------------------------------------------- |
-| `PVE_HOST`           | Proxmox hostname or IP (or tailnet IP)                                                                               |
-| `PVE_NODE`           | Proxmox node name (shown in the web UI sidebar)                                                                      |
-| `PVE_TOKEN_ID`       | `root@pam!cofoundry`                                                                                                 |
-| `SSH_TARGET`         | e.g. `root@pve.example.com` or `root@<tailnet-IP>`                                                                   |
-| `PVE_PORT`           | Proxmox API port. Default: `8006`.                                                                                   |
-| `PVE_DUMP_DIR`       | Path on the node where vzdump writes archives. Default: `/var/lib/vz/dump`.                                          |
-| `CF_STORAGE`         | Proxmox storage pool for VM disks (run `pvesm status` to list). Default: `local`.                                    |
-| `CF_ISO_STORAGE`     | Proxmox storage pool for ISOs. Default: `local`.                                                                     |
-| `CF_BRIDGE`          | Bridge for cloud-image builds (e.g. `vmbr0`). ISO-installer builds use the NAT bridge from Part 1 step 5 regardless. |
-| `TS_OAUTH_CLIENT_ID` | Tailscale OAuth client ID (only if using Tailscale)                                                                  |
-| `TS_TAG`             | Tailscale tag the OAuth client is scoped to. Default: `tag:ci`.                                                      |
-| `R2_ENDPOINT`        | `https://<R2_ACCOUNT_ID>.r2.cloudflarestorage.com`                                                                   |
-| `R2_BUCKET`          | R2 bucket name, e.g. `cofoundry-templates`                                                                           |
-| `CF_PUBLIC_URL_TMPL` | Full public URL template, e.g. `https://templates.example.com/templates/{{name}}-{{arch}}/{{sha256}}.vma.zst`        |
+| Name           | Value                                              |
+| -------------- | -------------------------------------------------- |
+| `PVE_HOST`     | Proxmox hostname or IP (or tailnet IP)             |
+| `SSH_TARGET`   | e.g. `root@pve.example.com` or `root@<tailnet-IP>` |
+| `PVE_NODE`     | Proxmox node name (shown in the web UI sidebar)    |
+| `PVE_TOKEN_ID` | `root@pam!cofoundry`                               |
+| `R2_ENDPOINT`  | `https://<R2_ACCOUNT_ID>.r2.cloudflarestorage.com` |
+| `R2_BUCKET`    | R2 bucket name, e.g. `cofoundry-templates`         |
 
-> **Default upload layout (CI).** The workflow auto-builds the upload commands from the R2 secrets above, producing:
->
-> ```
-> s3://<R2_BUCKET>/templates/<recipe>-<arch>/<sha256>.vma.zst   (artifact)
-> s3://<R2_BUCKET>/templates/<recipe>-<arch>/<sha256>.json      (sidecar)
-> ```
->
-> The public URL is fully user-defined — set `CF_PUBLIC_URL_TMPL` as a repo
-> variable (required; no default). For the default layout that's
-> `<your-cdn>/templates/{{name}}-{{arch}}/{{sha256}}.vma.zst`.
->
-> **Custom layout.** Override the upload commands by setting matching repo
-> **variables** (Settings → Variables → Actions, _not_ Secrets):
->
-> | Variable                | Purpose                                        |
-> | ----------------------- | ---------------------------------------------- |
-> | `CF_UPLOAD_CMD`         | Shell command that uploads the artifact.       |
-> | `CF_SIDECAR_UPLOAD_CMD` | Shell command that uploads the sidecar JSON.   |
-> | `CF_PUBLIC_URL_TMPL`    | Public URL recorded in the sidecar + registry. |
->
-> Placeholders (substituted into all three strings):
->
-> | Placeholder    | Meaning                                                                                                     |
-> | -------------- | ----------------------------------------------------------------------------------------------------------- |
-> | `{{file}}`     | Local path on the PVE node to the artifact (`.vma.zst`) or sidecar (`.json`) being uploaded.                |
-> | `{{name}}`     | Bare recipe name, e.g. `almalinux-10`.                                                                      |
-> | `{{arch}}`     | Build architecture, e.g. `amd64`.                                                                           |
-> | `{{sha256}}`   | SHA-256 of the `.vma.zst` (also used for content-addressing).                                               |
-> | `{{group}}`    | OS group declared in the recipe, e.g. `almalinux`, `debian`, `windows`.                                     |
-> | `{{filename}}` | Content-addressed upload basename, e.g. `almalinux-10-amd64-<sha256>.vma.zst` (or `.json` for the sidecar). |
->
-> Path-layout note: `cf prune --r2` recognizes either `templates/{{name}}-{{arch}}/{{sha256}}.…` (flat — CI default) or `templates/{{group}}/{{name}}-{{arch}}/{{sha256}}.…` (OS-grouped). A flat `templates/{{filename}}` layout uploads fine but **won't prune correctly**.
->
-> **The three variables are independent.** The post-processor substitutes
-> placeholders into each one separately — it does _not_ derive the public URL
-> from the upload command (or vice versa). If you change the path layout in
-> `CF_UPLOAD_CMD`, you must update `CF_SIDECAR_UPLOAD_CMD` and
-> `CF_PUBLIC_URL_TMPL` to match; otherwise the sidecar's `url` field will
-> point at a 404 and `cf publish --r2` (which walks `templates/` in the
-> bucket) won't find anything to publish. Local runs read these from `.env`
-> (see `docs/usage.md`).
+> These are only the fields your `cofoundry.toml` writes as `${VAR}`. If you
+> inline any of them as a literal in `cofoundry.toml` instead, drop it here.
+
+**Tailscale** (only if using Tailscale — Variables tab):
+
+| Variable             | Value                                                          |
+| -------------------- | -------------------------------------------------------------- |
+| `TS_OAUTH_CLIENT_ID` | Tailscale OAuth client ID                                      |
+| `TS_TAG`             | Tag the OAuth client is scoped to. Default if unset: `tag:ci`. |
+
+Everything else — `PVE_PORT`, `PVE_DUMP_DIR`, `CF_STORAGE`, `CF_ISO_STORAGE`,
+`CF_BRIDGE`, and the entire upload layout — now comes from `cofoundry.toml`. Run
+`cf config` locally to see exactly what resolves and from where.
 
 ---
 
@@ -352,10 +324,12 @@ In the Cloudflare dashboard: **R2 → Create bucket**, name it (e.g. `cofoundry-
 
 ### 2. Bind a custom domain
 
-**R2 → Bucket → Settings → Custom Domains → Connect Domain.** Use a subdomain you control, e.g. `templates.example.com`. Plug that host into your `CF_PUBLIC_URL_TMPL` repo variable. Final artifact URLs look like:
+**R2 → Bucket → Settings → Custom Domains → Connect Domain.** Use a subdomain
+you control, e.g. `templates.example.com`, and set it as `[upload].public_url`
+in `cofoundry.toml`. With the grouped layout, final artifact URLs look like:
 
 ```
-https://templates.example.com/templates/<name>-<arch>/<sha256>.vma.zst
+https://templates.example.com/templates/<group>/<recipe>-<arch>/<sha256>.vma.zst
 https://templates.example.com/registry.json
 ```
 
@@ -398,26 +372,40 @@ ssh-copy-id root@<pve-host>
 ssh root@<pve-host> hostname   # verify: no password prompt
 ```
 
-### 4. Configure `.env`
+### 4. Configure
+
+Configuration splits into two files:
+
+- **`cofoundry.toml`** (committed) — non-secret deployment facts: node
+  coordinates, storage pools, bridges, upload layout. This is the single source
+  of truth shared by your laptop and CI.
+- **`.env`** (gitignored) — secrets (`PVE_TOKEN_SECRET`, R2 keys) plus any
+  coordinate the committed `cofoundry.toml` sources via `${VAR}`.
+
+If the repo already ships a `cofoundry.toml`, just supply the secrets:
 
 ```sh
-cp .env.example .env
+cp .env.example .env      # then fill in PVE_TOKEN_SECRET etc.
 ```
 
-Fill in at minimum:
+Starting fresh? Scaffold the config file:
 
-| Variable           | Value                           |
-| ------------------ | ------------------------------- |
-| `PVE_HOST`         | Proxmox hostname or IP          |
-| `PVE_NODE`         | Proxmox node name               |
-| `PVE_TOKEN_ID`     | `root@pam!cofoundry`            |
-| `PVE_TOKEN_SECRET` | Token secret from Part 1 step 1 |
-| `SSH_TARGET`       | e.g. `root@pve.example.com`     |
+```sh
+cf init            # writes a commented cofoundry.toml template
+cf init --from-env # or fill it from an existing .env
+```
+
+Non-secret per-machine overrides go in **`cofoundry.local.toml`** (gitignored),
+which layers on top of `cofoundry.toml`. Resolution order (highest wins):
+
+```
+CLI flag  >  env / .env  >  ${VAR}  >  cofoundry.local.toml  >  cofoundry.toml  >  default
+```
 
 ### 5. Verify
 
 ```sh
-cf list
+cf config    # show every resolved value and where it came from
+cf doctor    # preflight: SSH, PVE API auth, R2 credentials
+cf list      # should print all available recipes
 ```
-
-You should see all available recipes.

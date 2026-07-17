@@ -10,6 +10,8 @@ import { resolveIsoUpdate, applyIsoUpdate } from './update.ts'
 import { buildManifest, buildManifestFromR2 } from './manifest.ts'
 import { runUpload } from './upload.ts'
 import { type Env, loadEnv } from './env.ts'
+import { applyConfigToEnv, type ResolvedValue } from './config-file.ts'
+import { runInit, runDoctor } from './config-init.ts'
 import { log } from './log.ts'
 import { redactSensitive } from './util.ts'
 import pc from 'picocolors'
@@ -28,7 +30,7 @@ type BuildCommandOptions = {
 }
 
 const shouldSyncBack = (env: Env, opts: BuildCommandOptions): boolean =>
-    !opts.skipArtifactSync && !env.CF_SKIP_SYNC_BACK
+    !opts.skipArtifactSync && !env.CF_SKIP_ARTIFACT_SYNC
 
 const parseNum = (s?: string): number | undefined =>
     s !== undefined ? parseInt(s, 10) : undefined
@@ -90,6 +92,100 @@ program
         log.blank()
     })
 
+// Secrets are env-only and never printed — only their presence is reported.
+const SECRET_KEYS = [
+    'PVE_TOKEN_SECRET',
+    'AWS_ACCESS_KEY_ID',
+    'AWS_SECRET_ACCESS_KEY',
+    'AWS_SESSION_TOKEN',
+] as const
+
+const SOURCE_COLOR: Record<ResolvedValue['source'], (s: string) => string> = {
+    env: pc.green,
+    local: pc.yellow,
+    toml: pc.cyan,
+    derived: pc.magenta,
+    default: pc.dim,
+    unset: pc.dim,
+}
+
+program
+    .command('config')
+    .description(
+        'Show the resolved configuration and where each value comes from'
+    )
+    .option('--json', 'Output as JSON')
+    .action((opts: { json?: boolean }) => {
+        const secrets = SECRET_KEYS.map(key => ({
+            key,
+            set: Boolean(process.env[key]),
+        }))
+        if (opts.json) {
+            const redactValue = (r: ResolvedValue) => ({
+                ...r,
+                value:
+                    r.value === undefined
+                        ? undefined
+                        : redactSensitive(r.value),
+            })
+            console.log(
+                JSON.stringify(
+                    { config: configResolution.map(redactValue), secrets },
+                    null,
+                    2
+                )
+            )
+            return
+        }
+        if (configResolution.length === 0) {
+            log.warn(
+                `No ${pc.cyan('cofoundry.toml')} found — using env vars and defaults only.`
+            )
+            log.note(`Run ${pc.cyan('cf init')} to scaffold one.`)
+            log.blank()
+        }
+        log.section('Resolved config')
+        const rows = configResolution
+        const w = Math.max(...rows.map(r => r.key.length), 12)
+        for (const r of rows) {
+            const val =
+                r.value === undefined
+                    ? pc.dim('(unset)')
+                    : redactSensitive(r.value)
+            const detail = r.detail ? pc.dim(`  ← ${r.detail}`) : ''
+            log.raw(
+                `  ${pc.bold(r.key.padEnd(w))}  ${val}  ${SOURCE_COLOR[r.source](`[${r.source}]`)}${detail}`
+            )
+        }
+        log.blank()
+        log.section('Secrets (env-only)')
+        for (const s of secrets) {
+            log.raw(
+                `  ${pc.bold(s.key.padEnd(w))}  ${s.set ? pc.green('set') : pc.dim('unset')}`
+            )
+        }
+        log.blank()
+    })
+
+program
+    .command('init')
+    .description(`Scaffold a ${'cofoundry.toml'} config file`)
+    .option(
+        '--from-env',
+        'Fill non-sensitive values from the current environment'
+    )
+    .option('--force', 'Overwrite an existing cofoundry.toml')
+    .action((opts: { fromEnv?: boolean; force?: boolean }) => {
+        runInit(opts)
+    })
+
+program
+    .command('doctor')
+    .description('Preflight connectivity checks (SSH, PVE API, R2)')
+    .action(async () => {
+        await runDoctor()
+    })
+
 program
     .command('build [names...]')
     .description(
@@ -97,7 +193,7 @@ program
     )
     .option(
         '--skip-artifact-sync',
-        'Do not download built artifacts to CF_OUT_DIR'
+        'Do not download built artifacts to CF_OUT_DIR (also: CF_SKIP_ARTIFACT_SYNC=1)'
     )
     .option(
         '--skip-repo-sync',
@@ -134,38 +230,6 @@ program
     .action((names: string[], opts: BuildCommandOptions) =>
         buildAction(names, opts)
     )
-
-program
-    .command('build-all')
-    .description(
-        'Alias for `cf build` with no names — build every recipe in the repo'
-    )
-    .option(
-        '--skip-artifact-sync',
-        'Do not download built artifacts to CF_OUT_DIR'
-    )
-    .option(
-        '--upload-concurrency <n>',
-        'Parallel SFTP connections for repo upload (overrides CF_UPLOAD_CONCURRENCY)'
-    )
-    .option(
-        '--download-concurrency <n>',
-        'Parallel SFTP connections for artifact download (overrides CF_DOWNLOAD_CONCURRENCY)'
-    )
-    .option(
-        '--prefetch-concurrency <n>',
-        'Parallel ISO/asset prefetches on the remote node (default 3)'
-    )
-    .option('--ci', 'Force line-oriented output for non-TTY environments')
-    .option(
-        '-v, --verbose',
-        'Stream full logs (no truncation, no overwriting) for debugging'
-    )
-    .option(
-        '--output-lines <n>',
-        'Number of recent log lines to show under each task (default 1)'
-    )
-    .action((opts: BuildCommandOptions) => buildAction([], opts))
 
 program
     .command('update [names...]')
@@ -412,6 +476,18 @@ program
             await buildManifest(sourceDir, opts.out)
         }
     )
+
+// Seed process.env from cofoundry.toml (+ .local overlay) before any command
+// runs. The resolution is captured pre-seed so `cf config` can report the true
+// source of each value (env vs file vs derived) instead of seeing everything
+// as already-in-env.
+let configResolution: ResolvedValue[] = []
+try {
+    configResolution = applyConfigToEnv()
+} catch (err) {
+    log.err(redactSensitive(err instanceof Error ? err.message : String(err)))
+    process.exit(1)
+}
 
 program.parseAsync(process.argv).catch(err => {
     log.err(redactSensitive(err instanceof Error ? err.message : String(err)))

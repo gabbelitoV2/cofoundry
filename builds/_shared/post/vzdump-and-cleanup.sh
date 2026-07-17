@@ -15,7 +15,8 @@
 #   CF_BUILT_VMID / CF_RECIPE_NAME / CF_RECIPE_DISPLAY
 #
 # Optional: CF_UPLOAD_CMD, CF_PUBLIC_URL_TMPL, CF_KEEP_VM
-#   CF_UPLOAD_CMD / CF_PUBLIC_URL_TMPL support {{file}}, {{name}}, {{arch}}, {{sha256}}, {{group}}, {{filename}}.
+#   Generated templates use {{recipe}}, {{arch}}, {{sha256}}, and {{group}}.
+#   Raw overrides also support {{file}} plus legacy {{name}} / {{filename}}.
 
 set -euo pipefail
 
@@ -112,7 +113,8 @@ UPLOAD_FILENAME="${CF_RECIPE_NAME}-${CF_ARCH}-${SHA256}.vma.zst"
 
 PUBLIC_URL=""
 if [ -n "${CF_PUBLIC_URL_TMPL:-}" ]; then
-  PUBLIC_URL="${CF_PUBLIC_URL_TMPL//\{\{name\}\}/$CF_RECIPE_NAME}"
+  PUBLIC_URL="${CF_PUBLIC_URL_TMPL//\{\{recipe\}\}/$CF_RECIPE_NAME}"
+  PUBLIC_URL="${PUBLIC_URL//\{\{name\}\}/$CF_RECIPE_NAME}"
   PUBLIC_URL="${PUBLIC_URL//\{\{arch\}\}/$CF_ARCH}"
   PUBLIC_URL="${PUBLIC_URL//\{\{sha256\}\}/$SHA256}"
   PUBLIC_URL="${PUBLIC_URL//\{\{group\}\}/$CF_GROUP}"
@@ -122,6 +124,7 @@ fi
 if [ -n "${CF_UPLOAD_CMD:-}" ]; then
   echo "==> uploading"
   CMD="${CF_UPLOAD_CMD//\{\{file\}\}/$LOCAL_FILE}"
+  CMD="${CMD//\{\{recipe\}\}/$CF_RECIPE_NAME}"
   CMD="${CMD//\{\{name\}\}/$CF_RECIPE_NAME}"
   CMD="${CMD//\{\{arch\}\}/$CF_ARCH}"
   CMD="${CMD//\{\{sha256\}\}/$SHA256}"
@@ -152,6 +155,7 @@ mv "$SIDECAR.tmp" "$SIDECAR"
 if [ -n "${CF_SIDECAR_UPLOAD_CMD:-}" ]; then
   echo "==> uploading sidecar"
   SCMD="${CF_SIDECAR_UPLOAD_CMD//\{\{file\}\}/$SIDECAR}"
+  SCMD="${SCMD//\{\{recipe\}\}/$CF_RECIPE_NAME}"
   SCMD="${SCMD//\{\{name\}\}/$CF_RECIPE_NAME}"
   SCMD="${SCMD//\{\{arch\}\}/$CF_ARCH}"
   SCMD="${SCMD//\{\{sha256\}\}/$SHA256}"

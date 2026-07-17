@@ -1,21 +1,81 @@
 import { readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { parse as parseToml } from 'smol-toml'
+import { z } from 'zod'
 
 const DEFAULT_REGISTRY = 'https://cofoundry.cdn.convoypanel.com/registry.json'
 
-interface CoportConfig {
-    registry?: string
-    storage?: string
+const CoportConfigSchema = z.object({
+    registry: z.string().optional(),
+    storage: z.string().optional(),
+})
+type CoportConfig = z.infer<typeof CoportConfigSchema>
+
+// Same config conventions as `cf`: TOML preferred, ${VAR} interpolation.
+// The legacy JSON path is still read for back-compat.
+const CONFIG_PATHS = [
+    join(homedir(), '.config', 'coport', 'config.toml'),
+    join(homedir(), '.coport', 'config.json'),
+]
+
+const interpolate = (
+    value: string | undefined,
+    field: string
+): string | undefined => {
+    if (value === undefined) return undefined
+    const missing = new Set<string>()
+    const resolved = value.replace(
+        /\$\{([A-Z_][A-Z0-9_]*)\}/g,
+        (_, name: string) => {
+            const replacement = process.env[name]
+            if (!replacement) missing.add(name)
+            return replacement ?? ''
+        }
+    )
+    if (missing.size > 0) {
+        throw new Error(
+            `Unresolved environment variable${missing.size === 1 ? '' : 's'} in coport ${field}: ${[...missing].join(', ')}`
+        )
+    }
+    return resolved
 }
 
-const readConfigFile = async (): Promise<CoportConfig> => {
-    const path = join(homedir(), '.coport', 'config.json')
-    try {
-        return JSON.parse(await readFile(path, 'utf8')) as CoportConfig
-    } catch {
-        return {}
+interface LoadedConfig extends CoportConfig {
+    /** Which file the config was read from, for `coport --config`. */
+    path?: string
+}
+
+export const loadFileConfig = async (
+    paths: readonly string[] = CONFIG_PATHS
+): Promise<LoadedConfig> => readConfigFile(paths)
+
+const readConfigFile = async (
+    paths: readonly string[] = CONFIG_PATHS
+): Promise<LoadedConfig> => {
+    for (const path of paths) {
+        let raw: string
+        try {
+            raw = await readFile(path, 'utf8')
+        } catch {
+            continue // try the next candidate
+        }
+        let parsed: CoportConfig
+        try {
+            parsed = CoportConfigSchema.parse(
+                path.endsWith('.toml') ? parseToml(raw) : JSON.parse(raw)
+            )
+        } catch (err) {
+            const message = err instanceof Error ? err.message : String(err)
+            throw new Error(`Failed to parse ${path}: ${message}`)
+        }
+        return {
+            registry: interpolate(parsed.registry, 'registry'),
+            storage: interpolate(parsed.storage, 'storage'),
+            path,
+        }
     }
+    return {}
 }
 
 // Where the registry document comes from. The two no-file modes are distinct:
@@ -60,27 +120,56 @@ export const describeSource = (source: RegistrySource): string => {
     }
 }
 
+export type RegistryOrigin = 'argument' | 'env' | 'stdin' | 'file' | 'default'
+
 export interface ResolvedConfig {
     source: RegistrySource
     defaultStorage?: string
+    /** Where the registry setting came from (for `coport --config`). */
+    origin: RegistryOrigin
+    /** Config file the storage/registry defaults were read from, if any. */
+    configPath?: string
+}
+
+interface ResolveOptions {
+    configPaths?: readonly string[]
+    stdinIsTTY?: boolean
 }
 
 export const resolveConfig = async (
-    cliArg?: string
+    cliArg?: string,
+    options: ResolveOptions = {}
 ): Promise<ResolvedConfig> => {
+    const fileConfig = await readConfigFile(options.configPaths)
+    const fileDefaults = {
+        defaultStorage: fileConfig.storage,
+        configPath: fileConfig.path,
+    }
     if (cliArg) {
-        return { source: classifySource(cliArg) }
+        return {
+            source: classifySource(cliArg),
+            origin: 'argument',
+            ...fileDefaults,
+        }
     }
     if (process.env.COPORT_REGISTRY) {
-        return { source: classifySource(process.env.COPORT_REGISTRY) }
+        return {
+            source: classifySource(process.env.COPORT_REGISTRY),
+            origin: 'env',
+            ...fileDefaults,
+        }
     }
     // No explicit registry: a non-TTY stdin means the document is being piped in.
-    if (!process.stdin.isTTY) {
-        return { source: { kind: RegistryKind.Stdin } }
+    if (!(options.stdinIsTTY ?? process.stdin.isTTY)) {
+        return {
+            source: { kind: RegistryKind.Stdin },
+            origin: 'stdin',
+            ...fileDefaults,
+        }
     }
-    const fileConfig = await readConfigFile()
     return {
         source: classifySource(fileConfig.registry ?? DEFAULT_REGISTRY),
-        defaultStorage: fileConfig.storage,
+        origin: fileConfig.registry ? 'file' : 'default',
+        ...fileDefaults,
     }
 }

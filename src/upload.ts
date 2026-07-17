@@ -253,10 +253,12 @@ export const runUpload = async (
             : sidecar.name
         const vars = {
             file: src.pathOf(artifactFile),
-            name: recipeName,
+            recipe: recipeName, // clear name, e.g. "almalinux-10"
             arch: sidecar.arch,
             sha256: sidecar.sha256,
             group: sidecar.group,
+            // Back-compat aliases for hand-written command overrides.
+            name: recipeName,
             filename: `${baseName}-${sidecar.sha256}.vma.zst`,
         }
         const cmd = renderTemplate(env.CF_UPLOAD_CMD, vars)

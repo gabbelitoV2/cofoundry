@@ -25,27 +25,22 @@ jobs:
       cancel-in-progress: false
     permissions:
       contents: write
-    # Job-level env so every step inherits. Sensitive values come from
-    # secrets; resource names and network coords come from repo variables
-    # (visible in the UI, reviewable). `vars.X || secrets.X` keeps
-    # back-compat for anyone who originally set them as secrets.
+    # Non-secret deployment config (ports, storage, bridges, upload layout)
+    # lives in the committed cofoundry.toml — it's checked out below and read by
+    # every `cf` command. CI only supplies the secrets plus the coordinates that
+    # cofoundry.toml references via ${VAR}. `vars.X || secrets.X` lets you keep
+    # any coordinate hidden as a Secret instead of a Variable.
     env:
-      # ── credentials (secrets only) ──
+      # ── secrets (env only) ──
       PVE_TOKEN_SECRET: ${{ secrets.PVE_TOKEN_SECRET }}
       AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
       AWS_DEFAULT_REGION: auto
-      # ── Proxmox resource names / network coords (vars, with secret fallback) ──
+      # ── coordinates referenced by ${VAR} in cofoundry.toml ──
       PVE_HOST: ${{ vars.PVE_HOST || secrets.PVE_HOST }}
-      PVE_PORT: ${{ vars.PVE_PORT || secrets.PVE_PORT }}
+      SSH_TARGET: ${{ vars.SSH_TARGET || secrets.SSH_TARGET }}
       PVE_NODE: ${{ vars.PVE_NODE || secrets.PVE_NODE }}
       PVE_TOKEN_ID: ${{ vars.PVE_TOKEN_ID || secrets.PVE_TOKEN_ID }}
-      SSH_TARGET: ${{ vars.SSH_TARGET || secrets.SSH_TARGET }}
-      PVE_DUMP_DIR: ${{ vars.PVE_DUMP_DIR || secrets.PVE_DUMP_DIR }}
-      CF_STORAGE: ${{ vars.CF_STORAGE || secrets.CF_STORAGE }}
-      CF_ISO_STORAGE: ${{ vars.CF_ISO_STORAGE || secrets.CF_ISO_STORAGE }}
-      CF_BRIDGE: ${{ vars.CF_BRIDGE || secrets.CF_BRIDGE }}
-      # ── R2 endpoint + bucket (vars, with secret fallback) ──
       R2_ENDPOINT: ${{ vars.R2_ENDPOINT || secrets.R2_ENDPOINT }}
       R2_BUCKET: ${{ vars.R2_BUCKET || secrets.R2_BUCKET }}
     steps:
@@ -96,22 +91,16 @@ jobs:
       # WinRM password (Windows), patches recipe files, and writes a vars file.
       # packer init + packer build are invoked by `cf build`.
       #
-      # CF_UPLOAD_CMD pushes the artifact to R2 at a content-addressed path,
-      # so each build is immutable and rollback is "revert registry.json".
+      # The upload command, sidecar command, and public URL are derived from the
+      # [upload] block in the committed cofoundry.toml (layout = "grouped"), so
+      # each build lands at a content-addressed path and rollback is "revert
+      # registry.json". No upload strings to maintain here.
       - name: Build template
         run: bun run cf build ${{ inputs.recipe }} --ci --verbose
         env:
           # Artifacts upload directly to R2 from the PVE node; never sync the
           # multi-GB .vma.zst back to the runner.
-          CF_SKIP_SYNC_BACK: '1'
-          # Override the upload commands via repo variables (Settings →
-          # Variables → Actions): CF_UPLOAD_CMD, CF_SIDECAR_UPLOAD_CMD. Unset →
-          # content-addressed defaults under templates/<name>-<arch>/<sha256>.
-          # CF_PUBLIC_URL_TMPL is required (no default) — set it as a repo var.
-          # Placeholders: {{file}} {{name}} {{arch}} {{sha256}} {{group}} {{filename}}.
-          CF_UPLOAD_CMD: ${{ vars.CF_UPLOAD_CMD || format('aws --endpoint-url {0} s3 cp {1} s3://{2}/templates/{3}-{4}/{5}.vma.zst', secrets.R2_ENDPOINT, '{{file}}', secrets.R2_BUCKET, '{{name}}', '{{arch}}', '{{sha256}}') }}
-          CF_SIDECAR_UPLOAD_CMD: ${{ vars.CF_SIDECAR_UPLOAD_CMD || format('aws --endpoint-url {0} s3 cp {1} s3://{2}/templates/{3}-{4}/{5}.json', secrets.R2_ENDPOINT, '{{file}}', secrets.R2_BUCKET, '{{name}}', '{{arch}}', '{{sha256}}') }}
-          CF_PUBLIC_URL_TMPL: ${{ vars.CF_PUBLIC_URL_TMPL }}
+          CF_SKIP_ARTIFACT_SYNC: '1'
 
       # ── Smoke-test artifact ────────────────────────────────────────────────
       # Restores the just-built archive to a scratch VMID on the PVE node,

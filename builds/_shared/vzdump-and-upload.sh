@@ -15,10 +15,10 @@
 #   CF_BUILT_VMID        VMID of the temporary artifact source VM
 #
 # Optional:
-#   CF_UPLOAD_CMD        shell command with {{file}} and {{name}} placeholders.
-#                        Example: 'aws s3 cp {{file}} s3://mybucket/templates/{{name}}.vma.zst'
-#   CF_PUBLIC_URL_TMPL   URL template with {{name}} placeholder, recorded in the sidecar.
-#                        Example: 'https://images.cdn.example.com/templates/{{name}}.vma.zst'
+#   CF_UPLOAD_CMD        shell command with {{file}} and {{recipe}} placeholders
+#                        (legacy alias: {{name}}).
+#   CF_PUBLIC_URL_TMPL   URL template with {{recipe}} placeholder, recorded in
+#                        the sidecar (legacy alias: {{name}}).
 #   CF_KEEP_VM           if set to 1, leave the temporary VM on Proxmox.
 
 set -euo pipefail
@@ -73,12 +73,14 @@ SIZE=$(wc -c <"$LOCAL_FILE" | tr -d ' ')
 
 PUBLIC_URL=""
 if [ -n "${CF_PUBLIC_URL_TMPL:-}" ]; then
-  PUBLIC_URL="${CF_PUBLIC_URL_TMPL//\{\{name\}\}/$CF_RECIPE_NAME}"
+  PUBLIC_URL="${CF_PUBLIC_URL_TMPL//\{\{recipe\}\}/$CF_RECIPE_NAME}"
+  PUBLIC_URL="${PUBLIC_URL//\{\{name\}\}/$CF_RECIPE_NAME}"
 fi
 
 if [ -n "${CF_UPLOAD_CMD:-}" ]; then
   echo "==> uploading to CDN"
   CMD="${CF_UPLOAD_CMD//\{\{file\}\}/$LOCAL_FILE}"
+  CMD="${CMD//\{\{recipe\}\}/$CF_RECIPE_NAME}"
   CMD="${CMD//\{\{name\}\}/$CF_RECIPE_NAME}"
   bash -c "$CMD"
 fi

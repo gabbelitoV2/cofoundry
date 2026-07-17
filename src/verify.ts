@@ -84,7 +84,7 @@ export const runVerify = async (
     const remoteTmp = `${env.PVE_DUMP_DIR}/cofoundry-verify-${process.pid}`
 
     // Prefer the artifact already on the PVE node from the build step
-    // (CI sets CF_SKIP_SYNC_BACK=1, so it never lands locally). Fall back to
+    // (CI sets CF_SKIP_ARTIFACT_SYNC=1, so it never lands locally). Fall back to
     // uploading the local file when running outside CI.
     const remoteHasBuildArtifact = await sshOk(
         env.SSH_TARGET,

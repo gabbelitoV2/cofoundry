@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-07-17
+
+### Added
+
+- Read consumer defaults from `~/.config/coport/config.toml`, including
+  `${VAR}` interpolation, while retaining `~/.coport/config.json` support for
+  existing installations.
+- Add `coport --config` to show the resolved registry, storage, source, and
+  config file without starting an installation.
+
+### Fixed
+
+- Continue using the storage default from the config file when the registry is
+  supplied as a command-line argument, environment variable, or stdin stream.
+- Report malformed config and unresolved `${VAR}` references explicitly instead
+  of silently treating them as empty settings.
+
 ## [1.3.0] - 2026-06-28
 
 ### Added
@@ -89,7 +106,8 @@ Initial coport release.
 - Reduce progress log spam in non-TTY sessions.
 - Clarify VMID reassignment prompts so free fallback VMIDs are not presented as conflicts.
 
-[unreleased]: https://github.com/ConvoyPanel/cofoundry/compare/v1.3.0...HEAD
+[unreleased]: https://github.com/ConvoyPanel/cofoundry/compare/v1.4.0...HEAD
+[1.4.0]: https://github.com/ConvoyPanel/cofoundry/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/ConvoyPanel/cofoundry/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/ConvoyPanel/cofoundry/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/ConvoyPanel/cofoundry/releases/tag/v1.1.0

@@ -23,7 +23,7 @@ const EnvSchema = z.object({
     PVE_DUMP_DIR: z.string().default('/var/lib/vz/dump'),
 
     CF_OUT_DIR: z.string().default('./dist'),
-    CF_SKIP_SYNC_BACK: z
+    CF_SKIP_ARTIFACT_SYNC: z
         .preprocess(v => v === '1' || v === 'true' || v === true, z.boolean())
         .default(false),
     // Bridge for cloud-image recipes (DHCP via guest agent).
@@ -50,7 +50,7 @@ const EnvSchema = z.object({
         .preprocess(v => v === '1' || v === 'true' || v === true, z.boolean())
         .default(false),
 
-    // Optional CDN integration. {{file}} and {{name}} placeholders.
+    // Optional CDN integration. Generated from [upload] in cofoundry.toml.
     CF_UPLOAD_CMD: z.string().optional(),
     CF_PUBLIC_URL_TMPL: z.string().optional(),
 })

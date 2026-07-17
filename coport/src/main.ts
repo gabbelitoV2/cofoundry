@@ -65,6 +65,10 @@ program
         process.env.COPORT_RESTORE_CONCURRENCY ?? '2'
     )
     .option('--verbose', 'Stream per-event logs instead of in-place TUI')
+    .option(
+        '--config',
+        'Print the resolved config (registry, storage) and exit'
+    )
     .action(async (registryArg: string | undefined, opts) => {
         const abort = new AbortController()
         let interrupted = false
@@ -77,6 +81,21 @@ program
             cleanupTempDirSync()
             process.exit(130)
         })
+
+        // `--config`: show where the registry + storage settings resolve from.
+        if (opts.config) {
+            // Introspection itself does not consume stdin. Ignore a non-TTY fd
+            // unless the user explicitly selects stdin with `-`.
+            const c = await resolveConfig(registryArg, { stdinIsTTY: true })
+            log.info(
+                `registry  ${dim(describeSource(c.source))}  [${c.origin}]`
+            )
+            log.info(
+                `storage   ${c.defaultStorage ? dim(c.defaultStorage) : dim('(prompted)')}`
+            )
+            log.info(`file      ${dim(c.configPath ?? '(none)')}`)
+            return
+        }
 
         // `-l/--list`: print installed templates and exit; no registry needed.
         if (opts.list) {

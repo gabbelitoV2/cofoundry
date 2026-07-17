@@ -195,15 +195,15 @@ Generate**):
 
 **c. Set repo secrets** (Settings → Secrets → Actions):
 
-| Secret | Value |
-|---|---|
-| `TS_OAUTH_CLIENT_ID` | OAuth client ID |
-| `TS_OAUTH_SECRET` | OAuth client secret |
+| Secret               | Value               |
+| -------------------- | ------------------- |
+| `TS_OAUTH_CLIENT_ID` | OAuth client ID     |
+| `TS_OAUTH_SECRET`    | OAuth client secret |
 
 If your tag isn't `tag:ci`, also set a repo **variable** (Settings → Variables → Actions):
 
-| Variable | Value |
-|---|---|
+| Variable | Value                                                                                |
+| -------- | ------------------------------------------------------------------------------------ |
 | `TS_TAG` | Tag the OAuth client is scoped to, e.g. `tag:cofoundry`. Default if unset: `tag:ci`. |
 
 The tag here must match (a) the tag in your `tagOwners` ACL block, (b) the tag your OAuth client is scoped to, and (c) the `src` of the SSH rule. A 403 "calling actor does not have enough permissions" from the `Connect to Tailscale` step means these are out of sync.
@@ -216,7 +216,7 @@ workflow skips the key-setup step and auth is brokered by the tailnet.
 > **Gotcha — Tailscale MagicDNS on the node breaks DNS in cloned VMs.**
 > When MagicDNS is accepted, Tailscale overwrites the node's
 > `/etc/resolv.conf` to point at `100.100.100.100` (the tailnet-only
-> resolver). Proxmox uses the node's resolver as the *default* DNS for any
+> resolver). Proxmox uses the node's resolver as the _default_ DNS for any
 > cloud-init VM that doesn't set its own nameserver — so a clone that isn't
 > on the tailnet inherits `100.100.100.100`, can't reach it, and fails to
 > resolve anything. (On Ubuntu the clone's `/etc/resolv.conf` shows
@@ -228,7 +228,39 @@ workflow skips the key-setup step and auth is brokered by the tailnet.
 > keeping the node off MagicDNS: `tailscale set --accept-dns=false` and set
 > a public node resolver (Datacenter → DNS, e.g. `1.1.1.1`).
 
-### 3. Set repo secrets and variables
+### 3. Create a registry-writer GitHub App
+
+The workflows update two generated files on `main`:
+
+- `registry.json` after a successful template build
+- `upstream-checksums.json` after the scheduled upstream check
+
+If `main` is protected by a branch ruleset, the default `GITHUB_TOKEN`
+cannot bypass it. Create a dedicated GitHub App and add that app to the
+ruleset bypass list instead.
+
+**Create the app** (GitHub account/org → **Settings → Developer settings → GitHub Apps → New GitHub App**):
+
+- Name: `cofoundry-registry-writer`
+- Webhook: disabled
+- Repository permissions: **Contents: Read and write**
+- Install it on this repository only
+
+After creating the app, copy its app ID and generate a private key. Add them
+as the `REGISTRY_APP_ID` and `REGISTRY_APP_PRIVATE_KEY` repo secrets in the
+next step.
+
+**Allow it through the branch ruleset** (repo → **Settings → Rules → Rulesets**):
+
+- Open the branch ruleset that protects `main`
+- Add a bypass entry for the `cofoundry-registry-writer` integration
+- Save the ruleset
+
+GitHub rulesets cannot allow bypass for only specific paths, so this app can
+bypass the branch ruleset for the whole branch. The workflows still stage only
+`registry.json` or `upstream-checksums.json` before pushing.
+
+### 4. Set repo secrets and variables
 
 Go to **Settings → Secrets and variables → Actions**. Secrets hide values
 (use for credentials); Variables show values in the UI (use for resource
@@ -239,32 +271,34 @@ can also be set as a Secret if you'd rather keep it hidden (e.g.
 
 **Secrets** (Secrets tab):
 
-| Secret | Value |
-|---|---|
-| `PVE_TOKEN_SECRET` | Token secret from Part 1 step 1 |
-| `SSH_PRIVATE_KEY` | Contents of `~/.ssh/cofoundry_ci`. Omit if using Tailscale SSH. |
-| `TS_OAUTH_SECRET` | Tailscale OAuth secret (only if using Tailscale) |
-| `R2_ACCESS_KEY_ID` | R2 API token access key |
-| `R2_SECRET_ACCESS_KEY` | R2 API token secret |
+| Secret                     | Value                                                                |
+| -------------------------- | -------------------------------------------------------------------- |
+| `PVE_TOKEN_SECRET`         | Token secret from Part 1 step 1                                      |
+| `SSH_PRIVATE_KEY`          | Contents of `~/.ssh/cofoundry_ci`. Omit if using Tailscale SSH.      |
+| `TS_OAUTH_SECRET`          | Tailscale OAuth secret (only if using Tailscale)                     |
+| `R2_ACCESS_KEY_ID`         | R2 API token access key                                              |
+| `R2_SECRET_ACCESS_KEY`     | R2 API token secret                                                  |
+| `REGISTRY_APP_ID`          | App ID for the `cofoundry-registry-writer` GitHub App                |
+| `REGISTRY_APP_PRIVATE_KEY` | Private key generated for the `cofoundry-registry-writer` GitHub App |
 
 **Variables** (Variables tab):
 
-| Variable | Value |
-|---|---|
-| `PVE_HOST` | Proxmox hostname or IP (or tailnet IP) |
-| `PVE_NODE` | Proxmox node name (shown in the web UI sidebar) |
-| `PVE_TOKEN_ID` | `root@pam!cofoundry` |
-| `SSH_TARGET` | e.g. `root@pve.example.com` or `root@<tailnet-IP>` |
-| `PVE_PORT` | Proxmox API port. Default: `8006`. |
-| `PVE_DUMP_DIR` | Path on the node where vzdump writes archives. Default: `/var/lib/vz/dump`. |
-| `CF_STORAGE` | Proxmox storage pool for VM disks (run `pvesm status` to list). Default: `local`. |
-| `CF_ISO_STORAGE` | Proxmox storage pool for ISOs. Default: `local`. |
-| `CF_BRIDGE` | Bridge for cloud-image builds (e.g. `vmbr0`). ISO-installer builds use the NAT bridge from Part 1 step 5 regardless. |
-| `TS_OAUTH_CLIENT_ID` | Tailscale OAuth client ID (only if using Tailscale) |
-| `TS_TAG` | Tailscale tag the OAuth client is scoped to. Default: `tag:ci`. |
-| `R2_ENDPOINT` | `https://<R2_ACCOUNT_ID>.r2.cloudflarestorage.com` |
-| `R2_BUCKET` | R2 bucket name, e.g. `cofoundry-templates` |
-| `CF_PUBLIC_URL_TMPL` | Full public URL template, e.g. `https://templates.example.com/templates/{{name}}-{{arch}}/{{sha256}}.vma.zst` |
+| Variable             | Value                                                                                                                |
+| -------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `PVE_HOST`           | Proxmox hostname or IP (or tailnet IP)                                                                               |
+| `PVE_NODE`           | Proxmox node name (shown in the web UI sidebar)                                                                      |
+| `PVE_TOKEN_ID`       | `root@pam!cofoundry`                                                                                                 |
+| `SSH_TARGET`         | e.g. `root@pve.example.com` or `root@<tailnet-IP>`                                                                   |
+| `PVE_PORT`           | Proxmox API port. Default: `8006`.                                                                                   |
+| `PVE_DUMP_DIR`       | Path on the node where vzdump writes archives. Default: `/var/lib/vz/dump`.                                          |
+| `CF_STORAGE`         | Proxmox storage pool for VM disks (run `pvesm status` to list). Default: `local`.                                    |
+| `CF_ISO_STORAGE`     | Proxmox storage pool for ISOs. Default: `local`.                                                                     |
+| `CF_BRIDGE`          | Bridge for cloud-image builds (e.g. `vmbr0`). ISO-installer builds use the NAT bridge from Part 1 step 5 regardless. |
+| `TS_OAUTH_CLIENT_ID` | Tailscale OAuth client ID (only if using Tailscale)                                                                  |
+| `TS_TAG`             | Tailscale tag the OAuth client is scoped to. Default: `tag:ci`.                                                      |
+| `R2_ENDPOINT`        | `https://<R2_ACCOUNT_ID>.r2.cloudflarestorage.com`                                                                   |
+| `R2_BUCKET`          | R2 bucket name, e.g. `cofoundry-templates`                                                                           |
+| `CF_PUBLIC_URL_TMPL` | Full public URL template, e.g. `https://templates.example.com/templates/{{name}}-{{arch}}/{{sha256}}.vma.zst`        |
 
 > **Default upload layout (CI).** The workflow auto-builds the upload commands from the R2 secrets above, producing:
 >
@@ -278,29 +312,29 @@ can also be set as a Secret if you'd rather keep it hidden (e.g.
 > `<your-cdn>/templates/{{name}}-{{arch}}/{{sha256}}.vma.zst`.
 >
 > **Custom layout.** Override the upload commands by setting matching repo
-> **variables** (Settings → Variables → Actions, *not* Secrets):
+> **variables** (Settings → Variables → Actions, _not_ Secrets):
 >
-> | Variable | Purpose |
-> |---|---|
-> | `CF_UPLOAD_CMD` | Shell command that uploads the artifact. |
-> | `CF_SIDECAR_UPLOAD_CMD` | Shell command that uploads the sidecar JSON. |
-> | `CF_PUBLIC_URL_TMPL` | Public URL recorded in the sidecar + registry. |
+> | Variable                | Purpose                                        |
+> | ----------------------- | ---------------------------------------------- |
+> | `CF_UPLOAD_CMD`         | Shell command that uploads the artifact.       |
+> | `CF_SIDECAR_UPLOAD_CMD` | Shell command that uploads the sidecar JSON.   |
+> | `CF_PUBLIC_URL_TMPL`    | Public URL recorded in the sidecar + registry. |
 >
 > Placeholders (substituted into all three strings):
 >
-> | Placeholder | Meaning |
-> |---|---|
-> | `{{file}}` | Local path on the PVE node to the artifact (`.vma.zst`) or sidecar (`.json`) being uploaded. |
-> | `{{name}}` | Bare recipe name, e.g. `almalinux-10`. |
-> | `{{arch}}` | Build architecture, e.g. `amd64`. |
-> | `{{sha256}}` | SHA-256 of the `.vma.zst` (also used for content-addressing). |
-> | `{{group}}` | OS group declared in the recipe, e.g. `almalinux`, `debian`, `windows`. |
+> | Placeholder    | Meaning                                                                                                     |
+> | -------------- | ----------------------------------------------------------------------------------------------------------- |
+> | `{{file}}`     | Local path on the PVE node to the artifact (`.vma.zst`) or sidecar (`.json`) being uploaded.                |
+> | `{{name}}`     | Bare recipe name, e.g. `almalinux-10`.                                                                      |
+> | `{{arch}}`     | Build architecture, e.g. `amd64`.                                                                           |
+> | `{{sha256}}`   | SHA-256 of the `.vma.zst` (also used for content-addressing).                                               |
+> | `{{group}}`    | OS group declared in the recipe, e.g. `almalinux`, `debian`, `windows`.                                     |
 > | `{{filename}}` | Content-addressed upload basename, e.g. `almalinux-10-amd64-<sha256>.vma.zst` (or `.json` for the sidecar). |
 >
 > Path-layout note: `cf prune --r2` recognizes either `templates/{{name}}-{{arch}}/{{sha256}}.…` (flat — CI default) or `templates/{{group}}/{{name}}-{{arch}}/{{sha256}}.…` (OS-grouped). A flat `templates/{{filename}}` layout uploads fine but **won't prune correctly**.
 >
 > **The three variables are independent.** The post-processor substitutes
-> placeholders into each one separately — it does *not* derive the public URL
+> placeholders into each one separately — it does _not_ derive the public URL
 > from the upload command (or vice versa). If you change the path layout in
 > `CF_UPLOAD_CMD`, you must update `CF_SIDECAR_UPLOAD_CMD` and
 > `CF_PUBLIC_URL_TMPL` to match; otherwise the sidecar's `url` field will
@@ -372,13 +406,13 @@ cp .env.example .env
 
 Fill in at minimum:
 
-| Variable | Value |
-|---|---|
-| `PVE_HOST` | Proxmox hostname or IP |
-| `PVE_NODE` | Proxmox node name |
-| `PVE_TOKEN_ID` | `root@pam!cofoundry` |
+| Variable           | Value                           |
+| ------------------ | ------------------------------- |
+| `PVE_HOST`         | Proxmox hostname or IP          |
+| `PVE_NODE`         | Proxmox node name               |
+| `PVE_TOKEN_ID`     | `root@pam!cofoundry`            |
 | `PVE_TOKEN_SECRET` | Token secret from Part 1 step 1 |
-| `SSH_TARGET` | e.g. `root@pve.example.com` |
+| `SSH_TARGET`       | e.g. `root@pve.example.com`     |
 
 ### 5. Verify
 

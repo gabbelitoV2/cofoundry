@@ -2,6 +2,7 @@ node_modules/
 dist/
 .env
 .env.local
+.sbx/tailscale.env
 *.log
 .DS_Store
 .idea/

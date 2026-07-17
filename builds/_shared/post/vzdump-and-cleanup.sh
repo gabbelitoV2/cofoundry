@@ -29,6 +29,12 @@ set -euo pipefail
 : "${CF_ARCH:?}"
 : "${CF_GROUP:?}"
 
+# CF_BUILT_VMID is the slot-derived build id (recipe base * 100 + slot index)
+# for parallel builds. The sidecar's suggested_vmid should advertise the recipe
+# BASE, which cf exports as CF_RECIPE_BASE_VMID. Plain non-slot builds set only
+# CF_BUILT_VMID, where the two are equal.
+BASE_VMID="${CF_RECIPE_BASE_VMID:-$CF_BUILT_VMID}"
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 LOCAL_FILE="$CF_OUT_DIR/${CF_RECIPE_NAME}-${CF_ARCH}.vma.zst"
@@ -145,7 +151,7 @@ cat >"$SIDECAR.tmp" <<JSON
   "group": "$CF_GROUP",
   "sha256": "$SHA256",
   "size": $SIZE,
-  "suggested_vmid": ${CF_BUILT_VMID},
+  "suggested_vmid": ${BASE_VMID},
   "url": "$PUBLIC_URL",
   "built_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 }

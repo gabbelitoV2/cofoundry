@@ -6,12 +6,25 @@ import {
     BUILD_NET_BRIDGE_ADDR,
     BUILD_NET_CIDR,
     BUILD_NET_GATEWAY,
+    BUILD_NET_PREFIX,
 } from '@/build/buildnet.ts'
 import { shellQuote } from '@/util.ts'
 import type { BootstrapStep } from '@/bootstrap/model.ts'
 import { sshCapture, sshOk, writeRemoteFile } from '@/bootstrap/remote.ts'
 
 const APT_INSTALL = 'DEBIAN_FRONTEND=noninteractive apt-get install -y'
+const DNSMASQ_CONF_PATH = '/etc/dnsmasq.d/vmbr1-nat.conf'
+const DNSMASQ_HOSTS_DIR = '/etc/dnsmasq.d/cofoundry-hosts.d'
+
+const dnsmasqConf = (buildDns: string): string => `# Managed by Cofoundry.
+interface=vmbr1
+bind-interfaces
+dhcp-range=${BUILD_DHCP_RANGE_START},${BUILD_DHCP_RANGE_END},12h
+dhcp-option=3,${BUILD_NET_GATEWAY}
+dhcp-option=6,${buildDns}
+dhcp-option=option:router,${BUILD_NET_GATEWAY}
+dhcp-hostsfile=${DNSMASQ_HOSTS_DIR}
+`
 
 const VMBR1_STANZA = `
 auto vmbr1
@@ -25,19 +38,214 @@ iface vmbr1 inet static
     post-down iptables -t nat -D POSTROUTING -s ${BUILD_NET_CIDR} -o vmbr0 -j MASQUERADE
 `
 
+const activeDnsmasqConfigCmd = `{
+    [ ! -f /etc/dnsmasq.conf ] || printf '%s\\0' /etc/dnsmasq.conf
+    find /etc/dnsmasq.d -maxdepth 1 -type f -name '*.conf' ! -path ${shellQuote(DNSMASQ_CONF_PATH)} -print0 2>/dev/null
+} | xargs -0 -r awk '
+    /^[[:space:]]*($|#)/ { next }
+    /^[[:space:]]*conf-dir=/ { next }
+    { print FILENAME ":" FNR ":" $0 }
+'`
+
+export const dnsmasqConflict = (
+    processState: string,
+    activeConfig: string,
+    listeners: string
+): string | undefined => {
+    const [countRaw, serviceState = ''] = processState.trim().split('|')
+    const processCount = Number.parseInt(countRaw ?? '0', 10) || 0
+    if (processCount > 1) {
+        return `${processCount} dnsmasq processes are running; Cofoundry requires the single system dnsmasq service`
+    }
+    if (processCount === 1 && serviceState !== 'active') {
+        return 'dnsmasq is running outside the system dnsmasq service; Cofoundry cannot safely reload it'
+    }
+
+    const configLines = activeConfig
+        .split('\n')
+        .map(line => line.trim())
+        .filter(Boolean)
+    const buildNetDirective = configLines.find(line => {
+        const directive = line.replace(/^.*?:\d+:/, '').trim()
+        return (
+            /^interface\s*=\s*vmbr1(?:\s|$)/.test(directive) ||
+            (/^dhcp-range\s*=/.test(directive) &&
+                directive.includes(`${BUILD_NET_PREFIX}.`)) ||
+            (directive.startsWith('dhcp-hostsfile=') &&
+                directive.includes(DNSMASQ_HOSTS_DIR))
+        )
+    })
+    if (buildNetDirective) {
+        return `existing dnsmasq configuration already owns vmbr1 or ${BUILD_NET_CIDR}: ${buildNetDirective}`
+    }
+
+    const explicitlyScoped = configLines.some(line =>
+        /:\d+:\s*(interface|listen-address)\s*=/.test(line)
+    )
+    if (configLines.length > 0 && !explicitlyScoped) {
+        return 'the existing dnsmasq configuration is not scoped with interface= or listen-address=; adding Cofoundry would change which interfaces it serves'
+    }
+
+    const wildcardSocket = listeners
+        .split('\n')
+        .map(line => line.trim())
+        .find(
+            line =>
+                /dnsmasq/i.test(line) &&
+                /(?:^|\s)(?:\*|0\.0\.0\.0|\[::\]|:::):(53|67)(?:\s|$)/.test(
+                    line
+                )
+        )
+    if (processCount === 1 && configLines.length === 0 && wildcardSocket) {
+        return 'the existing dnsmasq service listens on all interfaces without an explicit interface= or listen-address= scope'
+    }
+
+    const conflictingListener = listeners
+        .split('\n')
+        .map(line => line.trim())
+        .find(
+            line =>
+                line !== '' &&
+                !/dnsmasq/i.test(line) &&
+                /(?:^|\s)(?:\*|0\.0\.0\.0|\[::\]|:::|10\.0\.0\.1):(53|67)(?:\s|$)/.test(
+                    line
+                )
+        )
+    if (conflictingListener) {
+        return `another service is listening on a DNS/DHCP wildcard or build-network socket: ${conflictingListener}`
+    }
+    return undefined
+}
+
+const ipv4ToInt = (address: string): number | undefined => {
+    const octets = address.split('.').map(part => Number.parseInt(part, 10))
+    if (
+        octets.length !== 4 ||
+        octets.some(
+            octet => !Number.isInteger(octet) || octet < 0 || octet > 255
+        )
+    ) {
+        return undefined
+    }
+    return octets.reduce((value, octet) => value * 256 + octet, 0)
+}
+
+const cidrRange = (cidr: string): [number, number] | undefined => {
+    const [address, prefixRaw = '32'] = cidr.split('/')
+    const ip = ipv4ToInt(address ?? '')
+    const prefix = Number.parseInt(prefixRaw, 10)
+    if (ip === undefined || prefix < 0 || prefix > 32) return undefined
+    const size = 2 ** (32 - prefix)
+    const start = Math.floor(ip / size) * size
+    return [start, start + size - 1]
+}
+
+export const buildNetworkRouteConflict = (
+    routes: string
+): string | undefined => {
+    const wanted = cidrRange(BUILD_NET_CIDR)!
+    return routes
+        .split('\n')
+        .map(line => line.trim())
+        .filter(line => line !== '' && !/(?:^|\s)dev vmbr1(?:\s|$)/.test(line))
+        .find(line => {
+            const destination = line.split(/\s+/, 1)[0]
+            if (!destination || destination === 'default') return false
+            const range = cidrRange(destination)
+            return range
+                ? range[0] <= wanted[1] && wanted[0] <= range[1]
+                : false
+        })
+}
+
+export const stepBuildNetworkPreflight: BootstrapStep = {
+    id: 'build-network-preflight',
+    label: 'check build-network conflicts',
+    probe: async plan => {
+        const [route, configTest, processState, activeConfig, listeners] =
+            await Promise.all([
+                sshCapture(
+                    plan.target,
+                    'ip -4 route show type unicast table all 2>/dev/null'
+                ),
+                sshCapture(
+                    plan.target,
+                    'command -v dnsmasq >/dev/null 2>&1 && dnsmasq --test'
+                ),
+                sshCapture(
+                    plan.target,
+                    `printf '%s|%s\\n' "$(pgrep -xc dnsmasq 2>/dev/null || true)" "$(systemctl is-active dnsmasq 2>/dev/null || true)"`
+                ),
+                sshCapture(plan.target, activeDnsmasqConfigCmd),
+                sshCapture(
+                    plan.target,
+                    `{ ss -H -lntup 'sport = :53' 2>/dev/null; ss -H -lunp 'sport = :67' 2>/dev/null; } || true`
+                ),
+            ])
+
+        const routeConflict = buildNetworkRouteConflict(route.stdout)
+        if (routeConflict) {
+            throw new Error(
+                `${BUILD_NET_CIDR} overlaps an existing route outside vmbr1: ${routeConflict}`
+            )
+        }
+        // Exit 1 means dnsmasq is installed but its current merged config is
+        // invalid. Exit 127/command-not-found is expected on a fresh node.
+        if (!configTest.ok && !/not found/i.test(configTest.stderr)) {
+            const installed = await sshOk(
+                plan.target,
+                'command -v dnsmasq >/dev/null 2>&1'
+            )
+            if (installed) {
+                throw new Error(
+                    `existing dnsmasq configuration is invalid: ${configTest.stderr.trim() || 'dnsmasq --test failed'}`
+                )
+            }
+        }
+        const conflict = dnsmasqConflict(
+            processState.stdout,
+            activeConfig.stdout,
+            listeners.stdout
+        )
+        if (conflict) throw new Error(`dnsmasq conflict: ${conflict}`)
+        return {
+            done: true,
+            note: 'subnet, configuration, and listeners are safe',
+        }
+    },
+    apply: async () => ({ note: 'no changes needed' }),
+}
+
 export const stepVmbr1: BootstrapStep = {
     id: 'vmbr1',
     label: 'configure vmbr1 NAT bridge',
-    inScope: plan => plan.needBuildNet,
-    probe: async plan =>
-        // Anchor with $ — a bare '^auto vmbr1' also matches a pre-existing
-        // 'auto vmbr100' (prefix), which would skip creating vmbr1 entirely.
-        (await sshOk(
+    probe: async plan => {
+        const configured = await sshCapture(
             plan.target,
-            `grep -q '^auto vmbr1$' /etc/network/interfaces`
-        ))
-            ? { done: true, note: 'vmbr1 already in /etc/network/interfaces' }
-            : { done: false },
+            'ifquery vmbr1 2>/dev/null'
+        )
+        if (configured.ok) {
+            if (
+                new RegExp(
+                    `^\\s*address\\s+${BUILD_NET_BRIDGE_ADDR.replaceAll('.', '\\.')}\\s*$`,
+                    'm'
+                ).test(configured.stdout)
+            ) {
+                return { done: true, note: 'vmbr1 has the Cofoundry address' }
+            }
+            throw new Error(
+                `vmbr1 already exists with a different configuration; Cofoundry requires ${BUILD_NET_BRIDGE_ADDR}`
+            )
+        }
+        if (
+            await sshOk(plan.target, 'ip link show dev vmbr1 >/dev/null 2>&1')
+        ) {
+            throw new Error(
+                'vmbr1 exists at runtime but is not managed by the node network configuration'
+            )
+        }
+        return { done: false }
+    },
     apply: async plan => {
         await execa('ssh', [plan.target, `cat >> /etc/network/interfaces`], {
             input: VMBR1_STANZA,
@@ -59,7 +267,6 @@ const BUILD_NET_FW_COMMENT = 'cofoundry build network (packer HTTP)'
 export const stepBuildNetFirewall: BootstrapStep = {
     id: 'build-net-firewall',
     label: 'allow build network through Proxmox firewall',
-    inScope: plan => plan.needBuildNet,
     probe: async plan => {
         const status = await sshCapture(
             plan.target,
@@ -91,7 +298,6 @@ export const stepBuildNetFirewall: BootstrapStep = {
 export const stepDnsmasq: BootstrapStep = {
     id: 'dnsmasq',
     label: 'install dnsmasq',
-    inScope: plan => plan.needBuildNet,
     probe: async plan =>
         (await sshOk(plan.target, 'dpkg -s dnsmasq >/dev/null 2>&1'))
             ? { done: true, note: 'dnsmasq already installed' }
@@ -108,27 +314,41 @@ export const stepDnsmasq: BootstrapStep = {
 // files, because dnsmasq only honours SIGHUP for entries loaded that way —
 // `dhcp-host=` lines in /etc/dnsmasq.d/*.conf are parsed once at startup and
 // never re-read, which silently breaks per-build reservations.
-const DNSMASQ_HOSTS_DIR = '/etc/dnsmasq.d/cofoundry-hosts.d'
-const DNSMASQ_CONF = `interface=vmbr1
-bind-interfaces
-dhcp-range=${BUILD_DHCP_RANGE_START},${BUILD_DHCP_RANGE_END},12h
-dhcp-option=3,${BUILD_NET_GATEWAY}
-dhcp-option=6,8.8.8.8
-dhcp-option=option:router,${BUILD_NET_GATEWAY}
-dhcp-hostsfile=${DNSMASQ_HOSTS_DIR}
-`
-
 export const stepDnsmasqConf: BootstrapStep = {
     id: 'dnsmasq-conf',
     label: 'write /etc/dnsmasq.d/vmbr1-nat.conf',
-    inScope: plan => plan.needBuildNet,
-    probe: async plan =>
-        (await sshOk(
+    probe: async plan => {
+        const existing = await sshCapture(
             plan.target,
-            `grep -qxF 'dhcp-hostsfile=${DNSMASQ_HOSTS_DIR}' /etc/dnsmasq.d/vmbr1-nat.conf 2>/dev/null`
-        ))
-            ? { done: true, note: 'config already present' }
-            : { done: false },
+            `cat ${shellQuote(DNSMASQ_CONF_PATH)} 2>/dev/null`
+        )
+        const wanted = dnsmasqConf(plan.buildDns)
+        if (existing.ok && existing.stdout.trim() === wanted.trim()) {
+            return (await sshOk(
+                plan.target,
+                'systemctl is-active --quiet dnsmasq && dnsmasq --test >/dev/null 2>&1'
+            ))
+                ? { done: true, note: 'managed config is active and valid' }
+                : { done: false, note: 'managed config needs activation' }
+        }
+        if (
+            existing.ok &&
+            !(
+                existing.stdout.includes('interface=vmbr1') &&
+                existing.stdout.includes(
+                    `dhcp-range=${BUILD_DHCP_RANGE_START},${BUILD_DHCP_RANGE_END}`
+                )
+            )
+        ) {
+            throw new Error(
+                `${DNSMASQ_CONF_PATH} exists but is not recognizable as a Cofoundry build-network config`
+            )
+        }
+        return {
+            done: false,
+            note: existing.ok ? 'managed config needs update' : undefined,
+        }
+    },
     apply: async plan => {
         // Hosts dir must exist before dnsmasq starts or it errors out.
         // Also sweep any legacy /etc/dnsmasq.d/cofoundry-slot-*.conf snippets
@@ -138,20 +358,47 @@ export const stepDnsmasqConf: BootstrapStep = {
             plan.target,
             `mkdir -p ${DNSMASQ_HOSTS_DIR} && rm -f /etc/dnsmasq.d/cofoundry-slot-*.conf`
         )
+        const candidate = `${DNSMASQ_CONF_PATH}.cofoundry-new`
         await writeRemoteFile(
             plan.target,
-            '/etc/dnsmasq.d/vmbr1-nat.conf',
-            DNSMASQ_CONF
+            candidate,
+            dnsmasqConf(plan.buildDns)
         )
-        await remoteStreaming(plan.target, 'systemctl restart dnsmasq')
-        return { note: 'written + dnsmasq restarted' }
+        await remoteStreaming(
+            plan.target,
+            `set -e
+target=${shellQuote(DNSMASQ_CONF_PATH)}
+candidate=${shellQuote(candidate)}
+backup="${DNSMASQ_CONF_PATH}.cofoundry-backup.$$"
+had_existing=0
+if [ -e "$target" ]; then
+    cp -a "$target" "$backup"
+    had_existing=1
+fi
+mv "$candidate" "$target"
+rollback() {
+    if [ "$had_existing" -eq 1 ]; then mv "$backup" "$target"; else rm -f "$target"; fi
+}
+if ! dnsmasq --test; then
+    rollback
+    echo 'candidate dnsmasq configuration failed validation; restored previous configuration' >&2
+    exit 1
+fi
+if ! systemctl restart dnsmasq; then
+    rollback
+    systemctl restart dnsmasq >/dev/null 2>&1 || true
+    echo 'dnsmasq restart failed; restored previous configuration' >&2
+    exit 1
+fi
+rm -f "$backup"`
+        )
+        return { note: 'validated, written, and dnsmasq restarted' }
     },
 }
 
 export const stepNetslotDir: BootstrapStep = {
     id: 'netslot-dir',
     label: 'create /var/lib/cofoundry for netslot lock',
-    inScope: plan => plan.needBuildNet,
     probe: async plan =>
         (await sshOk(plan.target, '[ -d /var/lib/cofoundry ]'))
             ? { done: true, note: 'already exists' }

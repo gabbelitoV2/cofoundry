@@ -68,11 +68,11 @@ const slotMac = (slotIndex: number): string => {
 const snippetPath = (slotIndex: number): string =>
     `${SNIPPET_DIR}/${SNIPPET_PREFIX}${String(slotIndex).padStart(2, '0')}`
 
-// Reload dnsmasq atomically — SIGHUP makes it re-read /etc/dnsmasq.d/* and
-// honour new static reservations without disturbing in-flight leases held by
-// other concurrent builds. We fall back to `systemctl reload` if pkill fails
-// (e.g. dnsmasq supervised differently).
-const reloadDnsmasqCmd = `(pkill -HUP -x dnsmasq 2>/dev/null || systemctl reload dnsmasq 2>/dev/null || systemctl restart dnsmasq) && sleep 0.2`
+// Reload the system dnsmasq service atomically so it re-reads the hostsfile
+// directory without disturbing in-flight leases. Bootstrap rejects unmanaged
+// or multiple dnsmasq instances, so builds must target this specific service
+// rather than signalling every process named dnsmasq on the node.
+const reloadDnsmasqCmd = `(systemctl reload dnsmasq 2>/dev/null || systemctl restart dnsmasq) && sleep 0.2`
 
 export const allocateBuildSlot = async (env: Env): Promise<BuildSlot> => {
     // One atomic shell pass: take the lock, scan existing snippets, pick the

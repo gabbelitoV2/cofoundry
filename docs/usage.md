@@ -81,7 +81,8 @@ cf clean
 
 Removes from the Proxmox node:
 
-- `/tmp/cofoundry/` — working directory (lives on tmpfs)
+- `$PVE_DUMP_DIR/cofoundry-work`, `cofoundry-tmp`, and `cofoundry-out`
+- legacy `/tmp/cofoundry/` data, if present
 - Uploaded ISOs from Proxmox ISO storage (`packer*.iso` and hash-named ISOs)
 - Stale vzdump archives and log files
 

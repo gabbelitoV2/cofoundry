@@ -7,7 +7,6 @@ const APT_INSTALL = 'DEBIAN_FRONTEND=noninteractive apt-get install -y'
 export const stepPacker: BootstrapStep = {
     id: 'packer',
     label: 'install packer',
-    inScope: () => true,
     probe: async plan =>
         (await sshOk(plan.target, 'command -v packer >/dev/null 2>&1'))
             ? { done: true, note: 'packer already installed' }
@@ -29,7 +28,6 @@ export const stepPacker: BootstrapStep = {
 export const stepAwscli: BootstrapStep = {
     id: 'awscli',
     label: 'install awscli',
-    inScope: () => true,
     probe: async plan =>
         (await sshOk(plan.target, 'command -v aws >/dev/null 2>&1'))
             ? { done: true, note: 'aws already installed' }
@@ -46,7 +44,6 @@ export const stepAwscli: BootstrapStep = {
 export const stepIsoCache: BootstrapStep = {
     id: 'iso-cache',
     label: 'create /var/lib/cofoundry/iso-cache',
-    inScope: () => true,
     probe: async plan =>
         (await sshOk(plan.target, '[ -d /var/lib/cofoundry/iso-cache ]'))
             ? { done: true, note: 'already exists' }

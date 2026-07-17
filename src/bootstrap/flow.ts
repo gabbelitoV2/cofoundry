@@ -1,14 +1,13 @@
-import { confirm, input, select } from '@inquirer/prompts'
+import { confirm, input } from '@inquirer/prompts'
 import pc from 'picocolors'
 import { log } from '@/log.ts'
 import type {
     BootstrapPlan as Plan,
-    BootstrapScope as Scope,
     BootstrapStep as Step,
     ProbeResult,
 } from '@/bootstrap/model.ts'
 import { sshCapture, sshOk } from '@/bootstrap/remote.ts'
-import { ALL_STEPS, parseSizeToBytes, stepToken } from '@/bootstrap/steps.ts'
+import { ALL_STEPS, stepToken } from '@/bootstrap/steps.ts'
 import type { PartialEnv } from '@/env.ts'
 
 // ── .env updater ──────────────────────────────────────────────────────────────
@@ -38,14 +37,6 @@ const upsertEnvFile = async (kvs: Record<string, string>): Promise<void> => {
 }
 
 // ── interactive flow ──────────────────────────────────────────────────────────
-
-const scopeFlags = (scope: Scope) => ({
-    // The NAT bridge backs every recipe that can't rely on the qemu-guest-agent
-    // for IP discovery — i.e. all ISO installers (Debian/Ubuntu/Alma/Rocky/Windows).
-    // Cloud-image-only builds use the LAN bridge + DHCP and don't need it.
-    needBuildNet: scope === 'with-installers',
-    needTmpfs: scope === 'with-installers',
-})
 
 export const runBootstrap = async (initialEnv: PartialEnv): Promise<void> => {
     if (!process.stdin.isTTY) {
@@ -83,23 +74,7 @@ export const runBootstrap = async (initialEnv: PartialEnv): Promise<void> => {
         }
     }
 
-    // 2. Scope
-    const scope = (await select({
-        message: 'What will this node build?',
-        choices: [
-            {
-                name: 'Cloud-image Linux only (Ubuntu cloud, etc.)',
-                value: 'linux-cloud' as Scope,
-            },
-            {
-                name: 'Anything with an installer (Debian/Alma/Rocky/Ubuntu live/Windows)',
-                value: 'with-installers' as Scope,
-            },
-        ],
-    })) as Scope
-    const flags = scopeFlags(scope)
-
-    // 2b. Cluster: optionally turn each build into a clonable template on every
+    // 2. Cluster: optionally turn each build into a clonable template on every
     // node (per-node VMID, local storage — no shared storage needed).
     const members = await sshCapture(
         target,
@@ -125,15 +100,13 @@ export const runBootstrap = async (initialEnv: PartialEnv): Promise<void> => {
         }
     }
 
-    // 3. Token name — ask only if no 'cofoundry' (or any user-chosen) token yet.
+    // 3. Token name — ask only if no 'cofoundry' token exists yet.
     // Probe with default first; if it exists, no question.
     let tokenName = 'cofoundry'
     const tokenProbe = await stepToken.probe({
         target,
-        scope,
         tokenName,
-        ...flags,
-        tmpfsSizeGB: 16,
+        buildDns: initialEnv.CF_BUILD_DNS ?? '1.1.1.1',
     })
     if (!tokenProbe.done) {
         tokenName = await input({
@@ -142,40 +115,16 @@ export const runBootstrap = async (initialEnv: PartialEnv): Promise<void> => {
         })
     }
 
-    // 4. tmpfs size — only if in scope AND current size < 8G
-    let tmpfsSizeGB = 16
-    if (flags.needTmpfs) {
-        const fstab = await sshCapture(
-            target,
-            `awk '$2=="/tmp" && $3=="tmpfs" {print $4}' /etc/fstab`
-        )
-        const m = fstab.stdout.trim().match(/size=([^,\s]+)/)
-        const currentBytes = m ? parseSizeToBytes(m[1]!) : 0
-        if (currentBytes < 8 * 1024 ** 3) {
-            const answer = await input({
-                message: 'tmpfs /tmp size',
-                default: '16G',
-                validate: v =>
-                    parseSizeToBytes(v) >= 8 * 1024 ** 3 ||
-                    'must be at least 8G for Windows artifacts',
-            })
-            tmpfsSizeGB = Math.round(parseSizeToBytes(answer) / 1024 ** 3)
-        }
-    }
-
     const plan: Plan = {
         target,
-        scope,
         tokenName,
-        tmpfsSizeGB,
-        ...flags,
+        buildDns: initialEnv.CF_BUILD_DNS ?? '1.1.1.1',
     }
 
-    // 6. Probe everything, build checklist
+    // 4. Probe everything, build checklist
     log.step('probing node state')
     const probes: Array<{ step: Step; result: ProbeResult }> = []
     for (const step of ALL_STEPS) {
-        if (!step.inScope(plan)) continue
         const result = await step.probe(plan)
         probes.push({ step, result })
     }
@@ -187,11 +136,6 @@ export const runBootstrap = async (initialEnv: PartialEnv): Promise<void> => {
             ? `${pc.dim('·')} already done${result.note ? ` ${pc.dim(`(${result.note})`)}` : ''}`
             : `${pc.dim('·')} will run${result.note ? ` ${pc.dim(`(${result.note})`)}` : ''}`
         log.raw(`  ${mark} ${step.label.padEnd(45)} ${status}`)
-    }
-    const skipped = ALL_STEPS.filter(s => !s.inScope(plan))
-    if (skipped.length > 0) {
-        log.section('Out of scope')
-        for (const s of skipped) log.raw(`  ${pc.dim('-')} ${pc.dim(s.label)}`)
     }
     log.blank()
 
@@ -210,7 +154,7 @@ export const runBootstrap = async (initialEnv: PartialEnv): Promise<void> => {
         return
     }
 
-    // 7. Apply
+    // 5. Apply
     log.section('Apply')
     let createdSecret: string | undefined
     let createdTokenId: string | undefined
@@ -230,7 +174,7 @@ export const runBootstrap = async (initialEnv: PartialEnv): Promise<void> => {
         log.ok(`${step.label} ${pc.dim('·')} ${out.note ?? 'done'}`)
     }
 
-    // 8. Post-run: token secret
+    // 6. Post-run: token secret
     if (createdSecret && createdTokenId) {
         log.section(pc.yellow('API token created — SAVE THIS, shown only once'))
         log.raw(`    ${pc.cyan('PVE_TOKEN_ID')}=${createdTokenId}`)

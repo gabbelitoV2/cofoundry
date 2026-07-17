@@ -5,7 +5,6 @@ import { sshCapture } from '@/bootstrap/remote.ts'
 export const stepToken: BootstrapStep = {
     id: 'token',
     label: 'create API token',
-    inScope: () => true,
     probe: async plan => {
         const r = await sshCapture(
             plan.target,

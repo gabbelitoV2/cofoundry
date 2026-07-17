@@ -29,7 +29,7 @@ const EnvSchema = z.object({
     // Bridge for recipes that do not need an allocated build-network slot.
     CF_BRIDGE: z.string().default('vmbr0'),
     // NAT bridge for ISO-installer + Windows builds. Per-build dnsmasq
-    // reservations are written under /etc/dnsmasq.d/cofoundry-slot-*.conf.
+    // reservations are written under /etc/dnsmasq.d/cofoundry-hosts.d/.
     CF_BUILD_BRIDGE: z.string().default('vmbr1'),
     CF_STORAGE: z.string().default('local'),
     CF_ISO_STORAGE: z.string().default('local'),

@@ -15,11 +15,21 @@ In production, GitHub Actions runs the pipeline automatically — you only need 
 bun run cf bootstrap
 ```
 
-Answer the prompts (target host, what kinds of recipes you'll build, tmpfs
-size if asked). The command probes the node, shows you a checklist of what
-it will change, asks for confirmation, then applies. The new API token
-secret is shown at the end with an offer to append it to `.env`. Safe to
-re-run — already-done steps are detected and skipped.
+Answer the prompts for the target host and API token. The command probes the
+node, shows you a checklist of what it will change, asks for confirmation, then
+applies. The new API token secret is shown at the end with an offer to append it
+to `.env`. Safe to re-run — already-done steps are detected and skipped.
+
+Bootstrap verifies that `10.0.0.0/24`, `vmbr1`, dnsmasq configuration, and
+DNS/DHCP listeners do not conflict with existing node services. It stops with an
+actionable error instead of overwriting an unrecognized configuration. The
+dnsmasq change is validated before restart and rolled back if restart fails.
+
+Bootstrap does not alter the node's `/tmp`. Build scratch data lives under
+`PVE_DUMP_DIR/cofoundry-tmp`. An older Cofoundry bootstrap may have added a
+`tmpfs /tmp tmpfs defaults,size=...` entry to `/etc/fstab`; remove that manually
+if it was created only for Cofoundry. It is not removed automatically because
+the bootstrapper cannot safely determine who owns an existing `/tmp` mount.
 
 Prerequisites: passwordless SSH into the node as root (`ssh-copy-id
 root@<pve-host>`).
@@ -109,20 +119,25 @@ apt-get install -y dnsmasq
 **Create `/etc/dnsmasq.d/vmbr1-nat.conf`:**
 
 ```
+# Managed by Cofoundry.
 interface=vmbr1
 bind-interfaces
 dhcp-range=10.0.0.200,10.0.0.250,12h
 dhcp-option=3,10.0.0.1
-dhcp-option=6,8.8.8.8
+dhcp-option=6,1.1.1.1
 dhcp-option=option:router,10.0.0.1
+dhcp-hostsfile=/etc/dnsmasq.d/cofoundry-hosts.d
 ```
 
 ```sh
+mkdir -p /etc/dnsmasq.d/cofoundry-hosts.d /var/lib/cofoundry
+dnsmasq --test
 systemctl restart dnsmasq
-mkdir -p /var/lib/cofoundry
 ```
 
-Per-build reservations get written to `/etc/dnsmasq.d/cofoundry-slot-NN.conf` during the build and cleaned up afterward — no manual entries needed.
+Per-build reservations get written under
+`/etc/dnsmasq.d/cofoundry-hosts.d/` during the build and cleaned up afterward —
+no manual entries needed.
 
 ### 6. Weekly cleanup cron
 

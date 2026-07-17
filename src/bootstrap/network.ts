@@ -385,6 +385,20 @@ export const stepBuildNetworkPreflight: BootstrapStep = {
         return {
             done: true,
             note: `${plan.buildBridge} ${network.cidr}; slots ${network.prefix}.${slotBase}-${network.prefix}.${slotBase + 49}`,
+            summary: [
+                ['SSH target', plan.target],
+                [
+                    'Build bridge',
+                    `${plan.buildBridge} (network.build_bridge / CF_BUILD_BRIDGE)`,
+                ],
+                ['Build subnet', `${network.cidr} (derived from bridge)`],
+                ['Gateway', network.gateway],
+                [
+                    'Build slots',
+                    `${network.prefix}.${slotBase}–${network.prefix}.${slotBase + 49}`,
+                ],
+                ['DNS resolver', plan.buildDns],
+            ],
         }
     },
     apply: async () => ({ note: 'no changes needed' }),

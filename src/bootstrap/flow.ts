@@ -16,6 +16,31 @@ import type { PartialEnv } from '@/env.ts'
 
 const ENV_PATH = '.env'
 
+export const formatSummaryTable = (
+    rows: ReadonlyArray<readonly [label: string, value: string]>
+): string[] => {
+    const headings = ['Detail', 'Value'] as const
+    const labelWidth = Math.max(
+        headings[0].length,
+        ...rows.map(([label]) => label.length)
+    )
+    const valueWidth = Math.max(
+        headings[1].length,
+        ...rows.map(([, value]) => value.length)
+    )
+    const border = (left: string, middle: string, right: string): string =>
+        `  ${left}${'─'.repeat(labelWidth + 2)}${middle}${'─'.repeat(valueWidth + 2)}${right}`
+    const row = (label: string, value: string): string =>
+        `  │ ${label.padEnd(labelWidth)} │ ${value.padEnd(valueWidth)} │`
+    return [
+        border('┌', '┬', '┐'),
+        row(...headings),
+        border('├', '┼', '┤'),
+        ...rows.map(([label, value]) => row(label, value)),
+        border('└', '┴', '┘'),
+    ]
+}
+
 const upsertEnvFile = async (kvs: Record<string, string>): Promise<void> => {
     const file = Bun.file(ENV_PATH)
     let content = ''
@@ -137,6 +162,13 @@ export const runBootstrap = async (initialEnv: PartialEnv): Promise<void> => {
     for (const step of ALL_STEPS) {
         const result = await step.probe(plan)
         probes.push({ step, result })
+    }
+
+    const summary = probes.flatMap(({ result }) => result.summary ?? [])
+    if (summary.length > 0) {
+        log.section('Configuration')
+        for (const line of formatSummaryTable(summary)) log.raw(line)
+        log.blank()
     }
 
     log.section('Plan')

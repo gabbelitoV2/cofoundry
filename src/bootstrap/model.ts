@@ -6,7 +6,11 @@ export type BootstrapPlan = {
     buildDns: string
 }
 
-export type ProbeResult = { done: boolean; note?: string }
+export type ProbeResult = {
+    done: boolean
+    note?: string
+    summary?: ReadonlyArray<readonly [label: string, value: string]>
+}
 export type ApplyResult = {
     note?: string
     secret?: string

@@ -27,6 +27,15 @@ not conflict with existing node services. It stops with an actionable error
 instead of overwriting an unrecognized configuration. The dnsmasq change is
 validated before restart and rolled back if restart fails.
 
+No subnet environment variable is required. Set `network.build_bridge` (or
+`CF_BUILD_BRIDGE`) only when the bridge is not `vmbr1`; Cofoundry reads its live
+gateway and `/24`. Bootstrap prints the selected 50-address slot block, and each
+build prints its exact reserved IP and gateway.
+
+New Proxmox API token credentials are displayed and optionally written to
+`.env` immediately after creation, before package or network setup continues.
+The token secret cannot be retrieved from Proxmox later.
+
 Bootstrap does not alter the node's `/tmp`. Build scratch data lives under
 `PVE_DUMP_DIR/cofoundry-tmp`. An older Cofoundry bootstrap may have added a
 `tmpfs /tmp tmpfs defaults,size=...` entry to `/etc/fstab`; remove that manually

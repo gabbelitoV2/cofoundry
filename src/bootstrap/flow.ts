@@ -166,8 +166,6 @@ export const runBootstrap = async (initialEnv: PartialEnv): Promise<void> => {
 
     // 5. Apply
     log.section('Apply')
-    let createdSecret: string | undefined
-    let createdTokenId: string | undefined
     for (const { step, result } of probes) {
         if (result.done) {
             log.info(
@@ -177,29 +175,27 @@ export const runBootstrap = async (initialEnv: PartialEnv): Promise<void> => {
         }
         log.step(step.label)
         const out = await step.apply(plan)
-        if (out.secret) {
-            createdSecret = out.secret
-            createdTokenId = out.tokenId
-        }
         log.ok(`${step.label} ${pc.dim('·')} ${out.note ?? 'done'}`)
-    }
-
-    // 6. Post-run: token secret
-    if (createdSecret && createdTokenId) {
-        log.section(pc.yellow('API token created — SAVE THIS, shown only once'))
-        log.raw(`    ${pc.cyan('PVE_TOKEN_ID')}=${createdTokenId}`)
-        log.raw(`    ${pc.cyan('PVE_TOKEN_SECRET')}=${createdSecret}`)
-        log.blank()
-        const persist = await confirm({
-            message: 'append PVE_TOKEN_ID / PVE_TOKEN_SECRET to .env?',
-            default: true,
-        })
-        if (persist) {
-            await upsertEnvFile({
-                PVE_TOKEN_ID: createdTokenId,
-                PVE_TOKEN_SECRET: createdSecret,
+        // Proxmox reveals a token secret only once. Show and optionally persist
+        // it immediately so a later bootstrap step cannot make it unrecoverable.
+        if (out.secret && out.tokenId) {
+            log.section(
+                pc.yellow('API token created — SAVE THIS, shown only once')
+            )
+            log.reveal(`    ${pc.cyan('PVE_TOKEN_ID')}=${out.tokenId}`)
+            log.reveal(`    ${pc.cyan('PVE_TOKEN_SECRET')}=${out.secret}`)
+            log.blank()
+            const persist = await confirm({
+                message: 'append PVE_TOKEN_ID / PVE_TOKEN_SECRET to .env?',
+                default: true,
             })
-            log.ok('wrote .env')
+            if (persist) {
+                await upsertEnvFile({
+                    PVE_TOKEN_ID: out.tokenId,
+                    PVE_TOKEN_SECRET: out.secret,
+                })
+                log.ok('wrote .env')
+            }
         }
     }
 

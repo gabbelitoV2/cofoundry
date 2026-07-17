@@ -23,6 +23,7 @@ import {
 } from '@/build/recipe.ts'
 import { buildAttemptCount, runWithRetries } from '@/build/retry.ts'
 import { buildSlotVmid, destroyVmCommand } from '@/build/vm.ts'
+import { log } from '@/log.ts'
 
 export type BuildPhaseOptions = { keepVm?: boolean }
 
@@ -60,6 +61,9 @@ export const buildPhase = async (
     let slot: BuildSlot | null = null
     if (layout.needsBuildNetwork) {
         slot = await allocateBuildSlot(env)
+        log.info(
+            `build network · ${env.CF_BUILD_BRIDGE} · ${slot.ip} via ${slot.gw} · slot ${slot.slotIndex}`
+        )
     }
     const effectiveBuildVmid = recipe.buildVmid
         ? buildSlotVmid(recipe.buildVmid, slot)

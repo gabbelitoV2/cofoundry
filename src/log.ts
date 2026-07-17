@@ -9,6 +9,9 @@ export const log = {
     err: (msg: string): void => base.err(redactSensitive(msg)),
     note: (msg: string): void => base.note(redactSensitive(msg)),
     raw: (msg: string): void => base.raw(redactSensitive(msg)),
+    // Explicit escape hatch for a newly-created secret that the user asked to
+    // receive. Keep all routine logging on the redacted methods above.
+    reveal: (msg: string): void => base.raw(msg),
     blank: (): void => base.blank(),
     section: (title: string): void => base.section(title),
 }

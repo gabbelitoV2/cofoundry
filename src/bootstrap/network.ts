@@ -381,9 +381,10 @@ export const stepBuildNetworkPreflight: BootstrapStep = {
             plan.buildGateway
         )
         if (conflict) throw new Error(`dnsmasq conflict: ${conflict}`)
+        const slotBase = findBuildSlotBase(activeConfig.stdout, network)!
         return {
             done: true,
-            note: 'subnet, configuration, and listeners are safe',
+            note: `${plan.buildBridge} ${network.cidr}; slots ${network.prefix}.${slotBase}-${network.prefix}.${slotBase + 49}`,
         }
     },
     apply: async () => ({ note: 'no changes needed' }),

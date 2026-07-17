@@ -69,6 +69,18 @@ export const remoteStreaming = (
     onLine?: (line: string) => void
 ): Promise<void> => streaming('ssh', [...SSH_OPTS, target, cmd], onLine)
 
+/**
+ * Run a remote Bash script without putting its contents in sshd's process
+ * command line. This is the required path for scripts containing credentials:
+ * SSH carries the script over stdin and the remote argv is only `bash -s`.
+ */
+export const remoteStreamingScript = (
+    target: string,
+    script: string,
+    onLine?: (line: string) => void
+): Promise<void> =>
+    streaming('ssh', [...SSH_OPTS, target, 'bash -s'], onLine, script)
+
 // Allocates a PTY so remote programs (e.g. wget) detect a terminal and show
 // their native progress bar rather than falling back to dot-style output.
 export const remoteStreamingPty = (
@@ -147,21 +159,29 @@ export const remoteWgetCapture = async (
 export const streaming = async (
     cmd: string,
     args: string[],
-    onLine?: (line: string) => void
+    onLine?: (line: string) => void,
+    input?: string
 ): Promise<void> => {
     try {
+        const proc = execa(cmd, args, {
+            // A supplied script owns stdin. Otherwise preserve the existing
+            // behavior: ignored for captured streams (so concurrent SSH calls
+            // cannot steal stdin), inherited for interactive passthrough.
+            stdin:
+                input === undefined ? (onLine ? 'ignore' : 'inherit') : 'pipe',
+            stdout: onLine ? 'pipe' : 'inherit',
+            stderr: onLine ? 'pipe' : 'inherit',
+        })
+        if (input !== undefined) proc.stdin?.end(input)
+        activeProcs.add(proc as unknown as KillableProc)
         if (!onLine) {
-            await execa(cmd, args, { stdio: 'inherit' })
+            try {
+                await proc
+            } finally {
+                activeProcs.delete(proc as unknown as KillableProc)
+            }
             return
         }
-        const proc = execa(cmd, args, {
-            // ignore (not inherit): a long packer stream must not hold the shared
-            // stdin and starve concurrent prefetch ssh calls. See captureRemote.
-            stdin: 'ignore',
-            stdout: 'pipe',
-            stderr: 'pipe',
-        })
-        activeProcs.add(proc as unknown as KillableProc)
         let buf = ''
         const onChunk = (chunk: Buffer): void => {
             buf += chunk.toString()

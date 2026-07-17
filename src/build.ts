@@ -8,6 +8,7 @@ import {
     captureRemote,
     registerCleanup,
     remoteStreaming,
+    remoteStreamingScript,
     remoteWgetCapture,
 } from './build/remote.ts'
 import {
@@ -326,6 +327,32 @@ export const buildPhase = async (
     const effectiveBuildVmid = recipe.buildVmid
         ? buildSlotVmid(recipe.buildVmid, slot)
         : undefined
+    // Packer creates answer-file ISOs and the injector writes ephemeral SSH /
+    // WinRM credentials under TMPDIR. Isolate each build so mode 0700 on the
+    // parent protects even tools that create individual files as 0644, and so
+    // cleanup never races another recipe's active build.
+    const remoteBuildTmpDir = `${remoteTmpDir}/build-${recipe.name}-${effectiveBuildVmid ?? 'plain'}`
+    const injectedFiles = [
+        hasPreseed
+            ? `${remoteWorkDir}/builds/${recipe.name}/http/preseed.cfg`
+            : undefined,
+        hasAutoinstall
+            ? `${remoteWorkDir}/builds/${recipe.name}/http/user-data`
+            : undefined,
+        hasKickstart
+            ? `${remoteWorkDir}/builds/${recipe.name}/http/ks.cfg`
+            : undefined,
+        hasKickstart
+            ? `${remoteWorkDir}/builds/${recipe.name}/http/ks`
+            : undefined,
+        isWindows
+            ? `${remoteWorkDir}/builds/${recipe.name}/autounattend.xml`
+            : undefined,
+    ].filter((path): path is string => path !== undefined)
+    const secretCleanupCmd = `rm -rf ${[remoteBuildTmpDir, ...injectedFiles]
+        .map(shellQuote)
+        .join(' ')}`
+    let unregisterSecretCleanup: (() => void) | undefined
 
     if (recipe.buildVmid) {
         // Kill any orphaned packer build (and its watchdog subshells) for THIS
@@ -355,8 +382,17 @@ export const buildPhase = async (
     }
 
     try {
+        await captureRemote(
+            env.SSH_TARGET,
+            `rm -rf ${shellQuote(remoteBuildTmpDir)} && install -d -m 700 ${shellQuote(remoteBuildTmpDir)}`
+        )
+        unregisterSecretCleanup = registerCleanup(() => {
+            spawnSync('ssh', [env.SSH_TARGET, secretCleanupCmd], {
+                stdio: 'ignore',
+            })
+        })
         const injectEnv = [
-            `RUNNER_TEMP=${shellQuote(remoteTmpDir)}`,
+            `RUNNER_TEMP=${shellQuote(remoteBuildTmpDir)}`,
             `CF_BUILD_IP=${shellQuote(slot?.ip ?? '')}`,
             `CF_BUILD_GW=${shellQuote(slot?.gw ?? '')}`,
             `CF_BUILD_DNS=${shellQuote(env.CF_BUILD_DNS)}`,
@@ -395,7 +431,7 @@ export const buildPhase = async (
         const remoteEnv = buildRemoteEnv(
             env,
             remoteOutDir,
-            remoteTmpDir,
+            remoteBuildTmpDir,
             recipe.arch,
             recipe.group ?? '',
             recipe.finalDiskSize,
@@ -455,7 +491,7 @@ export const buildPhase = async (
                             `[retry] build attempt ${attempt}/${maxAttempts}`
                         )
                     }
-                    await remoteStreaming(
+                    await remoteStreamingScript(
                         env.SSH_TARGET,
                         `${watchdog}${remoteEnv} ${packerArgs.join(' ')}`,
                         onLine
@@ -478,6 +514,12 @@ export const buildPhase = async (
             unregisterVmCleanup?.()
         }
     } finally {
+        // The injector modifies the remote recipe copy in place. Delete those
+        // generated copies after Packer has consumed them; the next repo sync
+        // restores the committed placeholder versions. The private temp tree
+        // contains vars files, private keys, and generated answer-file ISOs.
+        unregisterSecretCleanup?.()
+        await captureRemote(env.SSH_TARGET, secretCleanupCmd).catch(() => {})
         await slot?.release()
     }
 

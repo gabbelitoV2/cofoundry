@@ -9,12 +9,14 @@
 # Output: path to the generated .pkrvars.hcl file (printed to stdout)
 
 set -euo pipefail
+umask 077
 
 RECIPE="${1:?usage: inject-placeholders.sh <recipe-name>}"
 RUNNER_TEMP="${RUNNER_TEMP:-/tmp}"
 VARS_FILE="${RUNNER_TEMP}/packer-vars-${RECIPE}.pkrvars.hcl"
 
-# Wipe any vars file from a previous run
+# Recreate rather than truncate so an old permissive mode cannot survive.
+rm -f "$VARS_FILE"
 : >"$VARS_FILE"
 
 RECIPE_DIR="builds/${RECIPE}"
@@ -65,6 +67,7 @@ if [ -f "$AUTOUNATTEND" ]; then
   AUTOUNATTEND_WORK="${RUNNER_TEMP}/autounattend-${RECIPE}.xml"
   sed "s|__PACKER_ADMIN_PASSWORD__|${WIN_PASSWORD}|g" "$AUTOUNATTEND" >"$AUTOUNATTEND_WORK"
   cp "$AUTOUNATTEND_WORK" "$AUTOUNATTEND"
+  chmod 600 "$AUTOUNATTEND"
   printf 'winrm_password = "%s"\n' "$WIN_PASSWORD" >>"$VARS_FILE"
 fi
 

@@ -29,10 +29,6 @@ export const buildPackerVars = (
         '-var',
         `proxmox_api_url=${apiUrl}`,
         '-var',
-        `proxmox_username=${env.PVE_TOKEN_ID}`,
-        '-var',
-        `proxmox_token=${env.PVE_TOKEN_SECRET}`,
-        '-var',
         `proxmox_node=${env.PVE_NODE}`,
         '-var',
         `proxmox_storage_pool=${env.CF_STORAGE}`,
@@ -78,6 +74,11 @@ export const buildRemoteEnv = (
         CF_GROUP: group,
         TMPDIR: remoteTmpDir,
         PACKER_CACHE_DIR: '/var/lib/vz/template/iso',
+        // Packer automatically maps Packer variable names from PKR_VAR_*.
+        // These stay in the remote process environment instead of appearing
+        // in the Packer argv/process listing.
+        PKR_VAR_proxmox_username: env.PVE_TOKEN_ID,
+        PKR_VAR_proxmox_token: env.PVE_TOKEN_SECRET,
     }
     // The post-processor's CF_BUILT_VMID is the slot-derived id (base*100+slot)
     // for parallel builds; export the recipe BASE so downstream consumers

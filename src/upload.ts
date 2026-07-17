@@ -11,7 +11,7 @@ import {
 } from '@cofoundry/ui'
 import { log } from './log.ts'
 import type { Env } from './env.ts'
-import { captureRemote } from './build/remote.ts'
+import { captureRemote, remoteStreamingScript } from './build/remote.ts'
 import { buildRemoteOutDir } from './build/packer.ts'
 import { shellQuote } from './util.ts'
 
@@ -131,9 +131,7 @@ const remoteSource = (target: string, sourceDir: string): Source => {
             return out.trim() === '1'
         },
         exec: async cmd => {
-            await execa('ssh', [target, `${envPrefix}${cmd}`], {
-                stdio: 'inherit',
-            })
+            await remoteStreamingScript(target, `${envPrefix}${cmd}\n`)
         },
     }
 }

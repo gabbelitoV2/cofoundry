@@ -24,6 +24,9 @@ const TOUCHED = [
     'CF_UPLOAD_CMD',
     'CF_SIDECAR_UPLOAD_CMD',
     'CF_PUBLIC_URL_TMPL',
+    'CF_BUILD_CONCURRENCY',
+    'CF_BUILD_MEMORY_BUDGET_MB',
+    'CF_BUILD_CPU_BUDGET',
     'FROM_ENV',
 ]
 
@@ -57,7 +60,7 @@ describe('resolveConfig', () => {
     test('maps toml fields to canonical env keys', () => {
         writeToml(
             'cofoundry.toml',
-            `[node]\nhost = "pve.example.com"\nport = 8006\n[storage]\ndisks = "fast"\n`
+            `[node]\nhost = "pve.example.com"\nport = 8006\n[storage]\ndisks = "fast"\n[build]\nconcurrency = 3\nmemory_budget_mb = 16384\ncpu_budget = 8\n`
         )
         const rows = resolveConfig(dir)
         expect(find(rows, 'PVE_HOST')).toMatchObject({
@@ -67,6 +70,13 @@ describe('resolveConfig', () => {
         // Numbers are stringified.
         expect(find(rows, 'PVE_PORT')).toMatchObject({ value: '8006' })
         expect(find(rows, 'CF_STORAGE')).toMatchObject({ value: 'fast' })
+        expect(find(rows, 'CF_BUILD_CONCURRENCY')).toMatchObject({
+            value: '3',
+        })
+        expect(find(rows, 'CF_BUILD_MEMORY_BUDGET_MB')).toMatchObject({
+            value: '16384',
+        })
+        expect(find(rows, 'CF_BUILD_CPU_BUDGET')).toMatchObject({ value: '8' })
         expect(find(rows, 'CF_OUT_DIR')).toMatchObject({
             value: './dist',
             source: 'default',

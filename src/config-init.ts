@@ -30,6 +30,14 @@ const renderTemplate = (fromEnv: boolean): string => {
         fromEnv && process.env.CF_BUILD_ATTEMPTS
             ? `attempts = ${process.env.CF_BUILD_ATTEMPTS}`
             : '# attempts = 3   # optional global override; defaults to 3 for Windows, 1 otherwise'
+    const memoryBudget =
+        fromEnv && process.env.CF_BUILD_MEMORY_BUDGET_MB
+            ? `memory_budget_mb = ${process.env.CF_BUILD_MEMORY_BUDGET_MB}`
+            : '# memory_budget_mb = 16384  # required when concurrency > 1'
+    const cpuBudget =
+        fromEnv && process.env.CF_BUILD_CPU_BUDGET
+            ? `cpu_budget = ${process.env.CF_BUILD_CPU_BUDGET}`
+            : '# cpu_budget = 8             # required when concurrency > 1'
     return `# cofoundry.toml — non-secret deployment config for \`cf\`.
 # Committed and reviewable. Inspect the resolved result with \`cf config\`.
 #
@@ -67,6 +75,9 @@ prefix     = ${q(val('R2_PREFIX', fromEnv, 'templates/'))}   # what \`cf publish
 
 [build]
 ${attempts}
+concurrency          = ${val('CF_BUILD_CONCURRENCY', fromEnv, '1')}
+${memoryBudget}
+${cpuBudget}
 upload_concurrency   = ${val('CF_UPLOAD_CONCURRENCY', fromEnv, '8')}
 download_concurrency = ${val('CF_DOWNLOAD_CONCURRENCY', fromEnv, '8')}
 

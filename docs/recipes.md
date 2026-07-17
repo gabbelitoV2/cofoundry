@@ -44,6 +44,8 @@ Unattended install from a Microsoft evaluation ISO. Packer boots the ISO, `autou
    - `boot_iso.iso_file` — Proxmox storage reference to that cached `packer-*` ISO, e.g. `${var.proxmox_iso_storage_pool}:iso/packer-<name>.iso`
    - `build_vmid` — pick an unused ID in the 91xx range
    - `display`, `recipe_name` locals
+   - `memory` and `cores` — right-size the build VM; parallel build admission
+     reads these values directly from the source block
 
 2. Run:
    ```sh
@@ -70,6 +72,8 @@ Unattended install from a Microsoft evaluation ISO. Packer boots the ISO, `autou
    - `os` — Proxmox OS type: `win10` (2019), `win2k22` (2022), `win11` (2025)
    - `tpm_config` — required for 2025, remove for 2019
    - `cpu_type = "host"` — required for 2025 (installer checks SSE4.1/4.2)
+   - `memory` and `cores` — keep enough installation headroom; these values
+     also determine resource-aware parallel build admission
 
 2. Create `builds/windows-server-<version>/autounattend.xml` — copy from an existing version, change the `<Value>` in `<InstallFrom><MetaData>` to match the edition string (e.g. `Windows Server 2022 SERVERDATACENTERCORE`).
 

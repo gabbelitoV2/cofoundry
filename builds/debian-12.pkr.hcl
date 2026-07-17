@@ -106,9 +106,9 @@ source "proxmox-iso" "debian-12" {
   os      = "l26"
 
   cpu_type = "host"
-  cores    = 4
+  cores    = 2
   sockets  = 1
-  memory   = 8192
+  memory   = 2048
 
   qemu_agent              = true
   cloud_init              = true

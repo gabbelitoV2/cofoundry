@@ -12,4 +12,6 @@ packer {
 
 source "proxmox-iso" "minimal" {
   vm_name = "minimal-template"
+  cores   = 2
+  memory  = 4096
 }

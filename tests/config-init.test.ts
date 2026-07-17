@@ -9,6 +9,9 @@ const KEYS = [
     'PVE_DUMP_DIR',
     'R2_PREFIX',
     'CF_BUILD_ATTEMPTS',
+    'CF_BUILD_CONCURRENCY',
+    'CF_BUILD_MEMORY_BUDGET_MB',
+    'CF_BUILD_CPU_BUDGET',
     'CF_UPLOAD_CONCURRENCY',
     'CF_DOWNLOAD_CONCURRENCY',
     'CF_OUT_DIR',
@@ -40,6 +43,9 @@ describe('runInit', () => {
         process.env.PVE_DUMP_DIR = '/mnt/dump'
         process.env.R2_PREFIX = 'artifacts/'
         process.env.CF_BUILD_ATTEMPTS = '5'
+        process.env.CF_BUILD_CONCURRENCY = '3'
+        process.env.CF_BUILD_MEMORY_BUDGET_MB = '16384'
+        process.env.CF_BUILD_CPU_BUDGET = '8'
         process.env.CF_UPLOAD_CONCURRENCY = '4'
         process.env.CF_DOWNLOAD_CONCURRENCY = '6'
         process.env.CF_OUT_DIR = './output'
@@ -52,6 +58,9 @@ describe('runInit', () => {
         expect(config).toContain('dump_dir = "/mnt/dump"')
         expect(config).toContain('prefix     = "artifacts/"')
         expect(config).toContain('attempts = 5')
+        expect(config).toContain('concurrency          = 3')
+        expect(config).toContain('memory_budget_mb = 16384')
+        expect(config).toContain('cpu_budget = 8')
         expect(config).toContain('upload_concurrency   = 4')
         expect(config).toContain('download_concurrency = 6')
         expect(config).toContain('out_dir = "./output"')

@@ -11,6 +11,9 @@ type BuildCommandOptions = {
     uploadConcurrency?: string
     downloadConcurrency?: string
     prefetchConcurrency?: string
+    buildConcurrency?: string
+    buildMemoryBudget?: string
+    buildCpuBudget?: string
     ci?: boolean
     verbose?: boolean
     outputLines?: string
@@ -18,6 +21,21 @@ type BuildCommandOptions = {
 
 const parseNumber = (value?: string): number | undefined =>
     value === undefined ? undefined : Number.parseInt(value, 10)
+
+const parseBuildNumber = (value?: string): number | undefined =>
+    value === undefined ? undefined : Number(value)
+
+const parseMemoryMb = (value: string): number => {
+    const match = value.trim().match(/^(\d+)\s*(m|mb|mib|g|gb|gib)?$/i)
+    if (!match?.[1]) {
+        throw new Error(
+            `invalid build memory budget ${JSON.stringify(value)}; use MiB or a size such as 16G`
+        )
+    }
+    const amount = Number.parseInt(match[1], 10)
+    const unit = match[2]?.toLowerCase()
+    return unit?.startsWith('g') ? amount * 1024 : amount
+}
 
 const shouldSyncBack = (env: Env, opts: BuildCommandOptions): boolean =>
     !opts.skipArtifactSync && !env.CF_SKIP_ARTIFACT_SYNC
@@ -43,6 +61,13 @@ export const runBuildCommand = async (
         uploadConcurrency: parseNumber(opts.uploadConcurrency),
         downloadConcurrency: parseNumber(opts.downloadConcurrency),
         prefetchConcurrency: parseNumber(opts.prefetchConcurrency),
+        buildConcurrency:
+            parseBuildNumber(opts.buildConcurrency) ?? env.CF_BUILD_CONCURRENCY,
+        buildMemoryBudgetMb: opts.buildMemoryBudget
+            ? parseMemoryMb(opts.buildMemoryBudget)
+            : env.CF_BUILD_MEMORY_BUDGET_MB,
+        buildCpuBudget:
+            parseBuildNumber(opts.buildCpuBudget) ?? env.CF_BUILD_CPU_BUDGET,
         ci: opts.ci,
         verbose: opts.verbose,
         outputLines: parseNumber(opts.outputLines),
@@ -89,6 +114,18 @@ export const registerBuildCommand = (program: Command): void => {
         .option(
             '--prefetch-concurrency <n>',
             'Parallel ISO/asset prefetches on the remote node (default 3)'
+        )
+        .option(
+            '--build-concurrency <n>',
+            'Maximum simultaneous Packer builds (default 1)'
+        )
+        .option(
+            '--build-memory-budget <size>',
+            'Total RAM available to build VMs, in MiB or as a size such as 16G'
+        )
+        .option(
+            '--build-cpu-budget <n>',
+            'Total virtual CPU cores available to build VMs'
         )
         .option('--ci', 'Force line-oriented output for non-TTY environments')
         .option('-v, --verbose', 'Stream full logs for debugging')

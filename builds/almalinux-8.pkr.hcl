@@ -105,9 +105,9 @@ source "proxmox-iso" "almalinux-8" {
   machine                 = "q35"
   os                      = "l26"
   cpu_type                = "host"
-  cores                   = 4
+  cores                   = 2
   sockets                 = 1
-  memory                  = 8192
+  memory                  = 4096
   qemu_agent              = true
   cloud_init              = true
   cloud_init_storage_pool = var.proxmox_storage_pool

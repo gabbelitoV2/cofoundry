@@ -45,6 +45,12 @@ const EnvSchema = z.object({
     // Parallel SFTP connections for syncing artifacts back down (default 8).
     CF_DOWNLOAD_CONCURRENCY: z.coerce.number().int().min(1).default(8),
 
+    // Packer build admission limits. Parallel builds are opt-in and require
+    // both resource budgets so the node cannot be oversubscribed accidentally.
+    CF_BUILD_CONCURRENCY: z.coerce.number().int().min(1).default(1),
+    CF_BUILD_MEMORY_BUDGET_MB: z.coerce.number().int().min(1).optional(),
+    CF_BUILD_CPU_BUDGET: z.coerce.number().int().min(1).optional(),
+
     // If set, skip destroying the build VM on abort (useful for debugging failed builds).
     CF_KEEP_VM: z
         .preprocess(v => v === '1' || v === 'true' || v === true, z.boolean())

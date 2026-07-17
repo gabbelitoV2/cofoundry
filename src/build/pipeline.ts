@@ -8,6 +8,7 @@ import {
     syncPhase,
 } from '@/build.ts'
 import { redactSensitive } from '@/util.ts'
+import { BuildScheduler, type BuildResources } from '@/build/scheduler.ts'
 import {
     formatTransferStatus,
     parseWgetLine,
@@ -24,6 +25,9 @@ export type PipelineOptions = {
     uploadConcurrency?: number
     downloadConcurrency?: number
     prefetchConcurrency?: number
+    buildConcurrency?: number
+    buildMemoryBudgetMb?: number
+    buildCpuBudget?: number
     ci?: boolean
     verbose?: boolean
     outputLines?: number
@@ -96,8 +100,9 @@ export const runPipeline = async (
     opts: PipelineOptions,
     dependencies: PipelineDependencies = DEFAULT_DEPENDENCIES
 ): Promise<PipelineResult> => {
+    const buildOptions = validateBuildOptions(recipes, opts)
     const prefetchQ = new PQueue({ concurrency: opts.prefetchConcurrency ?? 3 })
-    const buildQ = new PQueue({ concurrency: 1 })
+    const buildQ = new BuildScheduler(buildOptions)
     const syncQ = new PQueue({ concurrency: 1 })
 
     const passed: string[] = []
@@ -139,6 +144,87 @@ export const runPipeline = async (
     return { passed, failed }
 }
 
+const validateBuildOptions = (
+    recipes: RecipeInfo[],
+    opts: PipelineOptions
+): {
+    concurrency: number
+    memoryBudgetMb?: number
+    cpuBudget?: number
+} => {
+    const concurrency = opts.buildConcurrency ?? 1
+    if (!Number.isInteger(concurrency) || concurrency < 1) {
+        throw new Error('build concurrency must be a positive integer')
+    }
+    for (const [label, value] of [
+        ['build memory budget', opts.buildMemoryBudgetMb],
+        ['build CPU budget', opts.buildCpuBudget],
+    ] as const) {
+        if (value !== undefined && (!Number.isInteger(value) || value < 1)) {
+            throw new Error(`${label} must be a positive integer`)
+        }
+    }
+    if (
+        concurrency > 1 &&
+        (opts.buildMemoryBudgetMb === undefined ||
+            opts.buildCpuBudget === undefined)
+    ) {
+        throw new Error(
+            'parallel builds require both a memory budget and a CPU budget'
+        )
+    }
+    if (concurrency > 1) {
+        const seen = new Set<string>()
+        for (const recipe of recipes) {
+            if (seen.has(recipe.name)) {
+                throw new Error(
+                    `parallel builds cannot include ${recipe.name} more than once`
+                )
+            }
+            seen.add(recipe.name)
+        }
+    }
+
+    const resourcesRequired =
+        concurrency > 1 ||
+        opts.buildMemoryBudgetMb !== undefined ||
+        opts.buildCpuBudget !== undefined
+    if (resourcesRequired) {
+        for (const recipe of recipes) {
+            if (
+                recipe.buildMemoryMb === undefined ||
+                recipe.buildCores === undefined
+            ) {
+                throw new Error(
+                    `${recipe.name} must declare static memory and cores in its Packer source`
+                )
+            }
+            if (
+                opts.buildMemoryBudgetMb !== undefined &&
+                recipe.buildMemoryMb > opts.buildMemoryBudgetMb
+            ) {
+                throw new Error(
+                    `${recipe.name} requires ${recipe.buildMemoryMb} MiB, exceeding the ${opts.buildMemoryBudgetMb} MiB build memory budget`
+                )
+            }
+            if (
+                opts.buildCpuBudget !== undefined &&
+                recipe.buildCores > opts.buildCpuBudget
+            ) {
+                throw new Error(
+                    `${recipe.name} requires ${recipe.buildCores} cores, exceeding the ${opts.buildCpuBudget}-core build CPU budget`
+                )
+            }
+        }
+    }
+
+    return {
+        concurrency,
+        memoryBudgetMb: opts.buildMemoryBudgetMb,
+        cpuBudget: opts.buildCpuBudget,
+    }
+}
+
 const runRepoSync = async (
     env: Env,
     opts: PipelineOptions,
@@ -176,10 +262,20 @@ const runRepoSync = async (
 
 type RecipeContext = {
     prefetchQ: PQueue
-    buildQ: PQueue
+    buildQ: BuildScheduler
     syncQ: PQueue
     passed: string[]
     failed: { name: string; error: string }[]
+}
+
+const runBuildQueued = async <T>(
+    queue: BuildScheduler,
+    resources: BuildResources,
+    handle: TaskHandle,
+    work: () => Promise<T>
+): Promise<T> => {
+    handle.setPhase('build · queued')
+    return await queue.add(resources, work, () => handle.setPhase('build'))
 }
 
 const recordFailure = (
@@ -223,19 +319,29 @@ const runRecipe = async (
     // ── build ──
     let buildStartedAt: number | undefined
     try {
-        await runQueued(ctx.buildQ, 'build', handle, async () => {
-            const result = await dependencies.build(
-                env,
-                recipe,
-                { keepVm: opts.keepVm },
-                line => {
-                    const trimmed = line.trim()
-                    if (!trimmed) return
-                    handle.log(opts.verbose ? trimmed : trimmed.slice(0, 200))
-                }
-            )
-            buildStartedAt = result.startedAt
-        })
+        await runBuildQueued(
+            ctx.buildQ,
+            {
+                memoryMb: recipe.buildMemoryMb ?? 0,
+                cores: recipe.buildCores ?? 0,
+            },
+            handle,
+            async () => {
+                const result = await dependencies.build(
+                    env,
+                    recipe,
+                    { keepVm: opts.keepVm },
+                    line => {
+                        const trimmed = line.trim()
+                        if (!trimmed) return
+                        handle.log(
+                            opts.verbose ? trimmed : trimmed.slice(0, 200)
+                        )
+                    }
+                )
+                buildStartedAt = result.startedAt
+            }
+        )
     } catch (err) {
         throw recordFailure(ctx, recipe, err, handle)
     }

@@ -9,6 +9,8 @@ describe('loadRecipe', () => {
         expect(r.name).toBe('recipe-minimal')
         expect(r.display).toBe('Minimal Recipe')
         expect(r.buildVmid).toBe(9999)
+        expect(r.buildCores).toBe(2)
+        expect(r.buildMemoryMb).toBe(4096)
         expect(r.isoUrl).toBeUndefined()
         expect(r.isoTargetPath).toBeUndefined()
     })

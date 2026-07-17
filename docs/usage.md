@@ -31,6 +31,23 @@ cf build
 cf build --skip-artifact-sync
 ```
 
+Packer builds run one at a time by default. To opt into parallel builds, set a
+maximum concurrency and explicit node-wide RAM and CPU budgets. A recipe starts
+only when all three limits have capacity:
+
+```sh
+cf build --build-concurrency 4 --build-memory-budget 16G --build-cpu-budget 8
+```
+
+The persistent equivalents are `build.concurrency`,
+`build.memory_budget_mb`, and `build.cpu_budget` in `cofoundry.toml`. Recipe
+resource requirements come directly from each `.pkr.hcl` file's `memory` and
+`cores` settings.
+
+These budgets coordinate recipes within one `cf build` invocation. Independent
+`cf build` processes do not share a scheduler, so use one multi-recipe command
+when relying on the resource limits.
+
 `--skip-artifact-sync` overrides the default artifact download for that command invocation (env equivalent: `CF_SKIP_ARTIFACT_SYNC=1`).
 
 ## Check for upstream ISO changes

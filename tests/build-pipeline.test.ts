@@ -9,6 +9,8 @@ const recipe = {
     display: 'Debian 12',
     path: 'builds/debian-12.pkr.hcl',
     arch: 'amd64',
+    buildMemoryMb: 4096,
+    buildCores: 2,
 } as RecipeInfo
 
 const dependencies = (
@@ -56,5 +58,53 @@ describe('runPipeline', () => {
         expect(result.failed).toEqual([
             { name: 'debian-12', error: 'build failed' },
         ])
+    })
+
+    test('requires resource budgets when parallel builds are enabled', async () => {
+        expect(
+            runPipeline(
+                env,
+                [recipe],
+                {
+                    syncBack: false,
+                    ci: true,
+                    skipRepoSync: true,
+                    buildConcurrency: 2,
+                },
+                dependencies([])
+            )
+        ).rejects.toThrow('require both a memory budget and a CPU budget')
+    })
+
+    test('rejects invalid CLI resource budgets', async () => {
+        expect(
+            runPipeline(
+                env,
+                [recipe],
+                {
+                    syncBack: false,
+                    ci: true,
+                    buildMemoryBudgetMb: 0,
+                },
+                dependencies([])
+            )
+        ).rejects.toThrow('build memory budget must be a positive integer')
+    })
+
+    test('rejects duplicate recipes in a parallel build', async () => {
+        expect(
+            runPipeline(
+                env,
+                [recipe, recipe],
+                {
+                    syncBack: false,
+                    ci: true,
+                    buildConcurrency: 2,
+                    buildMemoryBudgetMb: 8192,
+                    buildCpuBudget: 4,
+                },
+                dependencies([])
+            )
+        ).rejects.toThrow('cannot include debian-12 more than once')
     })
 })

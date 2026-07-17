@@ -11,6 +11,10 @@ export interface RecipeInfo {
     display: string
     /** VMID from `# build_vmid: <n>` comment */
     buildVmid?: number
+    /** RAM assigned to the Packer build VM, parsed from `memory = <MiB>`. */
+    buildMemoryMb?: number
+    /** Virtual cores assigned to the Packer build VM. */
+    buildCores?: number
     /** ISO URL parsed from `# iso_url: ...` metadata or the boot ISO block */
     isoUrl?: string
     /** Resolved local path for the boot ISO on the Proxmox node */
@@ -42,6 +46,15 @@ const parseMetaInt = (raw: string, key: string): number | undefined => {
     if (!v) return undefined
     const n = parseInt(v, 10)
     return Number.isFinite(n) ? n : undefined
+}
+
+const parseHclInt = (raw: string, key: string): number | undefined => {
+    const match = raw.match(
+        new RegExp(`^\\s*${key}\\s*=\\s*(\\d+)\\s*(?:#.*)?$`, 'm')
+    )
+    if (!match?.[1]) return undefined
+    const value = Number.parseInt(match[1], 10)
+    return Number.isFinite(value) ? value : undefined
 }
 
 const parseIsoUrl = (raw: string): string | undefined => {
@@ -91,6 +104,8 @@ export const loadRecipe = async (
         path,
         display: parseMeta(raw, 'display') ?? name,
         buildVmid: parseMetaInt(raw, 'build_vmid'),
+        buildMemoryMb: parseHclInt(raw, 'memory'),
+        buildCores: parseHclInt(raw, 'cores'),
         isoUrl: parseIsoUrl(raw),
         isoTargetPath: parseIsoTargetPath(raw),
         isoChecksumUrl: parseMeta(raw, 'iso_checksum_url'),

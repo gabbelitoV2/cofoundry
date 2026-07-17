@@ -20,6 +20,7 @@ import {
 
 export type PipelineOptions = {
     syncBack: boolean
+    skipUpload?: boolean
     skipRepoSync?: boolean
     keepVm?: boolean
     downloadConcurrency?: number
@@ -328,7 +329,10 @@ const runRecipe = async (
                 const result = await dependencies.build(
                     env,
                     recipe,
-                    { keepVm: opts.keepVm },
+                    {
+                        keepVm: opts.keepVm,
+                        skipUpload: opts.skipUpload,
+                    },
                     line => {
                         const trimmed = line.trim()
                         if (!trimmed) return

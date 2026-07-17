@@ -45,6 +45,7 @@ type State = {
     result?: 'ok' | 'fail'
     message?: string
     error?: string
+    persisted?: boolean
 }
 
 class LiveRenderer implements Renderer {
@@ -128,12 +129,62 @@ class LiveRenderer implements Renderer {
                 state.result = 'fail'
                 state.error = err
                 state.progress = undefined
+                this.persistFailure(state)
             },
         }
     }
 
     note(msg: string): void {
         this.extraNotes.push(msg)
+    }
+
+    private elapsed(s: State): number {
+        return (
+            s.activeMs +
+            (s.activeSinceMs !== undefined ? Date.now() - s.activeSinceMs : 0)
+        )
+    }
+
+    private head(s: State, frame: string): string {
+        const icon =
+            s.result === 'ok'
+                ? pc.green(figures.tick)
+                : s.result === 'fail'
+                  ? pc.red(figures.cross)
+                  : pc.cyan(frame)
+        const phaseText = s.result === 'ok' ? (s.message ?? 'done') : s.phase
+        const status = s.progress
+            ? `${phaseText} ${pc.dim('·')} ${s.progress}`
+            : phaseText
+        const elapsed = this.elapsed(s)
+        const timer =
+            elapsed === 0 ? '' : ` ${pc.dim(`[${fmtDuration(elapsed)}]`)}`
+        return `${icon} ${pc.bold(s.name)} ${pc.dim('·')} ${status}${timer}`
+    }
+
+    private errorLines(error: string): string[] {
+        return error
+            .split(/\r?\n/)
+            .map((line, index) =>
+                index === 0
+                    ? `    ${pc.red(figures.cross)} ${line}`
+                    : `      ${line}`
+            )
+    }
+
+    private persistFailure(s: State): void {
+        if (s.persisted) return
+        s.persisted = true
+        const out = [this.head(s, this.spinner.frames[0]!)]
+        for (const log of s.logs) out.push(`    ${pc.dim('›')} ${log}`)
+        if (s.error) out.push(...this.errorLines(s.error))
+
+        // Move the current live frame out of the way, pin the complete failure
+        // in scrollback, then immediately redraw the remaining tasks below it.
+        // `persist` wraps long lines instead of truncating them, so the useful
+        // tail of an error is visible while other tasks continue to run.
+        this.write.persist(out.join('\n'))
+        this.render()
     }
 
     private render(): void {
@@ -152,38 +203,11 @@ class LiveRenderer implements Renderer {
         }
         for (const name of this.order) {
             const s = this.tasks.get(name)!
-            const icon =
-                s.result === 'ok'
-                    ? pc.green(figures.tick)
-                    : s.result === 'fail'
-                      ? pc.red(figures.cross)
-                      : pc.cyan(frame)
-            const phaseText =
-                s.result === 'ok' ? s.message ?? 'done' : s.phase
-            const status = s.progress
-                ? `${phaseText} ${pc.dim('·')} ${s.progress}`
-                : phaseText
-            const elapsed =
-                s.activeMs +
-                (s.activeSinceMs !== undefined
-                    ? Date.now() - s.activeSinceMs
-                    : 0)
-            const timer =
-                elapsed === 0
-                    ? ''
-                    : ` ${pc.dim(`[${fmtDuration(elapsed)}]`)}`
-            const head = `${icon} ${pc.bold(s.name)} ${pc.dim('·')} ${status}${timer}`
-            out.push(cliTruncate(head, cols))
+            if (s.persisted) continue
+            out.push(cliTruncate(this.head(s, frame), cols))
             for (const log of s.logs) {
                 out.push(cliTruncate(`    ${pc.dim('›')} ${log}`, cols))
             }
-            if (s.error)
-                out.push(
-                    cliTruncate(
-                        `    ${pc.red(figures.cross)} ${s.error}`,
-                        cols
-                    )
-                )
         }
         this.write(out.join('\n'))
     }

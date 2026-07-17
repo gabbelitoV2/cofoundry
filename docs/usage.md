@@ -6,6 +6,7 @@
 cf build debian-12
 cf build windows-server-2025
 cf build debian-12 --skip-artifact-sync
+cf build debian-12 --skip-upload
 ```
 
 The first run for a recipe downloads the ISO to the node's cache automatically. Subsequent builds skip the download. Output lands in `./dist/`:
@@ -49,6 +50,10 @@ These budgets coordinate recipes within one `cf build` invocation. Independent
 when relying on the resource limits.
 
 `--skip-artifact-sync` overrides the default artifact download for that command invocation (env equivalent: `CF_SKIP_ARTIFACT_SYNC=1`).
+
+`--skip-upload` disables the configured artifact and sidecar uploads for that
+build invocation. It does not disable the default artifact download to
+`CF_OUT_DIR`.
 
 ## Check for upstream ISO changes
 

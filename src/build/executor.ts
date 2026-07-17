@@ -22,7 +22,10 @@ import { buildAttemptCount, runWithRetries } from '@/build/retry.ts'
 import { buildSlotVmid, destroyVmCommand } from '@/build/vm.ts'
 import { log } from '@/log.ts'
 
-export type BuildPhaseOptions = { keepVm?: boolean }
+export type BuildPhaseOptions = {
+    keepVm?: boolean
+    skipUpload?: boolean
+}
 
 export type BuildPhaseResult = {
     /** Remote epoch (seconds) captured before packer ran. Used by syncPhase
@@ -178,7 +181,8 @@ export const buildPhase = async (
             recipe.arch,
             recipe.group ?? '',
             recipe.finalDiskSize,
-            recipe.buildVmid
+            recipe.buildVmid,
+            options.skipUpload
         )
 
         const unregisterVmCleanup =

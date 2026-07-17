@@ -53,7 +53,8 @@ export const buildRemoteEnv = (
     arch: string,
     group: string,
     finalDiskSize?: string,
-    baseVmid?: number
+    baseVmid?: number,
+    skipUpload: boolean = false
 ): string => {
     // Packer runs on the PVE node, so SSH_TARGET=local tells the post-processor
     // to run vzdump directly instead of SSHing back to itself.
@@ -80,34 +81,36 @@ export const buildRemoteEnv = (
     // Opt-in: when set, the post-processor shrinks the OS disk to this size
     // before vzdump (see recipes/_shared/post/shrink-disk.sh).
     if (finalDiskSize) pairs.CF_FINAL_DISK_SIZE = finalDiskSize
-    if (env.CF_UPLOAD_CMD) pairs.CF_UPLOAD_CMD = env.CF_UPLOAD_CMD
-    if (env.CF_SIDECAR_UPLOAD_CMD)
-        pairs.CF_SIDECAR_UPLOAD_CMD = env.CF_SIDECAR_UPLOAD_CMD
-    if (env.CF_PUBLIC_URL_TMPL)
-        pairs.CF_PUBLIC_URL_TMPL = env.CF_PUBLIC_URL_TMPL
-    if (env.R2_ENDPOINT) pairs.R2_ENDPOINT = env.R2_ENDPOINT
-    if (env.R2_BUCKET) pairs.R2_BUCKET = env.R2_BUCKET
-    if (env.R2_PREFIX) pairs.R2_PREFIX = env.R2_PREFIX
-    // Forward S3-compatible creds + endpoint/bucket so a CF_UPLOAD_CMD using
-    // `aws s3 cp ... $R2_ENDPOINT ... s3://$R2_BUCKET/...` can authenticate
-    // and resolve those shell vars on the node.
-    for (const k of [
-        'AWS_ACCESS_KEY_ID',
-        'AWS_SECRET_ACCESS_KEY',
-        'AWS_SESSION_TOKEN',
-        'AWS_DEFAULT_REGION',
-    ]) {
-        const v = process.env[k]
-        if (v) pairs[k] = v
+    if (!skipUpload) {
+        if (env.CF_UPLOAD_CMD) pairs.CF_UPLOAD_CMD = env.CF_UPLOAD_CMD
+        if (env.CF_SIDECAR_UPLOAD_CMD)
+            pairs.CF_SIDECAR_UPLOAD_CMD = env.CF_SIDECAR_UPLOAD_CMD
+        if (env.CF_PUBLIC_URL_TMPL)
+            pairs.CF_PUBLIC_URL_TMPL = env.CF_PUBLIC_URL_TMPL
+        if (env.R2_ENDPOINT) pairs.R2_ENDPOINT = env.R2_ENDPOINT
+        if (env.R2_BUCKET) pairs.R2_BUCKET = env.R2_BUCKET
+        if (env.R2_PREFIX) pairs.R2_PREFIX = env.R2_PREFIX
+        // Forward S3-compatible creds + endpoint/bucket so a CF_UPLOAD_CMD
+        // using `aws s3 cp ... $R2_ENDPOINT ... s3://$R2_BUCKET/...` can
+        // authenticate and resolve those shell vars on the node.
+        for (const k of [
+            'AWS_ACCESS_KEY_ID',
+            'AWS_SECRET_ACCESS_KEY',
+            'AWS_SESSION_TOKEN',
+            'AWS_DEFAULT_REGION',
+        ]) {
+            const v = process.env[k]
+            if (v) pairs[k] = v
+        }
+        // R2 rejects the default CRC32 integrity checksum AWS CLI v2.23+ adds
+        // to single-part PutObject ("SignatureDoesNotMatch" on small objects
+        // like sidecar JSONs). Multipart uploads (large .vma.zst) take a
+        // different code path and aren't affected. Caller can override these.
+        pairs.AWS_REQUEST_CHECKSUM_CALCULATION =
+            process.env.AWS_REQUEST_CHECKSUM_CALCULATION ?? 'when_required'
+        pairs.AWS_RESPONSE_CHECKSUM_VALIDATION =
+            process.env.AWS_RESPONSE_CHECKSUM_VALIDATION ?? 'when_required'
     }
-    // R2 rejects the default CRC32 integrity checksum AWS CLI v2.23+ adds to
-    // single-part PutObject ("SignatureDoesNotMatch" on small objects like
-    // sidecar JSONs). Multipart uploads (large .vma.zst) take a different
-    // code path and aren't affected. Caller can override by exporting these.
-    pairs.AWS_REQUEST_CHECKSUM_CALCULATION =
-        process.env.AWS_REQUEST_CHECKSUM_CALCULATION ?? 'when_required'
-    pairs.AWS_RESPONSE_CHECKSUM_VALIDATION =
-        process.env.AWS_RESPONSE_CHECKSUM_VALIDATION ?? 'when_required'
     return Object.entries(pairs)
         .map(([k, v]) => `${k}=${shellQuote(v)}`)
         .join(' ')

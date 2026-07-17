@@ -50,6 +50,43 @@ describe('buildRemoteEnv', () => {
 
         expect(result).not.toContain('CF_RECIPE_BASE_VMID')
     })
+
+    test('omits upload configuration and credentials when upload is skipped', () => {
+        const uploadEnv: Env = {
+            ...env,
+            CF_UPLOAD_CMD: 'upload {{file}}',
+            CF_SIDECAR_UPLOAD_CMD: 'upload-sidecar {{file}}',
+            CF_PUBLIC_URL_TMPL: 'https://cdn.example.com/{{sha256}}',
+            R2_ENDPOINT: 'https://r2.example.com',
+            R2_BUCKET: 'templates',
+            R2_PREFIX: 'templates/',
+        }
+        const previousAccessKey = process.env.AWS_ACCESS_KEY_ID
+        process.env.AWS_ACCESS_KEY_ID = 'access-key'
+        try {
+            const result = buildRemoteEnv(
+                uploadEnv,
+                '/var/lib/vz/dump/cofoundry-out',
+                '/var/lib/vz/dump/cofoundry-tmp',
+                'amd64',
+                'linux',
+                undefined,
+                undefined,
+                true
+            )
+
+            expect(result).not.toContain('CF_UPLOAD_CMD')
+            expect(result).not.toContain('CF_SIDECAR_UPLOAD_CMD')
+            expect(result).not.toContain('CF_PUBLIC_URL_TMPL')
+            expect(result).not.toContain('R2_ENDPOINT')
+            expect(result).not.toContain('R2_BUCKET')
+            expect(result).not.toContain('AWS_ACCESS_KEY_ID')
+        } finally {
+            if (previousAccessKey === undefined)
+                delete process.env.AWS_ACCESS_KEY_ID
+            else process.env.AWS_ACCESS_KEY_ID = previousAccessKey
+        }
+    })
 })
 
 describe('buildPackerVars', () => {

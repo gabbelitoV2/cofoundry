@@ -60,6 +60,30 @@ describe('runPipeline', () => {
         ])
     })
 
+    test('passes the upload override to the build phase', async () => {
+        const events: string[] = []
+        const deps = dependencies(events)
+        deps.build = async (_env, _recipe, options) => {
+            events.push('build')
+            expect(options.skipUpload).toBeTrue()
+            return { startedAt: 123 }
+        }
+
+        await runPipeline(
+            env,
+            [recipe],
+            {
+                syncBack: false,
+                skipUpload: true,
+                skipRepoSync: true,
+                ci: true,
+            },
+            deps
+        )
+
+        expect(events).toEqual(['prefetch', 'build'])
+    })
+
     test('requires resource budgets when parallel builds are enabled', async () => {
         expect(
             runPipeline(

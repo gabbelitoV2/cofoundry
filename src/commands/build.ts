@@ -6,6 +6,7 @@ import { log } from '@/log.ts'
 
 type BuildCommandOptions = {
     skipArtifactSync?: boolean
+    skipUpload?: boolean
     skipRepoSync?: boolean
     keepVm?: boolean
     downloadConcurrency?: string
@@ -55,6 +56,7 @@ export const runBuildCommand = async (
 
     const pipelineOpts: PipelineOptions = {
         syncBack: shouldSyncBack(env, opts),
+        skipUpload: opts.skipUpload,
         skipRepoSync: opts.skipRepoSync,
         keepVm: opts.keepVm || env.CF_KEEP_VM,
         downloadConcurrency: parseNumber(opts.downloadConcurrency),
@@ -92,6 +94,10 @@ export const registerBuildCommand = (program: Command): void => {
         .option(
             '--skip-artifact-sync',
             'Do not download built artifacts to CF_OUT_DIR (also: CF_SKIP_ARTIFACT_SYNC=1)'
+        )
+        .option(
+            '--skip-upload',
+            'Do not upload the artifact or sidecar during build post-processing'
         )
         .option(
             '--skip-repo-sync',

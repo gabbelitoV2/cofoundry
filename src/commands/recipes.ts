@@ -8,7 +8,7 @@ import { log } from '@/log.ts'
 const listCommand = async (): Promise<void> => {
     const recipes = await listRecipes()
     if (recipes.length === 0) {
-        log.warn('No recipes found in builds/')
+        log.warn('No recipes found in recipes/')
         return
     }
     log.section(`Recipes ${pc.dim(`(${recipes.length})`)}`)

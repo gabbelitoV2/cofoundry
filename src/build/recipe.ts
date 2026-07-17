@@ -16,7 +16,7 @@ const fileExists = (path: string): Promise<boolean> => Bun.file(path).exists()
 export const inspectRecipeLayout = async (
     recipe: RecipeInfo
 ): Promise<RecipeLayout> => {
-    const recipeDir = `${REPO_ROOT}builds/${recipe.name}`
+    const recipeDir = `${REPO_ROOT}recipes/${recipe.name}`
     const [hasPreseed, hasAutoinstall, hasKickstart] = await Promise.all([
         fileExists(`${recipeDir}/http/preseed.cfg`),
         fileExists(`${recipeDir}/http/user-data`),
@@ -51,7 +51,7 @@ export const injectedRecipeFiles = (
     recipe: RecipeInfo,
     layout: RecipeLayout
 ): string[] => {
-    const root = `${remoteWorkDir}/builds/${recipe.name}`
+    const root = `${remoteWorkDir}/recipes/${recipe.name}`
     return [
         layout.hasPreseed ? `${root}/http/preseed.cfg` : undefined,
         layout.hasAutoinstall ? `${root}/http/user-data` : undefined,

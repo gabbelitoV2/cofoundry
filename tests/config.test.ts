@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import { listRecipes, loadRecipe } from '../src/config.ts'
 
-const FIXTURES = new URL('./fixtures/builds/', import.meta.url).pathname
+const FIXTURES = new URL('./fixtures/recipes/', import.meta.url).pathname
 
 describe('loadRecipe', () => {
     test('parses display and build_vmid from header comments', async () => {

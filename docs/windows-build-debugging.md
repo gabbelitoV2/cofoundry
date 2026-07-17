@@ -195,7 +195,7 @@ ls /tmp/vm/vioscsi/   # output included: 2k19  2k22  2k25  w10  w11  ...
 ls /tmp/vm/vioscsi/2k25/amd64/  # vioscsi.cat  vioscsi.inf  vioscsi.pdb  vioscsi.sys
 ```
 
-**Fix:** Change all six driver paths in `builds/windows-server-2025/autounattend.xml` from `2k22` → `2k25`:
+**Fix:** Change all six driver paths in `recipes/windows-server-2025/autounattend.xml` from `2k22` → `2k25`:
 
 ```xml
 <Path>D:\vioscsi\2k25\amd64</Path>
@@ -339,7 +339,7 @@ sgdisk -p /dev/nbd1   # if "no partitions" → failure was before disk partition
 
 If there are no partitions and $Windows.~BT doesn't exist (or only Drivers/Unattend does from a _previous_ stale nbd session), the failure is pre-partitioning — check setupconfig.ini syntax.
 
-**Fix:** Change `CompactOS=disable` → `CompactOS=Never` in `builds/windows-server-2025/setupconfig.ini`.
+**Fix:** Change `CompactOS=disable` → `CompactOS=Never` in `recipes/windows-server-2025/setupconfig.ini`.
 
 **Caveat:** `CompactOS=Never` in setupconfig.ini gets past the pre-partition crash but does NOT actually prevent CompactOS — see Problem 15.
 

@@ -7,7 +7,7 @@ const env = {} as Env
 const recipe = {
     name: 'debian-12',
     display: 'Debian 12',
-    path: 'builds/debian-12.pkr.hcl',
+    path: 'recipes/debian-12.pkr.hcl',
     arch: 'amd64',
     buildMemoryMb: 4096,
     buildCores: 2,

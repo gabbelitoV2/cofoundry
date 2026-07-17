@@ -2,7 +2,9 @@ import { readdir, readFile } from 'node:fs/promises'
 import { basename, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-const DEFAULT_BUILDS_DIR = fileURLToPath(new URL('../builds/', import.meta.url))
+const DEFAULT_RECIPES_DIR = fileURLToPath(
+    new URL('../recipes/', import.meta.url)
+)
 
 export interface RecipeInfo {
     name: string
@@ -95,9 +97,9 @@ const parseIsoTargetPath = (raw: string): string | undefined => {
 
 export const loadRecipe = async (
     name: string,
-    buildsDir: string = DEFAULT_BUILDS_DIR
+    recipesDir: string = DEFAULT_RECIPES_DIR
 ): Promise<RecipeInfo> => {
-    const path = join(buildsDir, `${name}.pkr.hcl`)
+    const path = join(recipesDir, `${name}.pkr.hcl`)
     const raw = await readFile(path, 'utf8')
     return {
         name,
@@ -117,14 +119,14 @@ export const loadRecipe = async (
 }
 
 export const listRecipes = async (
-    buildsDir: string = DEFAULT_BUILDS_DIR
+    recipesDir: string = DEFAULT_RECIPES_DIR
 ): Promise<RecipeInfo[]> => {
-    const entries = await readdir(buildsDir)
+    const entries = await readdir(recipesDir)
     const recipes: RecipeInfo[] = []
     for (const entry of entries) {
         if (!entry.endsWith('.pkr.hcl')) continue
         const name = basename(entry, '.pkr.hcl')
-        recipes.push(await loadRecipe(name, buildsDir))
+        recipes.push(await loadRecipe(name, recipesDir))
     }
     return recipes.sort((a, b) => a.name.localeCompare(b.name))
 }

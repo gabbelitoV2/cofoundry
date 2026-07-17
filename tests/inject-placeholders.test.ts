@@ -24,7 +24,7 @@ describe('inject-placeholders.sh', () => {
     test('protects generated Windows credentials with mode 0600', () => {
         const root = mkdtempSync(join(tmpdir(), 'cf-inject-'))
         tempDirs.push(root)
-        const recipeDir = join(root, 'builds', 'windows-test')
+        const recipeDir = join(root, 'recipes', 'windows-test')
         const runnerTemp = join(root, 'runner-temp')
         mkdirSync(recipeDir, { recursive: true })
         mkdirSync(runnerTemp)

@@ -67,4 +67,4 @@ So `<Compact>false>` (intermittent success) beats removing it (deterministic fai
 
 ## Preseed SSH key injection
 
-`scripts/inject-placeholders.sh` generates an ephemeral ed25519 keypair and injects the public key into `builds/<recipe>/http/preseed.cfg`. The script replaces both the `__PACKER_SSH_PUBLIC_KEY__` placeholder AND any previously injected key matching the comment `packer-<recipe>-*`, so re-runs without a `git clean` still produce a fresh key. The source `preseed.cfg` should always be committed with the `__PACKER_SSH_PUBLIC_KEY__` placeholder, not a real key.
+`scripts/inject-placeholders.sh` generates an ephemeral ed25519 keypair and injects the public key into `recipes/<recipe>/http/preseed.cfg`. The script replaces both the `__PACKER_SSH_PUBLIC_KEY__` placeholder AND any previously injected key matching the comment `packer-<recipe>-*`, so re-runs without a `git clean` still produce a fresh key. The source `preseed.cfg` should always be committed with the `__PACKER_SSH_PUBLIC_KEY__` placeholder, not a real key.

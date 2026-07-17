@@ -19,7 +19,7 @@ VARS_FILE="${RUNNER_TEMP}/packer-vars-${RECIPE}.pkrvars.hcl"
 rm -f "$VARS_FILE"
 : >"$VARS_FILE"
 
-RECIPE_DIR="builds/${RECIPE}"
+RECIPE_DIR="recipes/${RECIPE}"
 
 # ── Detect installer files and generate ephemeral SSH keypair ────────────────
 PRESEED="${RECIPE_DIR}/http/preseed.cfg"

@@ -74,7 +74,7 @@ export const prefetchPhase = async (
 
     await fetchCloudbaseInit(
         env,
-        `${buildRemoteWorkDir(env)}/builds/_shared/CloudbaseInitSetup_x64.msi`,
+        `${buildRemoteWorkDir(env)}/recipes/_shared/CloudbaseInitSetup_x64.msi`,
         onLine
     )
     await fetchAsset(

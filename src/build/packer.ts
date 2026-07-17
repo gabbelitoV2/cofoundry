@@ -78,7 +78,7 @@ export const buildRemoteEnv = (
     // CF_UPLOAD_CMD it spawns.
     if (baseVmid !== undefined) pairs.CF_RECIPE_BASE_VMID = String(baseVmid)
     // Opt-in: when set, the post-processor shrinks the OS disk to this size
-    // before vzdump (see builds/_shared/post/shrink-disk.sh).
+    // before vzdump (see recipes/_shared/post/shrink-disk.sh).
     if (finalDiskSize) pairs.CF_FINAL_DISK_SIZE = finalDiskSize
     if (env.CF_UPLOAD_CMD) pairs.CF_UPLOAD_CMD = env.CF_UPLOAD_CMD
     if (env.CF_SIDECAR_UPLOAD_CMD)

@@ -125,7 +125,7 @@ export const buildPhase = async (
             )
         ).trim()
 
-        const recipeHcl = `${remoteWorkDir}/builds/${recipe.name}.pkr.hcl`
+        const recipeHcl = `${remoteWorkDir}/recipes/${recipe.name}.pkr.hcl`
 
         await remoteStreaming(
             env.SSH_TARGET,

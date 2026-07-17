@@ -50,7 +50,7 @@ export const runBuildCommand = async (
             ? await Promise.all(names.map(name => loadRecipe(name)))
             : await listRecipes()
     if (recipes.length === 0) {
-        log.warn('No recipes found in builds/')
+        log.warn('No recipes found in recipes/')
         return
     }
 

@@ -31,7 +31,7 @@ jobs:
           FORCE: ${{ inputs.force }}
         run: |
           if [ "$FORCE" = "true" ]; then
-            CHANGED=$(ls builds/*.pkr.hcl | xargs -n1 basename | sed 's/\.pkr\.hcl$//' | jq -R . | jq -sc .)
+            CHANGED=$(ls recipes/*.pkr.hcl | xargs -n1 basename | sed 's/\.pkr\.hcl$//' | jq -R . | jq -sc .)
           else
             CHANGED=$(bun run cf check --json)
           fi

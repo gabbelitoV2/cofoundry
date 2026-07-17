@@ -38,7 +38,7 @@ Unattended install from a Microsoft evaluation ISO. Packer boots the ISO, `autou
 
 ### Linux cloud image
 
-1. Create `builds/<name>.pkr.hcl` — copy an existing one (e.g. `ubuntu-24.04.pkr.hcl`) and update:
+1. Create `recipes/<name>.pkr.hcl` — copy an existing one (e.g. `ubuntu-24.04.pkr.hcl`) and update:
    - `# iso_url:` — direct link to the installer ISO
    - `# iso_target_path:` — filename the wrapper caches under `${var.iso_cache_dir}`
    - `boot_iso.iso_file` — Proxmox storage reference to that cached `packer-*` ISO, e.g. `${var.proxmox_iso_storage_pool}:iso/packer-<name>.iso`
@@ -54,8 +54,8 @@ Unattended install from a Microsoft evaluation ISO. Packer boots the ISO, `autou
 
 ### Debian netinstall (preseed)
 
-1. Copy `builds/debian-12.pkr.hcl` and adapt for the new version.
-2. Create `builds/<name>/http/preseed.cfg` — include `__PACKER_SSH_PUBLIC_KEY__` where SSH key injection should go.
+1. Copy `recipes/debian-12.pkr.hcl` and adapt for the new version.
+2. Create `recipes/<name>/http/preseed.cfg` — include `__PACKER_SSH_PUBLIC_KEY__` where SSH key injection should go.
 3. Complete the [preseed NAT setup](setup.md#6-nat-for-debian-netinstall-builds) if not done already.
 4. Run:
    ```sh
@@ -64,7 +64,7 @@ Unattended install from a Microsoft evaluation ISO. Packer boots the ISO, `autou
 
 ### Windows Server
 
-1. Create `builds/windows-server-<version>.pkr.hcl` — copy `windows-server-2022.pkr.hcl` and update:
+1. Create `recipes/windows-server-<version>.pkr.hcl` — copy `windows-server-2022.pkr.hcl` and update:
    - `# iso_url:` — Microsoft Eval Center link for the version
    - `# iso_target_path:` — cache filename used by the wrapper
    - `boot_iso.iso_file` — Proxmox storage reference to that cached ISO
@@ -75,9 +75,9 @@ Unattended install from a Microsoft evaluation ISO. Packer boots the ISO, `autou
    - `memory` and `cores` — keep enough installation headroom; these values
      also determine resource-aware parallel build admission
 
-2. Create `builds/windows-server-<version>/autounattend.xml` — copy from an existing version, change the `<Value>` in `<InstallFrom><MetaData>` to match the edition string (e.g. `Windows Server 2022 SERVERDATACENTERCORE`).
+2. Create `recipes/windows-server-<version>/autounattend.xml` — copy from an existing version, change the `<Value>` in `<InstallFrom><MetaData>` to match the edition string (e.g. `Windows Server 2022 SERVERDATACENTERCORE`).
 
-3. Create `builds/windows-server-<version>/scripts/TemplatePrep.ps1` — identical copy from any existing Windows version.
+3. Create `recipes/windows-server-<version>/scripts/TemplatePrep.ps1` — identical copy from any existing Windows version.
 
 4. Run:
    ```sh

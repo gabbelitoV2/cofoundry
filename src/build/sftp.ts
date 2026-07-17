@@ -91,9 +91,17 @@ interface RemoteFile {
     mtimeMs: number
 }
 
-function matchesExclude(relPath: string, excludes: string[]): boolean {
+export const matchesExclude = (
+    relPath: string,
+    excludes: string[]
+): boolean => {
     const parts = relPath.split('/')
-    return excludes.some(ex => parts.some(p => p === ex))
+    return excludes.some(ex => {
+        if (ex.startsWith('*.')) return relPath.endsWith(ex.slice(1))
+        if (ex.includes('/'))
+            return relPath === ex || relPath.startsWith(`${ex}/`)
+        return parts.some(p => p === ex)
+    })
 }
 
 async function walkLocal(

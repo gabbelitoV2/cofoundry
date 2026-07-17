@@ -149,7 +149,23 @@ export const syncRepoToRemote = async (
         `mkdir -p ${shellQuote(remoteWorkDir)} ${shellQuote(buildRemoteOutDir(env))} ${shellQuote(buildRemoteTmpDir(env))}`
     )
     await sftpUpload(env.SSH_TARGET, REPO_ROOT, remoteWorkDir, {
-        excludes: ['.git', 'node_modules', 'out', 'dist'],
+        // Keep local credentials, editor state, dependencies, and generated
+        // output off the build node. Keep this aligned with .gitignore; the
+        // SFTP walker intentionally does not assume the source is a Git clone.
+        excludes: [
+            '.git',
+            '.claude',
+            '.idea',
+            'node_modules',
+            'out',
+            'dist',
+            '.env',
+            '.env.local',
+            'cofoundry.local.toml',
+            '.sbx/tailscale.env',
+            '*.log',
+            '.DS_Store',
+        ],
         delete: true,
         concurrency: opts.concurrency ?? env.CF_UPLOAD_CONCURRENCY,
         onProgress: opts.onProgress,

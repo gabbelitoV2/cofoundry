@@ -7,3 +7,4 @@ cofoundry.local.toml
 *.log
 .DS_Store
 .idea/
+.claude/

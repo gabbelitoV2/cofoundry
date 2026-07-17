@@ -4,6 +4,42 @@ import { sshOk } from '@/bootstrap/remote.ts'
 
 const APT_INSTALL = 'DEBIAN_FRONTEND=noninteractive apt-get install -y'
 
+export const packerInstallScript = `set -euo pipefail
+repo_list=/etc/apt/sources.list.d/hashicorp.list
+keyring=/usr/share/keyrings/hashicorp-archive-keyring.gpg
+
+# A previous interrupted bootstrap may have left this specific source malformed.
+# Remove it before using APT to install missing download/key prerequisites.
+if ! command -v wget >/dev/null 2>&1 || ! command -v gpg >/dev/null 2>&1; then
+    rm -f "$repo_list"
+    apt-get update
+    ${APT_INSTALL} wget gpg
+fi
+
+. /etc/os-release
+codename="${'${VERSION_CODENAME:-${DEBIAN_CODENAME:-${UBUNTU_CODENAME:-}}}'}"
+case "$codename" in
+    '') echo 'could not determine Debian/Ubuntu codename from /etc/os-release' >&2; exit 1 ;;
+    *[!a-zA-Z0-9._-]*) echo "unsafe OS codename: $codename" >&2; exit 1 ;;
+esac
+
+tmpdir=$(mktemp -d)
+trap 'rm -rf "$tmpdir"' EXIT
+wget -qO- https://apt.releases.hashicorp.com/gpg |
+    gpg --batch --yes --dearmor -o "$tmpdir/hashicorp.gpg"
+test -s "$tmpdir/hashicorp.gpg"
+printf 'deb [signed-by=%s] https://apt.releases.hashicorp.com %s main\n' \
+    "$keyring" "$codename" > "$tmpdir/hashicorp.list"
+
+install -d -m 0755 /usr/share/keyrings /etc/apt/sources.list.d
+install -m 0644 "$tmpdir/hashicorp.gpg" "$keyring"
+# Overwrite the source atomically before APT reads it, repairing malformed files
+# left by the old bootstrap command.
+install -m 0644 "$tmpdir/hashicorp.list" "$repo_list"
+apt-get update
+${APT_INSTALL} packer
+`
+
 export const stepPacker: BootstrapStep = {
     id: 'packer',
     label: 'install packer',
@@ -12,15 +48,7 @@ export const stepPacker: BootstrapStep = {
             ? { done: true, note: 'packer already installed' }
             : { done: false },
     apply: async plan => {
-        const cmd = [
-            'set -e',
-            'install -d -m 0755 /usr/share/keyrings',
-            'wget -qO- https://apt.releases.hashicorp.com/gpg | gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg',
-            `echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" > /etc/apt/sources.list.d/hashicorp.list`,
-            'apt-get update',
-            `${APT_INSTALL} packer`,
-        ].join(' && ')
-        await remoteStreaming(plan.target, cmd)
+        await remoteStreaming(plan.target, packerInstallScript)
         return { note: 'installed' }
     },
 }

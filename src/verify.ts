@@ -1,10 +1,10 @@
 import { execa } from 'execa'
 import { basename, join } from 'node:path'
 import { createRenderer, title, accent, dim } from '@cofoundry/ui'
-import type { Env } from './env.ts'
-import type { RecipeInfo } from './config.ts'
-import { shellQuote } from './util.ts'
-import { buildRemoteOutDir } from './build/packer.ts'
+import type { Env } from '@/env.ts'
+import type { RecipeInfo } from '@/config.ts'
+import { shellQuote } from '@/util.ts'
+import { buildRemoteOutDir } from '@/build/paths.ts'
 
 const SCRATCH_VMID_BASE = 9500
 const GUEST_PING_TIMEOUT_S = 180

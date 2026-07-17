@@ -4,8 +4,8 @@ import { fileURLToPath } from 'node:url'
 import byteSize from 'byte-size'
 import { execa } from 'execa'
 import pc from 'picocolors'
-import { log } from './log.ts'
-import type { Registry, Group, Template } from './registry/schema.ts'
+import { log } from '@/log.ts'
+import type { Registry, Group, Template } from '@/registry/schema.ts'
 
 interface Sidecar {
     name: string
@@ -186,13 +186,11 @@ const awsS3Get = async (
  * per template, not the full history.
  */
 export const buildManifestFromR2 = async (
+    location: { endpoint: string; bucket: string; prefix: string },
     outPath: string,
-    prefix = process.env.R2_PREFIX ?? '/'
+    prefix = location.prefix
 ): Promise<string> => {
-    const endpoint = process.env.R2_ENDPOINT
-    const bucket = process.env.R2_BUCKET
-    if (!endpoint) throw new Error('R2_ENDPOINT is required for --r2 publish')
-    if (!bucket) throw new Error('R2_BUCKET is required for --r2 publish')
+    const { endpoint, bucket } = location
     const normalizedPrefix = normalizeR2Prefix(prefix)
 
     log.section(

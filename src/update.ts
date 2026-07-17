@@ -1,5 +1,5 @@
 import { readFile, writeFile } from 'node:fs/promises'
-import type { RecipeInfo } from './config.ts'
+import type { RecipeInfo } from '@/config.ts'
 
 export interface IsoUpdate {
     filename: string

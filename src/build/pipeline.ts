@@ -1,13 +1,13 @@
 import PQueue from 'p-queue'
-import type { Env } from '../env.ts'
-import type { RecipeInfo } from '../config.ts'
+import type { Env } from '@/env.ts'
+import type { RecipeInfo } from '@/config.ts'
 import {
     syncRepoToRemote,
     prefetchPhase,
     buildPhase,
     syncPhase,
-} from '../build.ts'
-import { redactSensitive } from '../util.ts'
+} from '@/build.ts'
+import { redactSensitive } from '@/util.ts'
 import {
     formatTransferStatus,
     parseWgetLine,
@@ -32,6 +32,20 @@ export type PipelineOptions = {
 export type PipelineResult = {
     passed: string[]
     failed: { name: string; error: string }[]
+}
+
+export type PipelineDependencies = {
+    syncRepo: typeof syncRepoToRemote
+    prefetch: typeof prefetchPhase
+    build: typeof buildPhase
+    sync: typeof syncPhase
+}
+
+const DEFAULT_DEPENDENCIES: PipelineDependencies = {
+    syncRepo: syncRepoToRemote,
+    prefetch: prefetchPhase,
+    build: buildPhase,
+    sync: syncPhase,
 }
 
 // Submit work to a p-queue and keep `handle`'s phase label accurate while it
@@ -79,7 +93,8 @@ const runQueued = async <T>(
 export const runPipeline = async (
     env: Env,
     recipes: RecipeInfo[],
-    opts: PipelineOptions
+    opts: PipelineOptions,
+    dependencies: PipelineDependencies = DEFAULT_DEPENDENCIES
 ): Promise<PipelineResult> => {
     const prefetchQ = new PQueue({ concurrency: opts.prefetchConcurrency ?? 3 })
     const buildQ = new PQueue({ concurrency: 1 })
@@ -96,18 +111,25 @@ export const runPipeline = async (
 
     try {
         if (!opts.skipRepoSync) {
-            await runRepoSync(env, opts, renderer)
+            await runRepoSync(env, opts, renderer, dependencies)
         }
 
         await Promise.allSettled(
             recipes.map(recipe =>
-                runRecipe(env, recipe, opts, renderer, {
-                    prefetchQ,
-                    buildQ,
-                    syncQ,
-                    passed,
-                    failed,
-                })
+                runRecipe(
+                    env,
+                    recipe,
+                    opts,
+                    renderer,
+                    {
+                        prefetchQ,
+                        buildQ,
+                        syncQ,
+                        passed,
+                        failed,
+                    },
+                    dependencies
+                )
             )
         )
     } finally {
@@ -120,11 +142,12 @@ export const runPipeline = async (
 const runRepoSync = async (
     env: Env,
     opts: PipelineOptions,
-    renderer: Renderer
+    renderer: Renderer,
+    dependencies: PipelineDependencies
 ): Promise<void> => {
     const handle = renderer.task('sync repo to remote')
     try {
-        await syncRepoToRemote(env, {
+        await dependencies.syncRepo(env, {
             concurrency: opts.uploadConcurrency,
             onPhase: phase => handle.setPhase(phase),
             onProgress: ev => {
@@ -180,14 +203,15 @@ const runRecipe = async (
     recipe: RecipeInfo,
     opts: PipelineOptions,
     renderer: Renderer,
-    ctx: RecipeContext
+    ctx: RecipeContext,
+    dependencies: PipelineDependencies
 ): Promise<void> => {
     const handle = renderer.task(recipe.name)
 
     // ── prefetch ──
     try {
         await runQueued(ctx.prefetchQ, 'prefetch', handle, async () => {
-            await prefetchPhase(env, recipe, (slot, line) => {
+            await dependencies.prefetch(env, recipe, (slot, line) => {
                 const p = parseWgetLine(line)
                 if (p) handle.setProgress(formatWgetStatus(slot, p))
             })
@@ -200,7 +224,7 @@ const runRecipe = async (
     let buildStartedAt: number | undefined
     try {
         await runQueued(ctx.buildQ, 'build', handle, async () => {
-            const result = await buildPhase(
+            const result = await dependencies.build(
                 env,
                 recipe,
                 { keepVm: opts.keepVm },
@@ -225,7 +249,7 @@ const runRecipe = async (
     // ── sync ──
     try {
         await runQueued(ctx.syncQ, 'sync', handle, async () => {
-            await syncPhase(env, recipe, {
+            await dependencies.sync(env, recipe, {
                 concurrency: opts.downloadConcurrency,
                 since: buildStartedAt,
                 onProgress: ev => {

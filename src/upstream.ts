@@ -1,6 +1,6 @@
 import { readFile, writeFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
-import type { RecipeInfo } from './config.ts'
+import type { RecipeInfo } from '@/config.ts'
 
 const CHECKSUMS_FILE = fileURLToPath(
     new URL('../upstream-checksums.json', import.meta.url)

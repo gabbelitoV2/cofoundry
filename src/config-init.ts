@@ -1,8 +1,8 @@
 import { existsSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { execa } from 'execa'
-import { log } from './log.ts'
-import { CONFIG_FILENAME, CONFIG_LOCAL_FILENAME } from './config-file.ts'
+import { log } from '@/log.ts'
+import { CONFIG_FILENAME, CONFIG_LOCAL_FILENAME } from '@/config-file.ts'
 import pc from 'picocolors'
 
 // Sensitive coordinates are never inlined by `cf init --from-env` — they stay as
@@ -86,10 +86,9 @@ export const runInit = (
 ): void => {
     const path = join(cwd, CONFIG_FILENAME)
     if (existsSync(path) && !opts.force) {
-        log.err(
+        throw new Error(
             `${CONFIG_FILENAME} already exists. Pass ${pc.cyan('--force')} to overwrite.`
         )
-        process.exit(1)
     }
     writeFileSync(path, renderTemplate(Boolean(opts.fromEnv)))
     log.ok(`Wrote ${pc.cyan(CONFIG_FILENAME)}.`)
@@ -231,8 +230,7 @@ export const runDoctor = async (): Promise<void> => {
     }
     log.blank()
     if (failed > 0) {
-        log.err(`${failed} check(s) failed.`)
-        process.exit(1)
+        throw new Error(`${failed} check(s) failed.`)
     }
     log.ok('All checks passed.')
     log.blank()

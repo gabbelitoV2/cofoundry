@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { addSensitiveValues } from './util.ts'
+import { addSensitiveValues } from '@/util.ts'
 
 // CI passes unset secrets/vars as empty strings, which would defeat
 // `.default(...)` (Zod only applies defaults when the value is undefined).
@@ -49,10 +49,16 @@ const EnvSchema = z.object({
     CF_KEEP_VM: z
         .preprocess(v => v === '1' || v === 'true' || v === true, z.boolean())
         .default(false),
+    CF_BUILD_ATTEMPTS: z.coerce.number().int().min(1).optional(),
 
     // Optional CDN integration. Generated from [upload] in cofoundry.toml.
     CF_UPLOAD_CMD: z.string().optional(),
+    CF_SIDECAR_UPLOAD_CMD: z.string().optional(),
     CF_PUBLIC_URL_TMPL: z.string().optional(),
+
+    R2_ENDPOINT: z.string().optional(),
+    R2_BUCKET: z.string().optional(),
+    R2_PREFIX: z.string().default('templates/'),
 })
 
 export type Env = z.infer<typeof EnvSchema>

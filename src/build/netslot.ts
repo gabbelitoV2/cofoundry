@@ -1,13 +1,13 @@
-import { captureRemote, registerCleanup } from './remote.ts'
+import { captureRemote, registerCleanup } from '@/build/remote.ts'
 import { spawnSync } from 'node:child_process'
-import type { Env } from '../env.ts'
-import { shellQuote } from '../util.ts'
+import type { Env } from '@/env.ts'
+import { shellQuote } from '@/util.ts'
 import {
     BUILD_NET_GATEWAY,
     BUILD_NET_PREFIX,
     BUILD_SLOT_BASE,
     BUILD_SLOT_COUNT,
-} from './buildnet.ts'
+} from '@/build/buildnet.ts'
 
 // Per-build network slot allocated on the node's NAT bridge (vmbr1, 10.0.0.0/24).
 // Each slot owns one IP + a deterministic MAC, registered with dnsmasq as a

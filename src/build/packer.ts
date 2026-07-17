@@ -1,15 +1,6 @@
-import type { Env } from '../env.ts'
-import type { RecipeInfo } from '../config.ts'
-import { shellQuote } from '../util.ts'
-
-export const buildRemoteOutDir = (env: Env): string =>
-    `${env.PVE_DUMP_DIR}/cofoundry-out`
-
-export const buildRemoteWorkDir = (env: Env): string =>
-    `${env.PVE_DUMP_DIR}/cofoundry-work`
-
-export const buildRemoteTmpDir = (env: Env): string =>
-    `${env.PVE_DUMP_DIR}/cofoundry-tmp`
+import type { Env } from '@/env.ts'
+import type { RecipeInfo } from '@/config.ts'
+import { shellQuote } from '@/util.ts'
 
 export type BuildNet = {
     ip: string
@@ -90,8 +81,13 @@ export const buildRemoteEnv = (
     // before vzdump (see builds/_shared/post/shrink-disk.sh).
     if (finalDiskSize) pairs.CF_FINAL_DISK_SIZE = finalDiskSize
     if (env.CF_UPLOAD_CMD) pairs.CF_UPLOAD_CMD = env.CF_UPLOAD_CMD
+    if (env.CF_SIDECAR_UPLOAD_CMD)
+        pairs.CF_SIDECAR_UPLOAD_CMD = env.CF_SIDECAR_UPLOAD_CMD
     if (env.CF_PUBLIC_URL_TMPL)
         pairs.CF_PUBLIC_URL_TMPL = env.CF_PUBLIC_URL_TMPL
+    if (env.R2_ENDPOINT) pairs.R2_ENDPOINT = env.R2_ENDPOINT
+    if (env.R2_BUCKET) pairs.R2_BUCKET = env.R2_BUCKET
+    if (env.R2_PREFIX) pairs.R2_PREFIX = env.R2_PREFIX
     // Forward S3-compatible creds + endpoint/bucket so a CF_UPLOAD_CMD using
     // `aws s3 cp ... $R2_ENDPOINT ... s3://$R2_BUCKET/...` can authenticate
     // and resolve those shell vars on the node.
@@ -100,10 +96,6 @@ export const buildRemoteEnv = (
         'AWS_SECRET_ACCESS_KEY',
         'AWS_SESSION_TOKEN',
         'AWS_DEFAULT_REGION',
-        'R2_ENDPOINT',
-        'R2_BUCKET',
-        'R2_PREFIX',
-        'CF_SIDECAR_UPLOAD_CMD',
     ]) {
         const v = process.env[k]
         if (v) pairs[k] = v

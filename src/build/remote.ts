@@ -1,5 +1,5 @@
 import { execa, ExecaError } from 'execa'
-import { redactSensitive } from '../util.ts'
+import { redactSensitive } from '@/util.ts'
 
 // Keep idle SSH sessions alive — and detect a dead peer — so a long quiet remote
 // step (e.g. a multi-hundred-MB artifact upload in CF_UPLOAD_CMD) can't leave the
@@ -34,9 +34,23 @@ const onFatalSignal = (signo: number) => (): void => {
     for (const fn of [...cleanupCallbacks].reverse()) fn()
     process.exit(128 + signo)
 }
-process.once('SIGINT', onFatalSignal(2))
-process.once('SIGTERM', onFatalSignal(15))
-process.once('SIGHUP', onFatalSignal(1))
+
+/**
+ * Install process-level cleanup explicitly from the application boundary.
+ * Importing this module has no signal-handler side effects.
+ */
+export const installRemoteSignalHandlers = (): (() => void) => {
+    const handlers = [
+        ['SIGINT', onFatalSignal(2)],
+        ['SIGTERM', onFatalSignal(15)],
+        ['SIGHUP', onFatalSignal(1)],
+    ] as const
+    for (const [signal, handler] of handlers) process.once(signal, handler)
+    return () => {
+        for (const [signal, handler] of handlers)
+            process.removeListener(signal, handler)
+    }
+}
 
 export const captureRemote = async (
     target: string,

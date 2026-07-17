@@ -1,5 +1,5 @@
 import { log as base } from '@cofoundry/ui'
-import { redactSensitive } from './util.ts'
+import { redactSensitive } from '@/util.ts'
 
 export const log = {
     info: (msg: string): void => base.info(redactSensitive(msg)),

@@ -1,0 +1,60 @@
+import { describe, expect, test } from 'bun:test'
+import type { RecipeInfo } from '@/config.ts'
+import type { Env } from '@/env.ts'
+import { runPipeline, type PipelineDependencies } from '@/build/pipeline.ts'
+
+const env = {} as Env
+const recipe = {
+    name: 'debian-12',
+    display: 'Debian 12',
+    path: 'builds/debian-12.pkr.hcl',
+    arch: 'amd64',
+} as RecipeInfo
+
+const dependencies = (
+    events: string[],
+    failure?: keyof PipelineDependencies
+): PipelineDependencies => {
+    const run = async (name: keyof PipelineDependencies): Promise<void> => {
+        events.push(name)
+        if (failure === name) throw new Error(`${name} failed`)
+    }
+    return {
+        syncRepo: async () => run('syncRepo'),
+        prefetch: async () => run('prefetch'),
+        build: async () => {
+            await run('build')
+            return { startedAt: 123 }
+        },
+        sync: async () => run('sync'),
+    }
+}
+
+describe('runPipeline', () => {
+    test('runs repository, prefetch, build, and artifact phases', async () => {
+        const events: string[] = []
+        const result = await runPipeline(
+            env,
+            [recipe],
+            { syncBack: true, ci: true },
+            dependencies(events)
+        )
+        expect(events).toEqual(['syncRepo', 'prefetch', 'build', 'sync'])
+        expect(result).toEqual({ passed: ['debian-12'], failed: [] })
+    })
+
+    test('records a phase failure and does not run later phases', async () => {
+        const events: string[] = []
+        const result = await runPipeline(
+            env,
+            [recipe],
+            { syncBack: true, ci: true, skipRepoSync: true },
+            dependencies(events, 'build')
+        )
+        expect(events).toEqual(['prefetch', 'build'])
+        expect(result.passed).toEqual([])
+        expect(result.failed).toEqual([
+            { name: 'debian-12', error: 'build failed' },
+        ])
+    })
+})

@@ -3,6 +3,7 @@ import {
     buildNetworkRouteConflict,
     dnsmasqConflict,
     dnsmasqConf,
+    hasBuildBridgeAddress,
 } from '@/bootstrap/network.ts'
 
 describe('buildNetworkRouteConflict', () => {
@@ -24,6 +25,41 @@ describe('buildNetworkRouteConflict', () => {
             '10.0.0.0/24 dev vmbr1 proto kernel scope link',
         ].join('\n')
         expect(buildNetworkRouteConflict(routes)).toBeUndefined()
+    })
+})
+
+describe('hasBuildBridgeAddress', () => {
+    test('accepts CIDR notation from ifquery or the live interface', () => {
+        expect(
+            hasBuildBridgeAddress('    address 10.0.0.1/24\n', '')
+        ).toBeTrue()
+        expect(
+            hasBuildBridgeAddress(
+                '',
+                '7: vmbr1 inet 10.0.0.1/24 scope global vmbr1'
+            )
+        ).toBeTrue()
+    })
+
+    test('accepts address plus dotted or prefix-length netmask', () => {
+        expect(
+            hasBuildBridgeAddress(
+                '    address 10.0.0.1\n    netmask 255.255.255.0\n',
+                ''
+            )
+        ).toBeTrue()
+        expect(
+            hasBuildBridgeAddress('    address 10.0.0.1\n    netmask 24\n', '')
+        ).toBeTrue()
+    })
+
+    test('rejects a different address or prefix', () => {
+        expect(
+            hasBuildBridgeAddress('    address 10.0.1.1/24\n', '')
+        ).toBeFalse()
+        expect(
+            hasBuildBridgeAddress('    address 10.0.0.1/16\n', '')
+        ).toBeFalse()
     })
 })
 

@@ -202,6 +202,43 @@ export const buildNetworkRouteConflict = (
         })
 }
 
+export const hasBuildBridgeAddress = (
+    configured: string,
+    runtime: string
+): boolean => {
+    const escapedAddress = BUILD_NET_GATEWAY.replaceAll('.', '\\.')
+    if (new RegExp(`\\binet\\s+${escapedAddress}/24\\b`).test(runtime)) {
+        return true
+    }
+    if (
+        new RegExp(`^\\s*address\\s+${escapedAddress}/24\\s*$`, 'm').test(
+            configured
+        )
+    ) {
+        return true
+    }
+    const hasAddressWithoutPrefix = new RegExp(
+        `^\\s*address\\s+${escapedAddress}\\s*$`,
+        'm'
+    ).test(configured)
+    const hasSlashNetmask = /^\s*netmask\s+24\s*$/m.test(configured)
+    const hasDottedNetmask = /^\s*netmask\s+255\.255\.255\.0\s*$/m.test(
+        configured
+    )
+    return hasAddressWithoutPrefix && (hasSlashNetmask || hasDottedNetmask)
+}
+
+const detectedBridgeAddress = (configured: string, runtime: string): string => {
+    const runtimeAddress = runtime.match(/\binet\s+(\S+)/)?.[1]
+    if (runtimeAddress) return runtimeAddress
+    const configuredAddress = configured.match(/^\s*address\s+(\S+)/m)?.[1]
+    const configuredNetmask = configured.match(/^\s*netmask\s+(\S+)/m)?.[1]
+    if (!configuredAddress) return 'no IPv4 address found'
+    return configuredNetmask
+        ? `${configuredAddress} netmask ${configuredNetmask}`
+        : configuredAddress
+}
+
 export const stepBuildNetworkPreflight: BootstrapStep = {
     id: 'build-network-preflight',
     label: 'check build-network conflicts',
@@ -264,26 +301,19 @@ export const stepVmbr1: BootstrapStep = {
     id: 'vmbr1',
     label: 'configure vmbr1 NAT bridge',
     probe: async plan => {
-        const configured = await sshCapture(
-            plan.target,
-            'ifquery vmbr1 2>/dev/null'
-        )
+        const [configured, runtime] = await Promise.all([
+            sshCapture(plan.target, 'ifquery vmbr1 2>/dev/null'),
+            sshCapture(plan.target, 'ip -4 -o addr show dev vmbr1 2>/dev/null'),
+        ])
         if (configured.ok) {
-            if (
-                new RegExp(
-                    `^\\s*address\\s+${BUILD_NET_BRIDGE_ADDR.replaceAll('.', '\\.')}\\s*$`,
-                    'm'
-                ).test(configured.stdout)
-            ) {
+            if (hasBuildBridgeAddress(configured.stdout, runtime.stdout)) {
                 return { done: true, note: 'vmbr1 has the Cofoundry address' }
             }
             throw new Error(
-                `vmbr1 already exists with a different configuration; Cofoundry requires ${BUILD_NET_BRIDGE_ADDR}`
+                `vmbr1 uses ${detectedBridgeAddress(configured.stdout, runtime.stdout)}; Cofoundry requires ${BUILD_NET_BRIDGE_ADDR}`
             )
         }
-        if (
-            await sshOk(plan.target, 'ip link show dev vmbr1 >/dev/null 2>&1')
-        ) {
+        if (runtime.ok && runtime.stdout.trim() !== '') {
             throw new Error(
                 'vmbr1 exists at runtime but is not managed by the node network configuration'
             )

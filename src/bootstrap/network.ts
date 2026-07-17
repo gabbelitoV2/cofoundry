@@ -16,15 +16,60 @@ const APT_INSTALL = 'DEBIAN_FRONTEND=noninteractive apt-get install -y'
 const DNSMASQ_CONF_PATH = '/etc/dnsmasq.d/vmbr1-nat.conf'
 const DNSMASQ_HOSTS_DIR = '/etc/dnsmasq.d/cofoundry-hosts.d'
 
-const dnsmasqConf = (buildDns: string): string => `# Managed by Cofoundry.
-interface=vmbr1
-bind-interfaces
-dhcp-range=${BUILD_DHCP_RANGE_START},${BUILD_DHCP_RANGE_END},12h
-dhcp-option=3,${BUILD_NET_GATEWAY}
-dhcp-option=6,${buildDns}
-dhcp-option=option:router,${BUILD_NET_GATEWAY}
-dhcp-hostsfile=${DNSMASQ_HOSTS_DIR}
-`
+const activeDirectives = (activeConfig: string): string[] =>
+    activeConfig
+        .split('\n')
+        .map(line => line.trim())
+        .filter(Boolean)
+        .map(line => line.replace(/^.*?:\d+:/, '').replaceAll(/\s/g, ''))
+
+const rangeAddresses = (directive: string): string[] =>
+    directive
+        .slice('dhcp-range='.length)
+        .split(',')
+        .filter(part => /^\d+\.\d+\.\d+\.\d+$/.test(part))
+
+const isBuildRange = (directive: string): boolean => {
+    if (!directive.startsWith('dhcp-range=')) return false
+    const addresses = rangeAddresses(directive)
+    return (
+        addresses[0] === BUILD_DHCP_RANGE_START &&
+        addresses[1] === BUILD_DHCP_RANGE_END
+    )
+}
+
+export const dnsmasqConf = (buildDns: string, activeConfig = ''): string => {
+    const directives = activeDirectives(activeConfig)
+    const lines = ['# Managed by Cofoundry.']
+    if (!directives.includes('interface=vmbr1')) lines.push('interface=vmbr1')
+    if (
+        !directives.includes('bind-interfaces') &&
+        !directives.includes('bind-dynamic')
+    ) {
+        lines.push('bind-interfaces')
+    }
+    if (!directives.some(isBuildRange)) {
+        lines.push(
+            `dhcp-range=${BUILD_DHCP_RANGE_START},${BUILD_DHCP_RANGE_END},12h`
+        )
+    }
+    if (
+        !directives.includes(`dhcp-option=3,${BUILD_NET_GATEWAY}`) &&
+        !directives.includes(`dhcp-option=option:router,${BUILD_NET_GATEWAY}`)
+    ) {
+        lines.push(`dhcp-option=option:router,${BUILD_NET_GATEWAY}`)
+    }
+    const hasDnsOption = directives.some(
+        directive =>
+            /^dhcp-option=(?:6|option:dns-server),/.test(directive) &&
+            directive.split(',').at(-1) !== ''
+    )
+    if (!hasDnsOption) lines.push(`dhcp-option=6,${buildDns}`)
+    if (!directives.includes(`dhcp-hostsfile=${DNSMASQ_HOSTS_DIR}`)) {
+        lines.push(`dhcp-hostsfile=${DNSMASQ_HOSTS_DIR}`)
+    }
+    return `${lines.join('\n')}\n`
+}
 
 const VMBR1_STANZA = `
 auto vmbr1
@@ -66,17 +111,16 @@ export const dnsmasqConflict = (
         .map(line => line.trim())
         .filter(Boolean)
     const buildNetDirective = configLines.find(line => {
-        const directive = line.replace(/^.*?:\d+:/, '').trim()
-        return (
-            /^interface\s*=\s*vmbr1(?:\s|$)/.test(directive) ||
-            (/^dhcp-range\s*=/.test(directive) &&
-                directive.includes(`${BUILD_NET_PREFIX}.`)) ||
-            (directive.startsWith('dhcp-hostsfile=') &&
-                directive.includes(DNSMASQ_HOSTS_DIR))
+        const directive = line.replace(/^.*?:\d+:/, '').replaceAll(/\s/g, '')
+        if (!directive.startsWith('dhcp-range=')) return false
+        const addresses = rangeAddresses(directive)
+        const touchesBuildNet = addresses.some(address =>
+            address.startsWith(`${BUILD_NET_PREFIX}.`)
         )
+        return touchesBuildNet && !isBuildRange(directive)
     })
     if (buildNetDirective) {
-        return `existing dnsmasq configuration already owns vmbr1 or ${BUILD_NET_CIDR}: ${buildNetDirective}`
+        return `existing dnsmasq configuration has a different DHCP range in ${BUILD_NET_CIDR}: ${buildNetDirective}`
     }
 
     const explicitlyScoped = configLines.some(line =>
@@ -318,11 +362,14 @@ export const stepDnsmasqConf: BootstrapStep = {
     id: 'dnsmasq-conf',
     label: 'write /etc/dnsmasq.d/vmbr1-nat.conf',
     probe: async plan => {
-        const existing = await sshCapture(
-            plan.target,
-            `cat ${shellQuote(DNSMASQ_CONF_PATH)} 2>/dev/null`
-        )
-        const wanted = dnsmasqConf(plan.buildDns)
+        const [existing, otherConfig] = await Promise.all([
+            sshCapture(
+                plan.target,
+                `cat ${shellQuote(DNSMASQ_CONF_PATH)} 2>/dev/null`
+            ),
+            sshCapture(plan.target, activeDnsmasqConfigCmd),
+        ])
+        const wanted = dnsmasqConf(plan.buildDns, otherConfig.stdout)
         if (existing.ok && existing.stdout.trim() === wanted.trim()) {
             return (await sshOk(
                 plan.target,
@@ -334,10 +381,11 @@ export const stepDnsmasqConf: BootstrapStep = {
         if (
             existing.ok &&
             !(
-                existing.stdout.includes('interface=vmbr1') &&
-                existing.stdout.includes(
-                    `dhcp-range=${BUILD_DHCP_RANGE_START},${BUILD_DHCP_RANGE_END}`
-                )
+                existing.stdout.includes('# Managed by Cofoundry.') ||
+                (existing.stdout.includes('interface=vmbr1') &&
+                    existing.stdout.includes(
+                        `dhcp-range=${BUILD_DHCP_RANGE_START},${BUILD_DHCP_RANGE_END}`
+                    ))
             )
         ) {
             throw new Error(
@@ -358,11 +406,15 @@ export const stepDnsmasqConf: BootstrapStep = {
             plan.target,
             `mkdir -p ${DNSMASQ_HOSTS_DIR} && rm -f /etc/dnsmasq.d/cofoundry-slot-*.conf`
         )
+        const otherConfig = await sshCapture(
+            plan.target,
+            activeDnsmasqConfigCmd
+        )
         const candidate = `${DNSMASQ_CONF_PATH}.cofoundry-new`
         await writeRemoteFile(
             plan.target,
             candidate,
-            dnsmasqConf(plan.buildDns)
+            dnsmasqConf(plan.buildDns, otherConfig.stdout)
         )
         await remoteStreaming(
             plan.target,

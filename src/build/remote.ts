@@ -238,18 +238,29 @@ export const streaming = async (
             }
             return
         }
-        let buf = ''
-        const onChunk = (chunk: Buffer): void => {
-            buf += chunk.toString()
-            const parts = buf.split(/\r?\n/)
-            buf = parts.pop() ?? ''
-            for (const part of parts) if (part) onLine(part)
+        // Assemble lines per stream. stdout and stderr arrive as independent
+        // chunk sequences, so a partial line held from one must never be spliced
+        // onto the other: a single shared buffer corrupts — and can drop — lines
+        // at the boundary whenever both streams are active at once.
+        const flushers: Array<() => void> = []
+        const attach = (stream: NodeJS.ReadableStream | null): void => {
+            if (!stream) return
+            let buf = ''
+            stream.on('data', (chunk: Buffer) => {
+                buf += chunk.toString()
+                const parts = buf.split(/\r?\n/)
+                buf = parts.pop() ?? ''
+                for (const part of parts) if (part) onLine(part)
+            })
+            flushers.push(() => {
+                if (buf) onLine(buf)
+            })
         }
-        proc.stdout?.on('data', onChunk)
-        proc.stderr?.on('data', onChunk)
+        attach(proc.stdout)
+        attach(proc.stderr)
         try {
             await proc
-            if (buf) onLine(buf)
+            for (const flush of flushers) flush()
         } finally {
             activeProcs.delete(proc as unknown as KillableProc)
         }

@@ -46,6 +46,28 @@ const extractTarball = (buffer: Buffer, destDir: string): void => {
     }
 }
 
+// Save Packer's durable node-side console log into the bundle, scrubbed. It is
+// the complete record of what Packer emitted (see streamViaConsoleLog), so a
+// failure whose telling line never reached the live stream is still captured
+// here. Best-effort: returns true only if a non-empty log was written.
+const savePackerConsole = async (
+    target: string,
+    remotePath: string | undefined,
+    runDir: string
+): Promise<boolean> => {
+    if (!remotePath) return false
+    const raw = await captureRemote(
+        target,
+        `cat ${shellQuote(remotePath)} 2>/dev/null || true`
+    ).catch(() => '')
+    if (!raw.trim()) return false
+    await writeFile(
+        join(runDir, 'packer-console.log'),
+        redactSensitive(raw) + '\n'
+    )
+    return true
+}
+
 // Turn each `<name>.json` guest-agent capture into a scrubbed `<name>.log`,
 // dropping the JSON wrapper and any empty captures. Returns the log names kept.
 const renderGuestLogs = async (logsDir: string): Promise<string[]> => {
@@ -92,6 +114,8 @@ export type CollectDiagnosticsInput = {
     isWindows: boolean
     /** Remote path of the injected vars file (source of the ephemeral secret). */
     varsFile: string
+    /** Remote path of Packer's durable console log, saved into the bundle. */
+    packerConsoleLog?: string
     /** In CI the repo is public, so screenshots (unredactable images) are never
      *  pulled/uploaded — only scrubbed text logs. */
     ciMode: boolean
@@ -131,6 +155,14 @@ export const collectDiagnostics = async (
         extractTarball(tarball, runDir)
         const logs = await renderGuestLogs(logsDir)
 
+        // Packer's own console log — scrubbed and saved before the caller's
+        // teardown wipes the remote tmp dir.
+        const packerConsole = await savePackerConsole(
+            target,
+            input.packerConsoleLog,
+            runDir
+        )
+
         // Screenshots: local runs only. In CI they'd become world-downloadable
         // artifacts on a public repo and images can't be scrubbed, so drop them.
         const framesDir = join(runDir, 'frames')
@@ -143,12 +175,13 @@ export const collectDiagnostics = async (
             )
         }
 
-        await writeManifest(runDir, input, now, frames, logs)
+        await writeManifest(runDir, input, now, frames, logs, packerConsole)
         await pruneLocal(baseDir, input.keepLocal ?? 10)
 
         log.info(
             `diagnostics saved → ${runDir} (${logs.length} log(s)` +
-                `${input.ciMode ? '' : `, ${frames} screenshot(s)`})`
+                `${input.ciMode ? '' : `, ${frames} screenshot(s)`}` +
+                `${packerConsole ? ', packer console' : ''})`
         )
         return runDir
     } catch (err) {
@@ -162,7 +195,8 @@ const writeManifest = (
     input: CollectDiagnosticsInput,
     now: Date,
     frames: number,
-    logs: string[]
+    logs: string[],
+    packerConsole: boolean
 ): Promise<void> =>
     writeFile(
         join(runDir, 'manifest.json'),
@@ -180,6 +214,7 @@ const writeManifest = (
                     ? 'omitted (CI, public repo)'
                     : frames,
                 logs,
+                packerConsole: packerConsole ? 'packer-console.log' : null,
             },
             null,
             2

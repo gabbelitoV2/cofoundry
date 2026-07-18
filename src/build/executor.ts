@@ -15,6 +15,7 @@ import {
     buildRemoteEnv,
     PACKER_TMP_ROOT,
     packerTmpDir,
+    streamViaConsoleLog,
 } from '@/build/packer.ts'
 import {
     buildRemoteOutDir,
@@ -265,6 +266,16 @@ export const buildPhase = async (
             Boolean(options.keepVm),
             env.CF_BUILD_ATTEMPTS
         )
+        // Stream Packer through a durable node-side console log (see
+        // streamViaConsoleLog) rather than piping the live process straight
+        // over SSH — a long WinRM wait or a transient pipe stall must not be
+        // able to swallow output. The log lives in the run-scoped tmp dir, so
+        // the existing rm -rf cleanup removes it with everything else.
+        const packerConsoleLog = `${remoteBuildTmpDir}/packer-console.log`
+        const packerCommand = streamViaConsoleLog(
+            `${remoteEnv} ${packerArgs.join(' ')}`,
+            packerConsoleLog
+        )
         let lastAttempt = 0
         try {
             await runWithRetries(
@@ -273,7 +284,7 @@ export const buildPhase = async (
                     lastAttempt = attempt
                     await remoteStreamingScript(
                         env.SSH_TARGET,
-                        `${watchdog}${recorder}${remoteEnv} ${packerArgs.join(' ')}`,
+                        `${watchdog}${recorder}${packerCommand}`,
                         onLine
                     )
                 },
@@ -289,6 +300,7 @@ export const buildPhase = async (
                     vmid: effectiveBuildVmid as number,
                     isWindows: layout.isWindows,
                     varsFile,
+                    packerConsoleLog,
                     ciMode: Boolean(options.ciMode),
                     attempt: lastAttempt,
                     error: err,

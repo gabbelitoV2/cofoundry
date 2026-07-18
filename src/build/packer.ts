@@ -23,6 +23,34 @@ export const assertPackerTmpDirSocketSafe = (dir: string): void => {
     }
 }
 
+/**
+ * Wrap a foreground command so its output is written to a durable logfile on
+ * the node and streamed live with `tail -f`, instead of piped straight out of
+ * the process over SSH.
+ *
+ * The logfile — not the live SSH pipe — is the source of truth. A long quiet
+ * stretch (e.g. Windows setup taking 20+ minutes to reach WinRM) or a transient
+ * pipe stall can no longer drop lines: whatever `tail` misses stays in the file
+ * on the node. The shell also merges the command's stdout and stderr into the
+ * file in write order, so the streamed output is correctly interleaved at the
+ * source rather than reassembled from two races on the reader side.
+ *
+ * `tail --pid` exits once the command does, and the trailing `wait` re-raises
+ * the command's own exit status so Packer failures still propagate to retries.
+ */
+export const streamViaConsoleLog = (
+    command: string,
+    logPath: string
+): string => {
+    const log = shellQuote(logPath)
+    return [
+        `${command} > ${log} 2>&1 &`,
+        `__cf_pid=$!`,
+        `tail -n +1 --pid="$__cf_pid" -f ${log} 2>/dev/null`,
+        `wait "$__cf_pid"`,
+    ].join('\n')
+}
+
 export type BuildNet = {
     ip: string
     gw: string

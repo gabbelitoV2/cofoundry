@@ -1,10 +1,12 @@
 import { describe, expect, test } from 'bun:test'
+import { spawnSync } from 'node:child_process'
 import {
     assertPackerTmpDirSocketSafe,
     buildPackerVars,
     buildRemoteEnv,
     PACKER_TMP_ROOT,
     packerTmpDir,
+    streamViaConsoleLog,
 } from '../src/build/packer.ts'
 import type { RecipeInfo } from '../src/config.ts'
 import type { Env } from '../src/env.ts'
@@ -132,5 +134,36 @@ describe('buildPackerVars', () => {
         expect(commandLine).not.toContain(env.PVE_TOKEN_SECRET)
         expect(commandLine).not.toContain('proxmox_username')
         expect(commandLine).not.toContain('proxmox_token')
+    })
+})
+
+describe('streamViaConsoleLog', () => {
+    const command = "FOO='bar' packer build -force /tmp/x.pkr.hcl"
+    const logPath = '/var/tmp/cofoundry-packer/run 1/packer-console.log'
+
+    test('writes combined output to the log and streams it with tail', () => {
+        const script = streamViaConsoleLog(command, logPath)
+        const q = "'/var/tmp/cofoundry-packer/run 1/packer-console.log'"
+
+        // Command runs backgrounded with stdout+stderr merged into the log...
+        expect(script).toContain(`${command} > ${q} 2>&1 &`)
+        // ...and the live view is a tail of that durable file, not the pipe.
+        expect(script).toContain(`tail -n +1 --pid="$__cf_pid" -f ${q}`)
+    })
+
+    test('re-raises the command exit status so failures still propagate', () => {
+        const script = streamViaConsoleLog(command, logPath)
+        // `wait` on the command pid is the final statement, so the script's
+        // exit code is Packer's — the retry logic depends on this.
+        expect(script.trimEnd().endsWith('wait "$__cf_pid"')).toBe(true)
+    })
+
+    test('quotes the log path and stays valid bash', () => {
+        const script = streamViaConsoleLog(command, logPath)
+        const result = spawnSync('bash', ['-n'], {
+            input: script,
+            encoding: 'utf8',
+        })
+        expect(result.status, result.stderr).toBe(0)
     })
 })

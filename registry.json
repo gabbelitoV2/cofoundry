@@ -2,7 +2,7 @@
   "schema_version": "1",
   "name": "Cofoundry Templates",
   "description": "Proxmox VM templates built with Cofoundry",
-  "generated_at": "2026-07-18T07:23:18.449Z",
+  "generated_at": "2026-07-18T07:35:11.744Z",
   "groups": [
     {
       "id": "almalinux",
@@ -65,6 +65,16 @@
           "url": "https://cofoundry.cdn.convoypanel.com/templates/debian/debian-12-amd64/a69f6b49645abd3bb2be57d4313974e8c88cf49cb05b77b9ef471aef5bab665b.vma.zst",
           "built_at": "2026-07-18T07:22:15Z",
           "suggested_vmid": 4001
+        },
+        {
+          "name": "debian-13-amd64",
+          "display": "Debian 13 (Trixie)",
+          "arch": "amd64",
+          "sha256": "012b1bad9812de2ab5ed6cfa6b2256a83ffa459087142fe6cc694ee8a94fe0f0",
+          "size": 571440202,
+          "url": "https://cofoundry.cdn.convoypanel.com/templates/debian/debian-13-amd64/012b1bad9812de2ab5ed6cfa6b2256a83ffa459087142fe6cc694ee8a94fe0f0.vma.zst",
+          "built_at": "2026-07-18T07:34:15Z",
+          "suggested_vmid": 4002
         }
       ]
     }

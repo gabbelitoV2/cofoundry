@@ -2,7 +2,7 @@
   "schema_version": "1",
   "name": "Cofoundry Templates",
   "description": "Proxmox VM templates built with Cofoundry",
-  "generated_at": "2026-07-18T06:17:03.546Z",
+  "generated_at": "2026-07-18T06:40:03.992Z",
   "groups": [
     {
       "id": "almalinux",
@@ -10,31 +10,14 @@
       "description": null,
       "templates": [
         {
-          "name": "almalinux-9-amd64",
-          "display": "AlmaLinux 9",
+          "name": "almalinux-10-amd64",
+          "display": "AlmaLinux 10",
           "arch": "amd64",
-          "sha256": "4fbfba24a08b457ea4848751a05cbeab8c1011d89dbb0bba437169f2bb93ce70",
-          "size": 1224013815,
-          "url": "https://cofoundry.cdn.convoypanel.com/templates/almalinux/almalinux-9-amd64/4fbfba24a08b457ea4848751a05cbeab8c1011d89dbb0bba437169f2bb93ce70.vma.zst",
-          "built_at": "2026-07-18T05:52:33Z",
-          "suggested_vmid": 6001
-        }
-      ]
-    },
-    {
-      "id": "debian",
-      "display_name": "Debian",
-      "description": null,
-      "templates": [
-        {
-          "name": "debian-12-amd64",
-          "display": "Debian 12 (Bookworm)",
-          "arch": "amd64",
-          "sha256": "88c4faeb236d11e13fd0c048b6bbb83f1cad1bebf69e5ffe04a146dfd1578b11",
-          "size": 544222008,
-          "url": "https://cofoundry.cdn.convoypanel.com/templates/debian/debian-12-amd64/88c4faeb236d11e13fd0c048b6bbb83f1cad1bebf69e5ffe04a146dfd1578b11.vma.zst",
-          "built_at": "2026-07-18T06:15:58Z",
-          "suggested_vmid": 4001
+          "sha256": "efbcba994280137912aa605b731fab1c2b7c14ced820cab409f2dc9e0c151f55",
+          "size": 1015816732,
+          "url": "https://cofoundry.cdn.convoypanel.com/templates/almalinux/almalinux-10-amd64/efbcba994280137912aa605b731fab1c2b7c14ced820cab409f2dc9e0c151f55.vma.zst",
+          "built_at": "2026-07-18T06:38:52Z",
+          "suggested_vmid": 6002
         }
       ]
     }

@@ -74,17 +74,25 @@ jobs:
     concurrency:
       group: cofoundry-build
       cancel-in-progress: false
+    env:
+      # 'true' only when a registry-writer GitHub App is configured. When empty
+      # (no ruleset on main), fall back to the default GITHUB_TOKEN for the
+      # upstream-checksums push. See docs/setup.md#3.
+      HAS_REGISTRY_APP: ${{ secrets.REGISTRY_APP_ID != '' && secrets.REGISTRY_APP_PRIVATE_KEY != '' }}
     steps:
       - uses: actions/create-github-app-token@v2
         id: registry-app-token
+        if: env.HAS_REGISTRY_APP == 'true'
         with:
           app-id: ${{ secrets.REGISTRY_APP_ID }}
           private-key: ${{ secrets.REGISTRY_APP_PRIVATE_KEY }}
 
+      # Checkout persists whichever token it's given, so the push below uses it:
+      # the app token when configured, otherwise the default GITHUB_TOKEN.
       - uses: actions/checkout@v7
         with:
           ref: main
-          token: ${{ steps.registry-app-token.outputs.token }}
+          token: ${{ steps.registry-app-token.outputs.token || github.token }}
 
       - uses: actions/download-artifact@v7
         with:

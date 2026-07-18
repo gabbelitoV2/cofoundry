@@ -264,16 +264,19 @@ workflow skips the key-setup step and auth is brokered by the tailnet.
 > keeping the node off MagicDNS: `tailscale set --accept-dns=false` and set
 > a public node resolver (Datacenter → DNS, e.g. `1.1.1.1`).
 
-### 3. Create a registry-writer GitHub App
+### 3. Create a registry-writer GitHub App (optional)
 
 The workflows update two generated files on `main`:
 
 - `registry.json` after a successful template build
 - `upstream-checksums.json` after the scheduled upstream check
 
-If `main` is protected by a branch ruleset, the default `GITHUB_TOKEN`
-cannot bypass it. Create a dedicated GitHub App and add that app to the
-ruleset bypass list instead.
+By default they push these with the built-in `GITHUB_TOKEN`, so **you can skip
+this section entirely** unless `main` is protected by a branch ruleset — a
+ruleset the default `GITHUB_TOKEN` cannot bypass. In that case, create a
+dedicated GitHub App and add it to the ruleset bypass list; the workflows use
+the App token when `REGISTRY_APP_ID` / `REGISTRY_APP_PRIVATE_KEY` are set and
+fall back to `GITHUB_TOKEN` when they are not.
 
 **Create the app** (GitHub account/org → **Settings → Developer settings → GitHub Apps → New GitHub App**):
 
@@ -330,8 +333,8 @@ Then go to **Settings → Secrets and variables → Actions**.
 | `TS_OAUTH_SECRET`          | Tailscale OAuth secret (only if using Tailscale)                     |
 | `R2_ACCESS_KEY_ID`         | R2 API token access key                                              |
 | `R2_SECRET_ACCESS_KEY`     | R2 API token secret                                                  |
-| `REGISTRY_APP_ID`          | App ID for the `cofoundry-registry-writer` GitHub App                |
-| `REGISTRY_APP_PRIVATE_KEY` | Private key generated for the `cofoundry-registry-writer` GitHub App |
+| `REGISTRY_APP_ID`          | App ID for the `cofoundry-registry-writer` GitHub App. Only if `main` is ruleset-protected (see §3); omit to push with `GITHUB_TOKEN`.                |
+| `REGISTRY_APP_PRIVATE_KEY` | Private key for the `cofoundry-registry-writer` GitHub App. Only if `main` is ruleset-protected (see §3); omit to push with `GITHUB_TOKEN`. |
 
 **Coordinates referenced by `${VAR}` in `cofoundry.toml`.** Set each as a repo
 **Variable** (visible/reviewable) or a **Secret** if you'd rather hide it — the

@@ -209,7 +209,29 @@ class LiveRenderer implements Renderer {
                 out.push(cliTruncate(`    ${pc.dim('›')} ${log}`, cols))
             }
         }
-        this.write(out.join('\n'))
+        this.write(this.clampHeight(out, cols).join('\n'))
+    }
+
+    /**
+     * `log-update` redraws in place by moving the cursor up over the lines it
+     * last wrote. Once the frame is taller than the viewport the terminal
+     * scrolls, the top lines fall out of cursor reach, and each tick strands
+     * its previous frame in scrollback (duplicated spinner rows). Keep the
+     * frame within the terminal's row count so it always clears cleanly,
+     * collapsing the overflow into a single summary line.
+     */
+    private clampHeight(lines: string[], cols: number): string[] {
+        const rows =
+            (this.stream as { rows?: number }).rows || process.stdout.rows || 0
+        if (rows <= 0 || lines.length <= rows) return lines
+        const kept = lines.slice(0, rows - 1)
+        kept.push(
+            cliTruncate(
+                pc.dim(`… ${lines.length - kept.length} more lines`),
+                cols
+            )
+        )
+        return kept
     }
 
     finish(): void {

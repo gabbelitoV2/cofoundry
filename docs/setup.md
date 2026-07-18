@@ -342,17 +342,49 @@ workflow reads `vars.X || secrets.X`, so set it in one place, not both:
 > These are only the fields your `cofoundry.toml` writes as `${VAR}`. If you
 > inline any of them as a literal in `cofoundry.toml` instead, drop it here.
 
-Optional CI tuning variables:
+**Parallel builds (optional).** GitHub Actions and the Proxmox node have
+separate controls:
 
-| Name                        | Value                                                       |
-| --------------------------- | ----------------------------------------------------------- |
-| `CF_CI_MAX_PARALLEL`        | Maximum GitHub matrix fan-out; defaults to `4`              |
-| `CF_BUILD_MEMORY_BUDGET_MB` | Node-wide build/verify RAM budget; defaults to 80% of RAM   |
-| `CF_BUILD_CPU_BUDGET`       | Node-wide build/verify virtual CPU budget; defaults to CPUs |
+- `CF_CI_MAX_PARALLEL` limits how many recipe jobs GitHub starts at once.
+- The memory and CPU budgets limit how many of those jobs the Proxmox node
+  admits at once. They are total node-wide budgets, not per-VM allocations.
 
-The matrix cap controls runner fan-out, while the node-side lease manager is the
-authoritative admission control. Duplicate recipes are serialized separately,
-and registry/checksum writers share one global publication queue.
+Set these in the repo **Variables** tab:
+
+| Name                        | Value                                                                  |
+| --------------------------- | ---------------------------------------------------------------------- |
+| `CF_CI_MAX_PARALLEL`        | Maximum GitHub matrix fan-out; defaults to `4`                         |
+| `CF_BUILD_MEMORY_BUDGET_MB` | Node-wide build/verify RAM budget; defaults to 80% of RAM              |
+| `CF_BUILD_CPU_BUDGET`       | Total concurrent VM vCPUs; defaults to the host's logical CPU count    |
+
+For example, a matrix cap of `4`, a memory budget of `16384`, and a CPU budget
+of `8` allow GitHub to start four recipe jobs while the node admits only the
+combination whose declared recipe resources fit within 16 GiB and 8 virtual
+CPUs. If the budgets are unset, Cofoundry uses 80% of physical RAM and all host
+CPUs. The node-side lease manager remains the authoritative admission control;
+duplicate recipes are serialized separately, and registry/checksum writers
+share one global publication queue.
+
+For a local `cf build` containing multiple recipes, configure parallelism in
+`cofoundry.toml` instead:
+
+```toml
+[build]
+concurrency = 4
+memory_budget_mb = 16384
+cpu_budget = 8
+```
+
+Both budgets are required when local `concurrency` is greater than `1`. The
+equivalent one-off command is:
+
+```sh
+cf build --build-concurrency 4 --build-memory-budget 16G --build-cpu-budget 8
+```
+
+`build.concurrency` does not control the GitHub matrix; use
+`CF_CI_MAX_PARALLEL` for that. See [Usage → Build everything](usage.md#build-everything)
+for the complete runtime behavior.
 
 **Tailscale** (only if using Tailscale — Variables tab):
 

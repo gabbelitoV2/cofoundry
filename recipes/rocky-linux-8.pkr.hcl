@@ -3,7 +3,7 @@
 # build_vmid: 5000
 # iso_url: https://download.rockylinux.org/pub/rocky/8/isos/x86_64/Rocky-8.10-x86_64-minimal.iso
 # iso_target_path: ${var.iso_cache_dir}/packer-Rocky-8.10-x86_64-minimal.iso
-# iso_checksum_url: https://download.rockylinux.org/pub/rocky/8/isos/x86_64/CHECKSUM
+# iso_checksum_url: https://download.rockylinux.org/pub/rocky/8/isos/x86_64/Rocky-8.10-x86_64-minimal.iso.CHECKSUM
 # iso_filename_re: Rocky-8\.\d+-x86_64-minimal\.iso
 packer {
   required_plugins {
@@ -137,7 +137,7 @@ source "proxmox-iso" "rocky-linux-8" {
   boot_iso {
     type         = "ide"
     iso_file     = "${var.proxmox_iso_storage_pool}:iso/packer-Rocky-8.10-x86_64-minimal.iso"
-    iso_checksum = "sha256:2c735d3b0de921bd671a0e2d08461e3593ac84f64cdaef32e3ed56ba01f74f4b"
+    iso_checksum = "sha256:231d21db029e900b305d8e23ff7a61d06bb4e873cb170bd4a85f4e6dd896748f"
     unmount      = true
   }
 

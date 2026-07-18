@@ -87,10 +87,13 @@ cf clean
 Removes from the Proxmox node:
 
 - `$PVE_DUMP_DIR/cofoundry-work`, `cofoundry-snapshots`, `cofoundry-cache`,
-  `cofoundry-tmp`, and `cofoundry-out`
+  `cofoundry-tmp`, and `cofoundry-out` (plus orphaned `cofoundry-work.new.*` links)
 - legacy `/tmp/cofoundry/` data, if present
 - Uploaded ISOs from Proxmox ISO storage (`packer*.iso` and hash-named ISOs)
-- Stale vzdump archives and log files
+- Every `vzdump-qemu-*` archive left in the dump dir, regardless of VMID
+- Every `packer-*` build VM and its disks, **including templates** left by
+  successful builds (`clean` is a full teardown; `prune` spares templates)
+- Disks orphaned in the `CF_STORAGE` pool whose owning VM is already gone
 
 ### Weekly maintenance
 
@@ -103,8 +106,11 @@ Removes:
 
 - non-template VMs named `packer-*` left by interrupted builds, regardless of
   their slot-derived VMID;
-- ephemeral Packer ISO files and its download cache;
+- ephemeral Packer ISO files and its download cache (the persistent
+  `packer-virtio-win.iso` cache is preserved);
 - vzdump archives and working data older than the selected cutoff;
+- orphaned per-build scratch in `cofoundry-tmp` (`build-*`, `repo-*.tar.gz`,
+  `sync-*`) and half-swapped `cofoundry-work.new.*` links older than the cutoff;
 - unreferenced repository snapshots older than the selected cutoff.
 
 A cron job on the node handles this automatically — see

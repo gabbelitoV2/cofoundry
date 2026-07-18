@@ -4,8 +4,15 @@ import type { Env } from '@/env.ts'
 import { log } from '@/log.ts'
 import { shellQuote } from '@/util.ts'
 import { remotePaths } from '@/build/paths.ts'
+import { destroyVmCommand } from '@/build/vm.ts'
 
 const LEGACY_WORK_DIR = '/tmp/cofoundry'
+
+// Persistent cache prefetch re-uses across Windows builds. It lives in the ISO
+// store under a `packer-` prefix, so the ephemeral-ISO sweep matches it by
+// accident; routine prunes must skip it to avoid forcing a ~700MB re-download
+// every cycle. See src/build/prefetch.ts.
+const VIRTIO_WIN_ISO = 'packer-virtio-win.iso'
 
 export interface PruneOptions {
     days: number
@@ -50,6 +57,100 @@ const report = (label: string, paths: string[], dryRun: boolean): void => {
     for (const f of paths) log.note(f)
 }
 
+// rm -rf each path (directories and symlinks, which `remove`'s rm -f can't take).
+const removeDirs = async (
+    env: Env,
+    paths: string[],
+    dryRun: boolean
+): Promise<void> => {
+    if (dryRun) return
+    for (const p of paths) {
+        await ssh(env.SSH_TARGET, `rm -rf ${shellQuote(p)}`)
+    }
+}
+
+// Ephemeral ISOs Packer leaves in the Proxmox ISO store: its answer-file ISOs
+// (`packer*.iso[.tmp]`) and SHA-hash-named download-cache copies. `preserveVirtio`
+// keeps the persistent virtio-win cache (routine prune), which the `packer*`
+// glob would otherwise catch by accident.
+export const ephemeralPackerIsoFind = (
+    isoStore: string,
+    { preserveVirtio }: { preserveVirtio: boolean }
+): string =>
+    `find ${isoStore} -maxdepth 1 ` +
+    (preserveVirtio ? `! -name ${shellQuote(VIRTIO_WIN_ISO)} ` : '') +
+    `\\( -name 'packer*.iso' -o -name 'packer*.iso.tmp' -o -regextype posix-extended -regex '.*\/[0-9a-f]{40}\\.iso' \\) 2>/dev/null || true`
+
+// Build VMs are named `packer-<recipe>` (the vm_name in every recipe), so match
+// by name rather than a VMID range: per-build VMIDs are slot-derived
+// (build_vmid * 100 + slot), which a range match silently misses. `includeTemplates`
+// controls the one behavioural split between prune and clean: routine prune
+// spares `packer-*` templates (a successful build leaves one on purpose), while
+// a full `clean` teardown reaps them too.
+const findBuildVms = async (
+    env: Env,
+    { includeTemplates }: { includeTemplates: boolean }
+): Promise<string[]> =>
+    lines(
+        await ssh(
+            env.SSH_TARGET,
+            includeTemplates
+                ? `qm list 2>/dev/null | awk 'NR>1 && $2 ~ /^packer-/ {print $1}'`
+                : `for v in $(qm list 2>/dev/null | awk 'NR>1 && $2 ~ /^packer-/ {print $1}'); do ` +
+                      `qm config "$v" 2>/dev/null | grep -q '^template:' || echo "$v"; ` +
+                      `done`
+        )
+    )
+
+const reapBuildVms = async (
+    env: Env,
+    dryRun: boolean,
+    { includeTemplates }: { includeTemplates: boolean }
+): Promise<void> => {
+    const orphans = await findBuildVms(env, { includeTemplates })
+    if (orphans.length === 0) {
+        log.info('build VMs: none found')
+        return
+    }
+    const verb = dryRun ? 'would destroy' : 'destroying'
+    for (const vmid of orphans) {
+        log.note(`${verb} VM ${vmid}`)
+        if (!dryRun) {
+            await ssh(env.SSH_TARGET, destroyVmCommand(Number(vmid)))
+        }
+    }
+    log.ok(
+        `build VMs ${dim('·')} ${dryRun ? 'would destroy' : 'destroyed'} ${orphans.length}`
+    )
+}
+
+// Disk volumes in the build storage pool whose owning VMID has no VM config —
+// leaked when a VM was removed but its disk was not (a dirty teardown, or a
+// `qm destroy` that failed after unlinking the config). `qm destroy
+// --destroy-unreferenced-disks` never reaches these because the VM it would run
+// against is already gone. Emits the volid of every such orphan. Scoped to the
+// cofoundry storage pool (CF_STORAGE) so unrelated VMs' disks are never touched.
+export const orphanDiskFind = (storage: string): string =>
+    `pvesm list ${shellQuote(storage)} --content images 2>/dev/null | ` +
+    `awk 'NR>1 {print $NF"\\t"$1}' | ` +
+    `while IFS=$'\\t' read -r vmid volid; do ` +
+    `qm config "$vmid" >/dev/null 2>&1 || echo "$volid"; ` +
+    `done`
+
+const freeVolumes = async (
+    env: Env,
+    volids: string[],
+    dryRun: boolean
+): Promise<void> => {
+    if (dryRun) return
+    for (const v of volids) {
+        await ssh(
+            env.SSH_TARGET,
+            `pvesm free ${shellQuote(v)} 2>/dev/null || true`
+        )
+    }
+}
+
 export const runClean = async (env: Env): Promise<void> => {
     const paths = remotePaths(env)
     log.section(`Clean ${dim('·')} ${accent(env.SSH_TARGET)}`)
@@ -65,7 +166,7 @@ export const runClean = async (env: Env): Promise<void> => {
     const isos = lines(
         await ssh(
             env.SSH_TARGET,
-            `find ${paths.isoStore} -maxdepth 1 \\( -name 'packer*.iso' -o -name 'packer*.iso.tmp' -o -regextype posix-extended -regex '.*\/[0-9a-f]{40}\\.iso' \\) 2>/dev/null || true`
+            ephemeralPackerIsoFind(paths.isoStore, { preserveVirtio: false })
         )
     )
 
@@ -98,11 +199,14 @@ export const runClean = async (env: Env): Promise<void> => {
         log.info(`removed ${paths.downloadedIsoCache} (${downloadedIsoSize})`)
     }
 
+    // Match every VMID, not the legacy 91xx/92xx range: modern builds use
+    // slot-derived VMIDs (build_vmid * 100 + slot), whose multi-GB dumps the old
+    // globs missed entirely. Clean is a full wipe, so no age gate.
     log.step(`removing stale dump files from ${paths.dump}`)
     const dumps = lines(
         await ssh(
             env.SSH_TARGET,
-            `find ${paths.dump} -maxdepth 1 \\( -name 'vzdump-qemu-91??-*' -o -name 'vzdump-qemu-92??-*' \\) 2>/dev/null || true`
+            `find ${paths.dump} -maxdepth 1 -name 'vzdump-qemu-*' 2>/dev/null || true`
         )
     )
 
@@ -129,6 +233,35 @@ export const runClean = async (env: Env): Promise<void> => {
         }
     }
 
+    // Half-swapped work symlinks (`cofoundry-work.new.<pid>`) are siblings of
+    // `cofoundry-work`, so the directory wipe above never touches them. A dirty
+    // teardown mid-`mv` leaves one behind.
+    log.step('removing orphaned work links')
+    const workLinks = lines(
+        await ssh(
+            env.SSH_TARGET,
+            `find ${paths.dump} -maxdepth 1 -name ${shellQuote(`${paths.work.split('/').pop()}.new.*`)} 2>/dev/null || true`
+        )
+    )
+    await removeDirs(env, workLinks, false)
+    report('orphaned work links', workLinks, false)
+
+    // Destroy every `packer-*` build VM, templates included: `clean` is a full
+    // teardown, so a leftover build template is a leftover like any other. Their
+    // disks live in the VM storage pool (not $PVE_DUMP_DIR) and go with them.
+    log.step('build VMs (packer-*, including templates)')
+    await reapBuildVms(env, false, { includeTemplates: true })
+
+    // Sweep disks orphaned in the storage pool — those whose owning VM is already
+    // gone, which the VM reap above (and its --destroy-unreferenced-disks) can
+    // never reach. Runs after the reap so freshly-purged disks are already gone.
+    log.step(`orphaned disks in ${env.CF_STORAGE} (no owning VM)`)
+    const orphanDisks = lines(
+        await ssh(env.SSH_TARGET, orphanDiskFind(env.CF_STORAGE))
+    )
+    await freeVolumes(env, orphanDisks, false)
+    report('orphaned disks', orphanDisks, false)
+
     log.blank()
     log.ok('Clean complete.')
 }
@@ -148,11 +281,13 @@ export const runPrune = async (
 
     // 1. Ephemeral Packer ISOs (any age) — packer-prefixed names and SHA-hash
     // named files from PACKER_CACHE_DIR, all landing in the Proxmox ISO store.
+    // The persistent virtio-win cache shares the `packer-` prefix, so preserve
+    // it here — re-downloading ~700MB on the next Windows build is not cleanup.
     log.step('ephemeral Packer ISOs in Proxmox ISO storage')
     const packerIsos = lines(
         await ssh(
             env.SSH_TARGET,
-            `find ${paths.isoStore} -maxdepth 1 \\( -name 'packer*.iso' -o -name 'packer*.iso.tmp' -o -regextype posix-extended -regex '.*\/[0-9a-f]{40}\\.iso' \\) 2>/dev/null || true`
+            ephemeralPackerIsoFind(paths.isoStore, { preserveVirtio: true })
         )
     )
     await remove(env, packerIsos, dryRun)
@@ -191,34 +326,24 @@ export const runPrune = async (
     // build destroys its VM after vzdump, so a lingering `packer-*` template is
     // an intentional artifact we must not delete.
     log.step('orphaned build VMs (packer-*, excluding templates)')
-    const orphans = lines(
+    await reapBuildVms(env, dryRun, { includeTemplates: false })
+
+    // 5. Orphaned per-build repo scratch in cofoundry-tmp: writable repo copies
+    // (`build-*`), upload tarballs (`repo-*.tar.gz`), and download staging
+    // (`sync-*`). Each build removes its own in a finally/SIGINT handler, but a
+    // dirty teardown (SIGKILL/OOM/host reboot) leaks it. Age-gated so a
+    // concurrent build's active scratch (fresh mtime) is never swept.
+    log.step(`stale build scratch in ${paths.tmp} older than ${days} day(s)`)
+    const staleScratch = lines(
         await ssh(
             env.SSH_TARGET,
-            `for v in $(qm list 2>/dev/null | awk 'NR>1 && $2 ~ /^packer-/ {print $1}'); do ` +
-                `qm config "$v" 2>/dev/null | grep -q '^template:' || echo "$v"; ` +
-                `done`
+            `find ${shellQuote(paths.tmp)} -mindepth 1 -maxdepth 1 \\( -name 'build-*' -o -name 'repo-*.tar.gz' -o -name 'sync-*' \\) -mtime +${days} 2>/dev/null || true`
         )
     )
+    await removeDirs(env, staleScratch, dryRun)
+    report('stale build scratch', staleScratch, dryRun)
 
-    if (orphans.length === 0) {
-        log.info('orphaned build VMs: none found')
-    } else {
-        const verb = dryRun ? 'would destroy' : 'destroying'
-        for (const vmid of orphans) {
-            log.note(`${verb} VM ${vmid}`)
-            if (!dryRun) {
-                await ssh(
-                    env.SSH_TARGET,
-                    `qm stop ${vmid} --skiplock 1 2>/dev/null || true; qm destroy ${vmid} --purge 1 --destroy-unreferenced-disks 1 2>/dev/null || true`
-                )
-            }
-        }
-        log.ok(
-            `orphaned VMs ${dim('·')} ${verb.replace('would ', '').replace('ing', 'ed')} ${orphans.length}`
-        )
-    }
-
-    // 5. Content-addressed repository snapshots older than --days. Keep the
+    // 6. Content-addressed repository snapshots older than --days. Keep the
     // snapshot selected by the stable work symlink even if it is old.
     log.step(`repository snapshots older than ${days} day(s)`)
     const oldSnapshots = lines(
@@ -236,7 +361,21 @@ export const runPrune = async (
     }
     report('repository snapshots', oldSnapshots, dryRun)
 
-    // 6. Current working link (only if no other process is using its target).
+    // 7. Half-swapped work links (`cofoundry-work.new.<pid>`) orphaned when a
+    // dirty teardown interrupts the snapshot install's atomic `mv`. They sit
+    // beside the work dir, so the step below (which only touches work itself)
+    // never reaps them.
+    log.step('orphaned work links')
+    const workLinks = lines(
+        await ssh(
+            env.SSH_TARGET,
+            `find ${paths.dump} -maxdepth 1 -name ${shellQuote(`${paths.work.split('/').pop()}.new.*`)} 2>/dev/null || true`
+        )
+    )
+    await removeDirs(env, workLinks, dryRun)
+    report('orphaned work links', workLinks, dryRun)
+
+    // 8. Current working link (only if no other process is using its target).
     log.step(`working dir ${paths.work}`)
     const workInUse = await ssh(
         env.SSH_TARGET,

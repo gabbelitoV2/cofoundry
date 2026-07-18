@@ -9,7 +9,13 @@ import {
     remoteStreaming,
     remoteStreamingScript,
 } from '@/build/remote.ts'
-import { buildPackerVars, buildRemoteEnv } from '@/build/packer.ts'
+import {
+    assertPackerTmpDirSocketSafe,
+    buildPackerVars,
+    buildRemoteEnv,
+    PACKER_TMP_ROOT,
+    packerTmpDir,
+} from '@/build/packer.ts'
 import {
     buildRemoteOutDir,
     buildRemoteTmpDir,
@@ -74,7 +80,12 @@ export const buildPhase = async (
     const remoteTmpDir = buildRemoteTmpDir(env)
     const layout = await inspectRecipeLayout(recipe)
     const buildBridge = bridgeForRecipe(env, recipe, layout)
-    const remoteBuildTmpDir = `${remoteTmpDir}/build-${recipe.name}-${randomUUID()}`
+    const runId = randomUUID()
+    const remoteBuildTmpDir = `${remoteTmpDir}/build-${recipe.name}-${runId}`
+    // Keep Packer's Linux plugin socket out of the descriptive workspace path:
+    // sockaddr_un allows only 107 pathname bytes, including every TMPDIR byte.
+    const remotePackerTmpDir = packerTmpDir(runId)
+    assertPackerTmpDirSocketSafe(remotePackerTmpDir)
     const remoteBuildWorkDir = `${remoteBuildTmpDir}/repo`
     const lease = await acquireRunLease(
         env,
@@ -83,12 +94,13 @@ export const buildPhase = async (
         remoteBuildTmpDir,
         {
             preserveVm: Boolean(options.keepVm),
+            packerTmpDir: remotePackerTmpDir,
             onWait: message => onLine?.(`[queue] ${message}`),
         }
     )
     let slot: BuildSlot | null = null
     let unregisterSecretCleanup: (() => void) | undefined
-    let secretCleanupCmd = `rm -rf ${shellQuote(remoteBuildTmpDir)}`
+    let secretCleanupCmd = `rm -rf ${shellQuote(remoteBuildTmpDir)} ${shellQuote(remotePackerTmpDir)}`
     let startedAt = 0
     let effectiveBuildVmid: number | undefined
 
@@ -105,14 +117,20 @@ export const buildPhase = async (
         if (effectiveBuildVmid !== undefined)
             await lease.setVmid(effectiveBuildVmid)
 
-        // Packer creates answer-file ISOs and ephemeral credentials under this
-        // private, run-scoped tree. Diagnostics are keyed by the unique VMID.
+        // The injector keeps answer-file ISOs and ephemeral credentials in the
+        // dump-backed workspace; Packer keeps its socket and transient scripts
+        // in the separate short directory. Both are private and run-scoped.
+        // Diagnostics are keyed by the unique VMID.
         const diagEnabled =
             env.CF_DIAGNOSTICS && effectiveBuildVmid !== undefined
         const diagRemoteDir = diagEnabled
             ? diagnosticsRemoteDir(effectiveBuildVmid as number)
             : undefined
-        secretCleanupCmd = `rm -rf ${[remoteBuildTmpDir, diagRemoteDir]
+        secretCleanupCmd = `rm -rf ${[
+            remoteBuildTmpDir,
+            remotePackerTmpDir,
+            diagRemoteDir,
+        ]
             .filter((p): p is string => p !== undefined)
             .map(shellQuote)
             .join(' ')}`
@@ -132,13 +150,14 @@ export const buildPhase = async (
 
         await captureRemote(
             env.SSH_TARGET,
-            `rm -rf ${shellQuote(remoteBuildTmpDir)} && install -d -m 700 ${shellQuote(remoteBuildTmpDir)} && ${buildWritableRepoCommand(
-                remoteWorkDir,
-                remoteBuildWorkDir,
-                layout.isWindows
-                    ? `${remotePaths(env).assetCache}/CloudbaseInitSetup_x64.msi`
-                    : undefined
-            )}`
+            `rm -rf ${shellQuote(remoteBuildTmpDir)} ${shellQuote(remotePackerTmpDir)} && ` +
+                `install -d -m 700 ${shellQuote(PACKER_TMP_ROOT)} ${shellQuote(remoteBuildTmpDir)} ${shellQuote(remotePackerTmpDir)} && ${buildWritableRepoCommand(
+                    remoteWorkDir,
+                    remoteBuildWorkDir,
+                    layout.isWindows
+                        ? `${remotePaths(env).assetCache}/CloudbaseInitSetup_x64.msi`
+                        : undefined
+                )}`
         )
         unregisterSecretCleanup = registerCleanup(() => {
             spawnSync('ssh', [env.SSH_TARGET, secretCleanupCmd], {
@@ -185,7 +204,7 @@ export const buildPhase = async (
         const remoteEnv = buildRemoteEnv(
             env,
             remoteOutDir,
-            remoteBuildTmpDir,
+            remotePackerTmpDir,
             recipe.arch,
             recipe.group ?? '',
             recipe.finalDiskSize,

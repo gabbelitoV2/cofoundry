@@ -6,6 +6,7 @@ import { shellQuote } from '@/util.ts'
 import { remotePaths } from '@/build/paths.ts'
 import { destroyVmCommand } from '@/build/vm.ts'
 import { assetLockPath } from '@/build/prefetch.ts'
+import { PACKER_TMP_ROOT } from '@/build/packer.ts'
 import {
     RUN_LEASE_DIR,
     RUN_LEASE_LOCK,
@@ -191,7 +192,7 @@ export const runClean = async (env: Env): Promise<void> => {
         env.SSH_TARGET,
         `for lease in ${shellQuote(RUN_LEASE_DIR)}/*; do ` +
             `[ -f "$lease" ] || continue; ` +
-            `IFS=$'\\t' read -r _kind _recipe _vmid _memory _cores tmpdir _preserve < "$lease" || true; ` +
+            `IFS=$'\\t' read -r _kind _recipe _vmid _memory _cores tmpdir _preserve _storage packer_tmpdir < "$lease" || true; ` +
             `case "$tmpdir" in */cofoundry-tmp/build-*|*/cofoundry-verify-*) pkill -9 -f -- "$tmpdir" >/dev/null 2>&1 || true ;; esac; ` +
             `done`
     )
@@ -315,7 +316,7 @@ export const runClean = async (env: Env): Promise<void> => {
     log.step('removing Cofoundry lease and reservation state')
     await ssh(
         env.SSH_TARGET,
-        `rm -rf ${shellQuote(RUN_LEASE_DIR)} /var/lib/cofoundry/verify-reservations /var/lib/cofoundry/netslots /var/lib/cofoundry/asset-locks /run/cofoundry-diag; ` +
+        `rm -rf ${shellQuote(RUN_LEASE_DIR)} ${shellQuote(PACKER_TMP_ROOT)} /var/lib/cofoundry/verify-reservations /var/lib/cofoundry/netslots /var/lib/cofoundry/asset-locks /run/cofoundry-diag; ` +
             `rm -f ${shellQuote(RUN_LEASE_LOCK)} /var/lib/cofoundry/verify.lock /var/lib/cofoundry/netslot.lock /var/lib/cofoundry/packer-init.lock; ` +
             `rm -f /etc/dnsmasq.d/cofoundry-hosts.d/slot-*; ` +
             `(systemctl reload dnsmasq 2>/dev/null || systemctl restart dnsmasq) >/dev/null 2>&1 || true`

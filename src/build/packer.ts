@@ -2,6 +2,27 @@ import type { Env } from '@/env.ts'
 import type { RecipeInfo } from '@/config.ts'
 import { shellQuote } from '@/util.ts'
 
+export const PACKER_TMP_ROOT = '/var/tmp/cofoundry-packer'
+
+// Linux sockaddr_un.sun_path is 108 bytes including its terminating NUL.
+// Packer's SDK creates `$TMPDIR/packer-plugin<decimal uint32>`, so reserve the
+// longest possible Go os.CreateTemp suffix when validating the directory.
+const PACKER_UNIX_SOCKET_MAX_PATH_BYTES = 107
+const PACKER_PLUGIN_SOCKET_MAX_NAME = 'packer-plugin4294967295'
+
+export const packerTmpDir = (runId: string): string =>
+    `${PACKER_TMP_ROOT}/${runId}`
+
+export const assertPackerTmpDirSocketSafe = (dir: string): void => {
+    const socketPath = `${dir}/${PACKER_PLUGIN_SOCKET_MAX_NAME}`
+    const bytes = Buffer.byteLength(socketPath)
+    if (bytes > PACKER_UNIX_SOCKET_MAX_PATH_BYTES) {
+        throw new Error(
+            `Packer TMPDIR is too long for its Unix plugin socket (${bytes}/${PACKER_UNIX_SOCKET_MAX_PATH_BYTES} bytes): ${dir}`
+        )
+    }
+}
+
 export type BuildNet = {
     ip: string
     gw: string
@@ -49,7 +70,7 @@ export const buildPackerVars = (
 export const buildRemoteEnv = (
     env: Env,
     remoteOutDir: string,
-    remoteTmpDir: string,
+    remotePackerTmpDir: string,
     arch: string,
     group: string,
     finalDiskSize?: string,
@@ -64,7 +85,7 @@ export const buildRemoteEnv = (
         CF_OUT_DIR: remoteOutDir,
         CF_ARCH: arch,
         CF_GROUP: group,
-        TMPDIR: remoteTmpDir,
+        TMPDIR: remotePackerTmpDir,
         PACKER_CACHE_DIR: '/var/lib/vz/template/iso',
         // Packer automatically maps Packer variable names from PKR_VAR_*.
         // These stay in the remote process environment instead of appearing

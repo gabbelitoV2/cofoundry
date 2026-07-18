@@ -3,6 +3,7 @@ import { spawnSync } from 'node:child_process'
 import type { Env } from '@/env.ts'
 import type { RecipeInfo } from '@/config.ts'
 import { captureRemote, registerCleanup } from '@/build/remote.ts'
+import { PACKER_TMP_ROOT } from '@/build/packer.ts'
 import { shellQuote } from '@/util.ts'
 
 export const RUN_LEASE_DIR = '/var/lib/cofoundry/run-leases'
@@ -23,6 +24,7 @@ type LeaseRequest = {
     kind: 'build' | 'verify'
     recipe: RecipeInfo
     remoteTmpDir: string
+    packerTmpDir?: string
     preserveVm: boolean
     storage: string
 }
@@ -39,6 +41,7 @@ const leaseRecord = (request: LeaseRequest, vmid: number): string =>
         request.remoteTmpDir,
         request.preserveVm ? 1 : 0,
         request.storage,
+        request.packerTmpDir ?? '',
     ].join('\t')
 
 /**
@@ -53,7 +56,7 @@ for lease in ${shellQuote(RUN_LEASE_DIR)}/*; do
     [ -f "$lease" ] || continue
     modified=$(stat -c %Y "$lease" 2>/dev/null || echo "$now")
     [ "$((now - modified))" -gt ${staleSeconds} ] || continue
-    IFS=$'\\t' read -r kind recipe vmid memory cores tmpdir preserve_vm storage < "$lease" || true
+    IFS=$'\\t' read -r kind recipe vmid memory cores tmpdir preserve_vm storage packer_tmpdir < "$lease" || true
     echo "reaping stale cofoundry $kind lease \${lease##*/} ($recipe)" >&2
     if [ "$preserve_vm" != 1 ]; then
         case "$vmid" in
@@ -81,6 +84,9 @@ for lease in ${shellQuote(RUN_LEASE_DIR)}/*; do
             rm -rf -- "$tmpdir"
             rm -f -- "/var/lib/cofoundry/verify-reservations/$owner"
             ;;
+    esac
+    case "$packer_tmpdir" in
+        ${PACKER_TMP_ROOT}/*) rm -rf -- "$packer_tmpdir" ;;
     esac
     rm -f -- "$lease"
 done
@@ -158,6 +164,7 @@ export const acquireRunLease = async (
     remoteTmpDir: string,
     options: {
         preserveVm?: boolean
+        packerTmpDir?: string
         onWait?: (message: string) => void
     } = {}
 ): Promise<RunLease> => {
@@ -176,6 +183,7 @@ export const acquireRunLease = async (
         kind,
         recipe,
         remoteTmpDir,
+        packerTmpDir: options.packerTmpDir,
         preserveVm: Boolean(options.preserveVm),
         storage: env.CF_STORAGE,
     }
@@ -210,7 +218,7 @@ export const acquireRunLease = async (
     const signalCleanupCommand =
         `exec 9>${shellQuote(RUN_LEASE_LOCK)}; flock -x 9; ` +
         `if [ -f ${shellQuote(file)} ]; then ` +
-        `IFS=$'\\t' read -r _kind _recipe vmid _memory _cores tmpdir preserve_vm storage < ${shellQuote(file)} || true; ` +
+        `IFS=$'\\t' read -r _kind _recipe vmid _memory _cores tmpdir preserve_vm storage packer_tmpdir < ${shellQuote(file)} || true; ` +
         `pkill -9 -f -- "$tmpdir" >/dev/null 2>&1 || true; ` +
         `if [ "$preserve_vm" != 1 ]; then case "$vmid" in ''|0|*[!0-9]*) ;; *) ` +
         `qm stop "$vmid" --skiplock 1 >/dev/null 2>&1 || true; qm unlock "$vmid" >/dev/null 2>&1 || true; ` +
@@ -218,6 +226,7 @@ export const acquireRunLease = async (
         `if ! qm config "$vmid" >/dev/null 2>&1 && [ -n "$storage" ]; then pvesm list "$storage" --content images 2>/dev/null | ` +
         `awk -v id="$vmid" 'NR>1 && $NF==id {print $1}' | while IFS= read -r volid; do pvesm free "$volid" >/dev/null 2>&1 || true; done; fi ;; esac; fi; ` +
         `case "$tmpdir" in */cofoundry-tmp/build-*|*/cofoundry-verify-*) rm -rf -- "$tmpdir" ;; esac; ` +
+        `case "$packer_tmpdir" in ${PACKER_TMP_ROOT}/*) rm -rf -- "$packer_tmpdir" ;; esac; ` +
         `${removeCommand}; fi`
     const unregister = registerCleanup(() => {
         if (released) return

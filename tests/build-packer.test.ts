@@ -1,5 +1,11 @@
 import { describe, expect, test } from 'bun:test'
-import { buildPackerVars, buildRemoteEnv } from '../src/build/packer.ts'
+import {
+    assertPackerTmpDirSocketSafe,
+    buildPackerVars,
+    buildRemoteEnv,
+    PACKER_TMP_ROOT,
+    packerTmpDir,
+} from '../src/build/packer.ts'
 import type { RecipeInfo } from '../src/config.ts'
 import type { Env } from '../src/env.ts'
 
@@ -23,6 +29,28 @@ const env: Env = {
 }
 
 describe('buildRemoteEnv', () => {
+    test('uses a short private Packer temp directory for plugin sockets', () => {
+        const tmpDir = packerTmpDir('00000000-0000-0000-0000-000000000000')
+        const result = buildRemoteEnv(
+            env,
+            '/var/lib/vz/dump/cofoundry-out',
+            tmpDir,
+            'amd64',
+            'linux'
+        )
+
+        expect(tmpDir).toStartWith(`${PACKER_TMP_ROOT}/`)
+        expect(result).toContain(`TMPDIR='${tmpDir}'`)
+        expect(() => assertPackerTmpDirSocketSafe(tmpDir)).not.toThrow()
+    })
+
+    test('rejects a temp directory that cannot hold Packer plugin sockets', () => {
+        const tooLong = `/var/tmp/${'x'.repeat(100)}`
+        expect(() => assertPackerTmpDirSocketSafe(tooLong)).toThrow(
+            'Packer TMPDIR is too long'
+        )
+    })
+
     test('exports the recipe base VMID independently of the build slot VMID', () => {
         const result = buildRemoteEnv(
             env,

@@ -55,24 +55,40 @@ jobs:
     if: needs.check.outputs.any_changed == 'true'
     strategy:
       fail-fast: false
-      max-parallel: 1
+      # Node-wide leases enforce RAM/CPU limits across these independent jobs.
+      # This cap limits runner fan-out and can be overridden without weakening
+      # node safety.
+      max-parallel: ${{ fromJSON(vars.CF_CI_MAX_PARALLEL || '4') }}
       matrix: ${{ fromJson(needs.check.outputs.matrix) }}
-    uses: ./.github/workflows/build.yml
+    uses: ./.github/workflows/build-one.yml
     with:
       recipe: ${{ matrix.recipe }}
     secrets: inherit
 
-  commit-checksums:
+  publish:
+    needs: build
+    if: needs.build.result == 'success'
+    uses: ./.github/workflows/publish.yml
+    secrets: inherit
+
+  prune-node:
     needs: [check, build]
+    if: always() && needs.check.result == 'success'
+    uses: ./.github/workflows/prune-node.yml
+    secrets: inherit
+
+  commit-checksums:
+    needs: [check, build, publish]
     if: >-
       always() &&
       needs.check.result == 'success' &&
-      (needs.build.result == 'success' || needs.build.result == 'skipped')
+      (needs.build.result == 'success' || needs.build.result == 'skipped') &&
+      (needs.publish.result == 'success' || needs.publish.result == 'skipped')
     runs-on: ubuntu-latest
-    # Serialize with template builds that push registry.json so both writers
-    # always start from the latest main and produce a fast-forward push.
+    # Serialize every generated-file writer. The retry below also tolerates an
+    # unrelated human push landing between fetch and push.
     concurrency:
-      group: cofoundry-build
+      group: cofoundry-publish
       cancel-in-progress: false
     env:
       # 'true' only when a registry-writer GitHub App is configured. When empty
@@ -103,5 +119,21 @@ jobs:
         run: |
           git config user.name "cofoundry-registry-writer[bot]"
           git config user.email "cofoundry-registry-writer[bot]@users.noreply.github.com"
-          git add upstream-checksums.json
-          git diff --staged --quiet || (git commit -m "chore: update upstream checksums" && git push)
+          cp upstream-checksums.json "$RUNNER_TEMP/upstream-checksums.json"
+          for attempt in 1 2 3; do
+            git fetch origin main
+            git reset --hard origin/main
+            cp "$RUNNER_TEMP/upstream-checksums.json" upstream-checksums.json
+            git add upstream-checksums.json
+            if git diff --cached --quiet; then
+              break
+            fi
+            git commit -m "chore: update upstream checksums"
+            if git push origin HEAD:main; then
+              break
+            fi
+            if [ "$attempt" = 3 ]; then
+              echo "checksum push failed after 3 attempts" >&2
+              exit 1
+            fi
+          done

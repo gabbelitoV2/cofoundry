@@ -24,7 +24,11 @@ const winTail = (name: string, path: string): GuestLogSpec => ({
 
 const journal: GuestLogSpec = {
     name: 'journal',
-    argv: ['/bin/sh', '-c', 'journalctl -b --no-pager 2>/dev/null | tail -c 200000'],
+    argv: [
+        '/bin/sh',
+        '-c',
+        'journalctl -b --no-pager 2>/dev/null | tail -c 200000',
+    ],
 }
 
 const cloudInit: GuestLogSpec[] = [
@@ -64,7 +68,10 @@ export const rhelGuestLogs: GuestLogSpec[] = [
 export const windowsGuestLogs: GuestLogSpec[] = [
     winTail('panther-setupact', 'C:\\Windows\\Panther\\setupact.log'),
     winTail('panther-setuperr', 'C:\\Windows\\Panther\\setuperr.log'),
-    winTail('panther-unattendgc', 'C:\\Windows\\Panther\\UnattendGC\\setupact.log'),
+    winTail(
+        'panther-unattendgc',
+        'C:\\Windows\\Panther\\UnattendGC\\setupact.log'
+    ),
     winTail('cbs', 'C:\\Windows\\Logs\\CBS\\CBS.log'),
 ]
 

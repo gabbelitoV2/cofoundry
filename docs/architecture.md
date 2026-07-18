@@ -42,9 +42,12 @@ A build proceeds through four stages:
 
 ISO installers receive a serialized NAT-network slot containing an IP, MAC, and
 DHCP reservation. Their live VMID is derived from the recipe base VMID and slot
-index. Cleanup handlers release secrets, reservations, watchdogs, and transient
-VM state on normal completion and supported signals; stale-state reconciliation
-handles interrupted remote processes on the next run.
+index. Every build and verification run also holds a heartbeating node lease.
+Admission is serialized on the node, accounts for RAM and CPU across independent
+`cf` processes, and prevents duplicate recipes from sharing stable outputs.
+Cleanup handlers release secrets, reservations, watchdogs, leases, and transient
+VM state on normal completion and supported signals. A stale lease names exactly
+the VM and scratch tree that reconciliation may reap after an untrappable exit.
 
 ### Failure diagnostics
 
@@ -92,8 +95,15 @@ Cofoundry's repository exclusions. Cofoundry hashes the sorted file paths,
 modes, sizes, and contents, uploads the one archive through SFTP, and extracts
 it into `$PVE_DUMP_DIR/cofoundry-snapshots/<sha256>`. The stable
 `cofoundry-work` path is an atomically switched symlink to that immutable
-snapshot. Each Packer build copies it into its own writable directory under
-`cofoundry-tmp`, because placeholder injection modifies recipe files.
+snapshot for compatibility and inspection. The pipeline retains the immutable
+snapshot path returned by sync, and every Packer build copies that exact path
+into a UUID-scoped writable directory under `cofoundry-tmp`; a concurrent sync
+therefore cannot change which revision an already-started pipeline builds.
+
+Shared installer downloads use a per-destination `flock`, recheck and validate
+the cache under that lock, download to a PID-scoped temporary file, and publish
+with an atomic rename. Cache hits are touched so age-based maintenance cannot
+remove media between prefetch and VM creation.
 
 This design requires neither local `rsync` nor local `tar`. The remote `tar`
 command is acceptable because the destination is always the Linux-based

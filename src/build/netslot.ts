@@ -1,5 +1,6 @@
 import { captureRemote, registerCleanup } from '@/build/remote.ts'
 import { spawnSync } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
 import type { Env } from '@/env.ts'
 import { shellQuote } from '@/util.ts'
 import { BUILD_SLOT_BASE, BUILD_SLOT_COUNT } from '@/build/buildnet.ts'
@@ -38,6 +39,7 @@ const LOCK_FILE = `${LOCK_DIR}/netslot.lock`
 const SNIPPET_DIR = '/etc/dnsmasq.d/cofoundry-hosts.d'
 const SNIPPET_PREFIX = 'slot-'
 const LEASES_FILE = '/var/lib/misc/dnsmasq.leases'
+const OWNER_DIR = `${LOCK_DIR}/netslots`
 
 // A snippet with no active lease is only reclaimed once it's older than this —
 // comfortably longer than the worst-case gap between allocating a slot and the
@@ -52,17 +54,23 @@ export type BuildSlot = {
     release: () => Promise<void>
 }
 
-const snippetPath = (slotIndex: number): string =>
-    `${SNIPPET_DIR}/${SNIPPET_PREFIX}${String(slotIndex).padStart(2, '0')}`
-
 // Reload the system dnsmasq service atomically so it re-reads the hostsfile
 // directory without disturbing in-flight leases. Bootstrap rejects unmanaged
 // or multiple dnsmasq instances, so builds must target this specific service
 // rather than signalling every process named dnsmasq on the node.
 const reloadDnsmasqCmd = `(systemctl reload dnsmasq 2>/dev/null || systemctl restart dnsmasq) && sleep 0.2`
 
+const releaseSlotOwnerScript = (owner: string): string =>
+    `exec 9>${shellQuote(LOCK_FILE)}; flock 9; changed=0; ` +
+    `for owner_file in ${shellQuote(OWNER_DIR)}/${SNIPPET_PREFIX}*; do ` +
+    `[ -f "$owner_file" ] || continue; ` +
+    `if [ "$(cat "$owner_file" 2>/dev/null || true)" = ${shellQuote(owner)} ]; then ` +
+    `slot=\${owner_file##*/}; rm -f ${shellQuote(SNIPPET_DIR)}/"$slot" "$owner_file"; changed=1; fi; done; ` +
+    `[ "$changed" -eq 0 ] || ${reloadDnsmasqCmd}`
+
 export const buildSlotAllocationScript = (
-    env: Pick<Env, 'CF_BUILD_BRIDGE'>
+    env: Pick<Env, 'CF_BUILD_BRIDGE'>,
+    owner = 'test-owner'
 ): string => `
 set -e
 bridge=${shellQuote(env.CF_BUILD_BRIDGE)}
@@ -121,7 +129,7 @@ if [ -z "$slot_base" ]; then
     exit 1
 fi
 
-mkdir -p ${shellQuote(LOCK_DIR)} ${shellQuote(SNIPPET_DIR)}
+mkdir -p ${shellQuote(LOCK_DIR)} ${shellQuote(SNIPPET_DIR)} ${shellQuote(OWNER_DIR)}
 exec 9>${shellQuote(LOCK_FILE)}
 flock 9
 now=$(date +%s)
@@ -139,6 +147,7 @@ for f in ${shellQuote(SNIPPET_DIR)}/${SNIPPET_PREFIX}*; do
     if [ "$active" -eq 0 ] && [ "$(( now - mt ))" -gt ${STALE_RECLAIM_SECS} ]; then
         echo "reclaiming stale netslot \${f##*/} ($sip): no lease, age $(( now - mt ))s" >&2
         rm -f "$f"
+        rm -f ${shellQuote(OWNER_DIR)}/"\${f##*/}"
     fi
 done
 used=" "
@@ -182,6 +191,7 @@ for cf in /etc/pve/qemu-server/*.conf; do
     qm destroy "$vid" --purge 1 --destroy-unreferenced-disks 1 --skiplock 1 >/dev/null 2>&1 || true
 done
 printf '%s,%s\\n' "$mac" "$ip" > ${shellQuote(SNIPPET_DIR)}/${SNIPPET_PREFIX}"$pad"
+printf '%s\\n' ${shellQuote(owner)} > ${shellQuote(OWNER_DIR)}/${SNIPPET_PREFIX}"$pad"
 # Purge any stale lease holding the reserved IP or matching the reserved MAC,
 # so a previous build's lease can't squat on the slot. dnsmasq re-reads the
 # leases file on SIGHUP.
@@ -194,11 +204,21 @@ echo "$pick,$ip,$gateway,$mac"
 export const allocateBuildSlot = async (env: Env): Promise<BuildSlot> => {
     // One atomic shell pass: take the lock, scan existing snippets, pick the
     // first free index, write the new snippet, reload dnsmasq, print the slot.
-    const script = buildSlotAllocationScript(env)
-    const out = await captureRemote(
-        env.SSH_TARGET,
-        `bash -s <<'__CF_NETSLOT__'\n${script}\n__CF_NETSLOT__`
-    )
+    const owner = randomUUID()
+    const script = buildSlotAllocationScript(env, owner)
+    let out: string
+    try {
+        out = await captureRemote(
+            env.SSH_TARGET,
+            `bash -s <<'__CF_NETSLOT__'\n${script}\n__CF_NETSLOT__`
+        )
+    } catch (error) {
+        await captureRemote(
+            env.SSH_TARGET,
+            releaseSlotOwnerScript(owner)
+        ).catch(() => {})
+        throw error
+    }
     const [slotRaw, ip = '', gw = '', mac = ''] = out.trim().split(',')
     const slotIndex = Number.parseInt(slotRaw ?? '', 10)
     if (
@@ -209,13 +229,15 @@ export const allocateBuildSlot = async (env: Env): Promise<BuildSlot> => {
         !/^\d+\.\d+\.\d+\.\d+$/.test(gw) ||
         !/^02:50:4b:00:00:[0-9a-f]{2}$/i.test(mac)
     ) {
+        await captureRemote(
+            env.SSH_TARGET,
+            releaseSlotOwnerScript(owner)
+        ).catch(() => {})
         throw new Error(`netslot allocator returned invalid index: ${out}`)
     }
 
-    const snippet = snippetPath(slotIndex)
-
     let released = false
-    const releaseScript = `rm -f ${shellQuote(snippet)} && ${reloadDnsmasqCmd}`
+    const releaseScript = releaseSlotOwnerScript(owner)
 
     // Synchronous SIGINT cleanup: best-effort delete the snippet over ssh.
     const unregister = registerCleanup(() => {

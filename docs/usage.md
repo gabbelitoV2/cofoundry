@@ -45,9 +45,12 @@ The persistent equivalents are `build.concurrency`,
 resource requirements come directly from each `.pkr.hcl` file's `memory` and
 `cores` settings.
 
-These budgets coordinate recipes within one `cf build` invocation. Independent
-`cf build` processes do not share a scheduler, so use one multi-recipe command
-when relying on the resource limits.
+The local scheduler coordinates recipes within one command, while heartbeating
+leases on the Proxmox node enforce the same RAM and CPU budgets across independent
+`cf build` and `cf verify` processes. If budgets are omitted, node-wide admission
+uses 80% of physical RAM and all host CPUs. Explicit budgets remain preferable
+when other workloads share the node, and are clamped to those physical safety
+ceilings if configured higher.
 
 `--skip-artifact-sync` overrides the default artifact download for that command invocation (env equivalent: `CF_SKIP_ARTIFACT_SYNC=1`).
 
@@ -104,10 +107,10 @@ cf prune --days 7  # stricter cache cutoff
 
 Removes:
 
-- non-template VMs named `packer-*` left by interrupted builds, regardless of
-  their slot-derived VMID;
-- ephemeral Packer ISO files and its download cache (the persistent
-  `packer-virtio-win.iso` cache is preserved);
+- VMs and scratch explicitly owned by expired run leases, plus legacy
+  non-template `packer-*` VMs older than the cutoff;
+- old, unreferenced Packer ISO files and download-cache entries (the persistent
+  `packer-virtio-win.iso` cache is preserved and attached media is never pruned);
 - vzdump archives and working data older than the selected cutoff;
 - orphaned per-build scratch in `cofoundry-tmp` (`build-*`, `repo-*.tar.gz`,
   `sync-*`) and half-swapped `cofoundry-work.new.*` links older than the cutoff;
@@ -152,8 +155,12 @@ Placeholders: `{{recipe}}` (recipe name), `{{arch}}`, `{{group}}` (OS family),
 
 ## GitHub Actions
 
-- **`check-upstream.yml`** — runs daily. Checks for upstream ISO changes, commits `upstream-checksums.json`, triggers matrix builds for changed recipes.
-- **`build.yml`** — reusable per-recipe workflow; also supports manual `workflow_dispatch`.
+- **`check-upstream.yml`** — checks weekly, runs changed recipes in a parallel
+  matrix, publishes once after the matrix, then commits the new checksums.
+- **`build.yml`** — reusable/manual one-recipe entry point.
+- **`build-one.yml`** — parallel-safe build and smoke-test worker.
+- **`publish.yml`** — globally serialized registry writer and R2 finalizer.
+- **`prune-node.yml`** — lease-aware node maintenance after a workflow finishes.
 
 CI reads the same committed `cofoundry.toml`; it supplies only the secrets and
 the `${VAR}` coordinates. See [Setup](setup.md).

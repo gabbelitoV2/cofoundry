@@ -40,6 +40,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOCAL_FILE="$CF_OUT_DIR/${CF_RECIPE_NAME}-${CF_ARCH}.vma.zst"
 LOCAL_MODE=0
 [ "$SSH_TARGET" = "local" ] && LOCAL_MODE=1
+REMOTE_ARTIFACT=""
+REMOTE_LOG=""
 
 _pve() {
   if [ "$LOCAL_MODE" = "1" ]; then
@@ -54,6 +56,9 @@ _pve() {
 . "$SCRIPT_DIR/shrink-disk.sh"
 
 cleanup() {
+  if [ -n "$REMOTE_ARTIFACT" ]; then
+    _pve "rm -f '$REMOTE_ARTIFACT' '$REMOTE_LOG'" || true
+  fi
   if [ "${CF_KEEP_VM:-}" != "1" ]; then
     echo "==> cleanup: destroying VM $CF_BUILT_VMID"
     _pve "qm stop '$CF_BUILT_VMID' --skiplock 1 2>/dev/null || true; \
@@ -93,6 +98,7 @@ _pve "vzdump $CF_BUILT_VMID --compress zstd --mode stop --dumpdir $PVE_DUMP_DIR"
 echo "==> locating artifact"
 REMOTE_ARTIFACT=$(_pve "ls -t $PVE_DUMP_DIR/vzdump-qemu-${CF_BUILT_VMID}-*.vma.zst | head -1")
 [ -n "$REMOTE_ARTIFACT" ] || { echo "no artifact found"; exit 1; }
+REMOTE_LOG="${REMOTE_ARTIFACT%.vma.zst}.log"
 
 if [ "$LOCAL_MODE" = "1" ]; then
   echo "==> moving $REMOTE_ARTIFACT -> $LOCAL_FILE"
@@ -100,9 +106,10 @@ if [ "$LOCAL_MODE" = "1" ]; then
 else
   echo "==> downloading $REMOTE_ARTIFACT -> $LOCAL_FILE"
   scp "$SSH_TARGET:$REMOTE_ARTIFACT" "$LOCAL_FILE"
-  echo "==> removing remote dump"
-  ssh "$SSH_TARGET" "rm -f '$REMOTE_ARTIFACT'"
 fi
+
+echo "==> removing dump intermediates"
+_pve "rm -f '$REMOTE_ARTIFACT' '$REMOTE_LOG'"
 
 echo "==> destroying VM $CF_BUILT_VMID"
 if [ "${CF_KEEP_VM:-}" = "1" ]; then

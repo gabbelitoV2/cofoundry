@@ -168,8 +168,9 @@ cron is just one line. From a workstation that can reach the node:
 ```
 
 Or on the node itself if you have the repo checked out there. CI also runs
-`cf prune --days 7` after every build, so the cron is only needed if you
-build locally.
+`cf prune --days 7` once after each build workflow. Prune honors active run
+leases, VM media references, and age cutoffs, so it can safely overlap a build
+from another workflow. The cron is only needed if you build locally.
 
 Run `cf prune --dry-run` first to see what would be removed.
 
@@ -351,6 +352,18 @@ workflow reads `vars.X || secrets.X`, so set it in one place, not both:
 
 > These are only the fields your `cofoundry.toml` writes as `${VAR}`. If you
 > inline any of them as a literal in `cofoundry.toml` instead, drop it here.
+
+Optional CI tuning variables:
+
+| Name                        | Value                                                       |
+| --------------------------- | ----------------------------------------------------------- |
+| `CF_CI_MAX_PARALLEL`        | Maximum GitHub matrix fan-out; defaults to `4`              |
+| `CF_BUILD_MEMORY_BUDGET_MB` | Node-wide build/verify RAM budget; defaults to 80% of RAM   |
+| `CF_BUILD_CPU_BUDGET`       | Node-wide build/verify virtual CPU budget; defaults to CPUs |
+
+The matrix cap controls runner fan-out, while the node-side lease manager is the
+authoritative admission control. Duplicate recipes are serialized separately,
+and registry/checksum writers share one global publication queue.
 
 **Tailscale** (only if using Tailscale — Variables tab):
 

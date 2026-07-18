@@ -1,6 +1,5 @@
 name: Build template
 
-# Called by check-upstream.yml for auto-triggered builds, or run manually.
 on:
   workflow_call:
     inputs:
@@ -14,202 +13,23 @@ on:
         type: string
         description: "Recipe name (e.g. debian-12)"
 
+permissions:
+  contents: write
+
 jobs:
   build:
-    runs-on: ubuntu-latest
-    # Serialize all build runs. The PVE node has shared state that doesn't
-    # tolerate parallel access: build outputs, upload publication state, and
-    # registry.json on main. Repository snapshots themselves are atomic.
-    concurrency:
-      group: cofoundry-build
-      cancel-in-progress: false
-    permissions:
-      contents: write
-    # Non-secret deployment config (ports, storage, bridges, upload layout)
-    # lives in the committed cofoundry.toml — it's checked out below and read by
-    # every `cf` command. CI only supplies the secrets plus the coordinates that
-    # cofoundry.toml references via ${VAR}. `vars.X || secrets.X` lets you keep
-    # any coordinate hidden as a Secret instead of a Variable.
-    env:
-      # 'true' only when a registry-writer GitHub App is configured. When empty
-      # (no ruleset on main), the workflow falls back to the default
-      # GITHUB_TOKEN for the registry.json push. See docs/setup.md#3.
-      HAS_REGISTRY_APP: ${{ secrets.REGISTRY_APP_ID != '' && secrets.REGISTRY_APP_PRIVATE_KEY != '' }}
-      # ── secrets (env only) ──
-      PVE_TOKEN_SECRET: ${{ secrets.PVE_TOKEN_SECRET }}
-      AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-      AWS_DEFAULT_REGION: auto
-      # ── coordinates referenced by ${VAR} in cofoundry.toml ──
-      PVE_HOST: ${{ vars.PVE_HOST || secrets.PVE_HOST }}
-      SSH_TARGET: ${{ vars.SSH_TARGET || secrets.SSH_TARGET }}
-      PVE_NODE: ${{ vars.PVE_NODE || secrets.PVE_NODE }}
-      PVE_TOKEN_ID: ${{ vars.PVE_TOKEN_ID || secrets.PVE_TOKEN_ID }}
-      R2_ENDPOINT: ${{ vars.R2_ENDPOINT || secrets.R2_ENDPOINT }}
-      R2_BUCKET: ${{ vars.R2_BUCKET || secrets.R2_BUCKET }}
-    steps:
-      # In the app path we set our own http.extraheader with the registry app
-      # token below, so drop checkout's baked-in GITHUB_TOKEN credential —
-      # otherwise git sends two Authorization headers and github.com rejects the
-      # fetch with `400 Duplicate header: "Authorization"`. In the no-app path we
-      # keep it, because the registry.json push then relies on GITHUB_TOKEN.
-      - uses: actions/checkout@v7
-        with:
-          persist-credentials: ${{ env.HAS_REGISTRY_APP != 'true' }}
+    uses: ./.github/workflows/build-one.yml
+    with:
+      recipe: ${{ inputs.recipe }}
+    secrets: inherit
 
-      - uses: oven-sh/setup-bun@v2
+  publish:
+    needs: build
+    uses: ./.github/workflows/publish.yml
+    secrets: inherit
 
-      - run: bun install --frozen-lockfile
-
-      - name: Run tests
-        run: bun test
-
-      - name: Setup Packer
-        uses: hashicorp/setup-packer@v3
-        with:
-          version: latest
-
-      # ── Tailscale ──────────────────────────────────────────────────────────
-      # Set TS_TAG (repo variable) to whatever tag your OAuth client is scoped
-      # to and your ACL grants SSH from. Default: tag:ci.
-      - name: Connect to Tailscale
-        uses: tailscale/github-action@v4
-        with:
-          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
-          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
-          tags: ${{ vars.TS_TAG || 'tag:ci' }}
-
-      # ── SSH config (always) ───────────────────────────────────────────────
-      # Disable strict host-key checking so first-contact SSH (whether
-      # authenticated by a key or by Tailscale SSH) doesn't fail on the
-      # missing known_hosts entry.
-      - name: Configure SSH
-        run: |
-          mkdir -p ~/.ssh
-          echo "StrictHostKeyChecking=no" >> ~/.ssh/config
-
-      # ── SSH key (optional; skipped when using Tailscale SSH) ──────────────
-      - name: Set up SSH key
-        if: env.SSH_PRIVATE_KEY != ''
-        env:
-          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
-        run: |
-          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
-          chmod 600 ~/.ssh/id_ed25519
-
-      # ── Build template ─────────────────────────────────────────────────────
-      # inject-placeholders.sh generates an ephemeral SSH key (Linux) or
-      # WinRM password (Windows), patches recipe files, and writes a vars file.
-      # packer init + packer build are invoked by `cf build`.
-      #
-      # The upload command, sidecar command, and public URL are derived from the
-      # [upload] block in the committed cofoundry.toml (layout = "grouped"), so
-      # each build lands at a content-addressed path and rollback is "revert
-      # registry.json". No upload strings to maintain here.
-      - name: Build template
-        run: bun run cf build ${{ inputs.recipe }} --ci --verbose
-        env:
-          # Artifacts upload directly to R2 from the PVE node; never sync the
-          # multi-GB .vma.zst back to the runner.
-          CF_SKIP_ARTIFACT_SYNC: '1'
-
-      # ── Smoke-test artifact ────────────────────────────────────────────────
-      # Restores the just-built archive to a scratch VMID on the PVE node,
-      # boots it, waits for the guest agent, then destroys it. Catches corrupt
-      # vzdump output, broken cloud-init, kernel panics, missing guest agent
-      # before `cf publish` makes the build consumer-visible.
-      - name: Smoke-test artifact
-        run: bun run cf verify ${{ inputs.recipe }}
-
-      # ── Sync to latest main ────────────────────────────────────────────────
-      # Subsequent serial matrix builds were checked out at the same stale
-      # dispatch SHA; an earlier build may have already pushed registry.json.
-      # Re-base onto latest main so the publish below regenerates on top of it
-      # and the commit push is a fast-forward (otherwise non-fast-forward
-      # rejection). Safe: registry.json is rebuilt from R2 sidecars, and the
-      # cofoundry-build concurrency group serializes builds (no push race).
-      # Mint the app token here—not at job start—because Windows builds can run
-      # longer than the token's one-hour lifetime.
-      - uses: actions/create-github-app-token@v3
-        id: registry-app-token
-        if: env.HAS_REGISTRY_APP == 'true'
-        with:
-          app-id: ${{ secrets.REGISTRY_APP_ID }}
-          private-key: ${{ secrets.REGISTRY_APP_PRIVATE_KEY }}
-
-      - name: Sync to latest main
-        env:
-          REGISTRY_TOKEN: ${{ steps.registry-app-token.outputs.token }}
-        run: |
-          # App path: install the app token as the sole http.extraheader (the
-          # persisted GITHUB_TOKEN credential was dropped at checkout, so there's
-          # nothing to unset). No-app path: REGISTRY_TOKEN is empty and we leave
-          # checkout's persisted GITHUB_TOKEN credential in place.
-          if [ -n "$REGISTRY_TOKEN" ]; then
-            AUTH=$(printf 'x-access-token:%s' "$REGISTRY_TOKEN" | base64 -w0)
-            git config --local http.https://github.com/.extraheader "AUTHORIZATION: basic $AUTH"
-          fi
-          git fetch origin main
-          git reset --hard origin/main
-
-      # ── Publish manifest ───────────────────────────────────────────────────
-      # --r2: sidecars live in R2 (uploaded by CF_SIDECAR_UPLOAD_CMD during the
-      # build step); the runner doesn't sync artifacts back, so reading from R2
-      # is the only way the registry reflects all templates, not just this build.
-      - name: Publish manifest
-        run: bun run cf publish --r2
-
-      # ── Commit registry.json back to main ─────────────────────────────────
-      # Canonical history: `git log registry.json` is the audit log of every
-      # published version. Rollback = revert the commit.
-      - name: Commit registry.json
-        run: |
-          git config user.name "cofoundry-registry-writer[bot]"
-          git config user.email "cofoundry-registry-writer[bot]@users.noreply.github.com"
-          git add registry.json
-          git diff --cached --quiet || (git commit -m "chore: publish ${{ inputs.recipe }} build" && git push)
-
-      # ── Mirror registry.json to R2 ─────────────────────────────────────────
-      # Single fetch origin for consumers. Short TTL so rollbacks propagate
-      # quickly.
-      - name: Mirror registry.json to R2
-        run: |
-          aws --endpoint-url "$R2_ENDPOINT" s3 cp \
-            registry.json "s3://$R2_BUCKET/registry.json" \
-            --cache-control "public, max-age=60" \
-            --content-type "application/json"
-
-      # ── Reclaim disk on the node ──────────────────────────────────────────
-      # Folds the old weekly cleanup cron into the build pipeline.
-      - name: Prune Proxmox node
-        if: always()
-        run: bun run cf prune --days 7
-
-      # ── Prune old R2 objects ──────────────────────────────────────────────
-      # Keep last 5 per template. The R2 lifecycle rule (configured out-of-band)
-      # provides a broader 60-day safety net for orphaned recipes.
-      - name: Prune R2 templates
-        if: always()
-        run: bun run cf prune --r2 --keep 5
-
-      # ── Upload failure diagnostics ─────────────────────────────────────────
-      # On failure `cf build` writes scrubbed in-guest logs + a manifest to
-      # ./diagnostics (screenshots are omitted in CI: this repo is public and
-      # framebuffer images can't be redacted). Short retention; safe to attach.
-      - name: Upload failure diagnostics
-        if: failure()
-        uses: actions/upload-artifact@v7
-        with:
-          name: diagnostics-${{ inputs.recipe }}
-          path: diagnostics/
-          retention-days: 7
-          if-no-files-found: ignore
-
-      # ── Upload artifact ────────────────────────────────────────────────────
-      - uses: actions/upload-artifact@v7
-        with:
-          name: ${{ inputs.recipe }}
-          path: |
-            registry.json
-            dist/
-          retention-days: 30
+  prune-node:
+    needs: build
+    if: always()
+    uses: ./.github/workflows/prune-node.yml
+    secrets: inherit

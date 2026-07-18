@@ -1,5 +1,7 @@
 import { describe, expect, test } from 'bun:test'
+import { spawnSync } from 'node:child_process'
 import { buildWritableRepoCommand } from '@/build/executor.ts'
+import { destroyVmCommand } from '@/build/vm.ts'
 
 describe('buildWritableRepoCommand', () => {
     test('dereferences the stable snapshot into a writable build copy', () => {
@@ -29,5 +31,20 @@ describe('buildWritableRepoCommand', () => {
         expect(command).not.toContain(
             "'/dump/cofoundry-work/recipes/_shared/CloudbaseInitSetup_x64.msi'"
         )
+    })
+})
+
+describe('destroyVmCommand', () => {
+    test('reclaims only orphaned volumes belonging to the destroyed VMID', () => {
+        const command = destroyVmCommand(400100, 'local-lvm')
+        expect(command).toContain("pvesm list 'local-lvm'")
+        expect(command).toContain('$NF==vmid')
+        expect(command).toContain('pvesm free "$volid"')
+        expect(command).toContain('! qm config 400100')
+        const result = spawnSync('bash', ['-n'], {
+            input: command,
+            encoding: 'utf8',
+        })
+        expect(result.status, result.stderr).toBe(0)
     })
 })

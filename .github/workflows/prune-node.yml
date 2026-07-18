@@ -1,0 +1,47 @@
+name: Prune build node
+
+on:
+  workflow_call:
+
+jobs:
+  prune:
+    runs-on: ubuntu-latest
+    concurrency:
+      group: cofoundry-prune
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    env:
+      PVE_TOKEN_SECRET: ${{ secrets.PVE_TOKEN_SECRET }}
+      PVE_HOST: ${{ vars.PVE_HOST || secrets.PVE_HOST }}
+      SSH_TARGET: ${{ vars.SSH_TARGET || secrets.SSH_TARGET }}
+      PVE_NODE: ${{ vars.PVE_NODE || secrets.PVE_NODE }}
+      PVE_TOKEN_ID: ${{ vars.PVE_TOKEN_ID || secrets.PVE_TOKEN_ID }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: oven-sh/setup-bun@v2
+
+      - run: bun install --frozen-lockfile
+
+      - name: Connect to Tailscale
+        uses: tailscale/github-action@v4
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: ${{ vars.TS_TAG || 'tag:ci' }}
+
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "StrictHostKeyChecking=no" >> ~/.ssh/config
+
+      - name: Set up SSH key
+        if: env.SSH_PRIVATE_KEY != ''
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+        run: |
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+
+      - run: bun run cf prune --days 7

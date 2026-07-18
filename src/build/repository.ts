@@ -41,7 +41,7 @@ export const REPO_SYNC_EXCLUDES = [
 export const syncRepoToRemote = async (
     env: Env,
     opts: SyncRepoOptions = {}
-): Promise<void> => {
+): Promise<string> => {
     const phase = opts.onPhase ?? (() => {})
     phase('creating content snapshot')
     const snapshot = await createRepositorySnapshot(
@@ -86,6 +86,7 @@ export const syncRepoToRemote = async (
                 lock: `${paths.snapshots}/.install.lock`,
             })
         )
+        return remoteSnapshot
     } finally {
         await captureRemote(
             env.SSH_TARGET,

@@ -31,8 +31,13 @@ set -euo pipefail
 : "${CF_BUILT_VMID:?}"
 
 LOCAL_FILE="$CF_OUT_DIR/${CF_RECIPE_NAME}.vma.zst"
+REMOTE_ARTIFACT=""
+REMOTE_LOG=""
 
 cleanup() {
+  if [ -n "$REMOTE_ARTIFACT" ]; then
+    ssh "$SSH_TARGET" "rm -f '$REMOTE_ARTIFACT' '$REMOTE_LOG'" 2>/dev/null || true
+  fi
   if [ "${CF_KEEP_VM:-}" != "1" ]; then
     echo "==> cleanup: destroying VM $CF_BUILT_VMID"
     ssh "$SSH_TARGET" \
@@ -54,11 +59,12 @@ echo "==> locating artifact"
 REMOTE_ARTIFACT=$(ssh "$SSH_TARGET" \
   "ls -t $PVE_DUMP_DIR/vzdump-qemu-${CF_BUILT_VMID}-*.vma.zst | head -1")
 [ -n "$REMOTE_ARTIFACT" ] || { echo "no artifact found"; exit 1; }
+REMOTE_LOG="${REMOTE_ARTIFACT%.vma.zst}.log"
 
 echo "==> downloading $REMOTE_ARTIFACT -> $LOCAL_FILE"
 scp "$SSH_TARGET:$REMOTE_ARTIFACT" "$LOCAL_FILE"
-echo "==> removing remote dump file"
-ssh "$SSH_TARGET" "rm -f '$REMOTE_ARTIFACT'"
+echo "==> removing remote dump intermediates"
+ssh "$SSH_TARGET" "rm -f '$REMOTE_ARTIFACT' '$REMOTE_LOG'"
 
 if [ "${CF_KEEP_VM:-}" = "1" ]; then
   echo "==> keeping temporary VM $CF_BUILT_VMID"

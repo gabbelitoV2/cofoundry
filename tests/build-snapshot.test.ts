@@ -107,5 +107,6 @@ describe('repository snapshots', () => {
         expect(script).toContain('flock -x 9')
         expect(script).toContain('mv -Tf "$link" "$work"')
         expect(script).toContain('chmod -R a-w "$staging"')
+        expect(script).toContain('touch "$snapshot"')
     })
 })

@@ -22,7 +22,10 @@ const dependencies = (
         if (failure === name) throw new Error(`${name} failed`)
     }
     return {
-        syncRepo: async () => run('syncRepo'),
+        syncRepo: async () => {
+            await run('syncRepo')
+            return '/dump/cofoundry-snapshots/test'
+        },
         prefetch: async () => run('prefetch'),
         build: async () => {
             await run('build')
@@ -82,6 +85,18 @@ describe('runPipeline', () => {
         )
 
         expect(events).toEqual(['prefetch', 'build'])
+    })
+
+    test('pins builds to the snapshot returned by repository sync', async () => {
+        const events: string[] = []
+        const deps = dependencies(events)
+        deps.syncRepo = async () => '/dump/cofoundry-snapshots/pinned'
+        deps.build = async (_env, _recipe, options) => {
+            expect(options.snapshotDir).toBe('/dump/cofoundry-snapshots/pinned')
+            return { startedAt: 123 }
+        }
+
+        await runPipeline(env, [recipe], { syncBack: false, ci: true }, deps)
     })
 
     test('requires resource budgets when parallel builds are enabled', async () => {

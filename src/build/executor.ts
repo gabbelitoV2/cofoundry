@@ -1,4 +1,5 @@
 import { spawnSync } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
 import type { Env } from '@/env.ts'
 import type { RecipeInfo } from '@/config.ts'
 import { shellQuote } from '@/util.ts'
@@ -29,11 +30,14 @@ import {
     sweepStaleDiagnosticsCommand,
 } from '@/build/diagnostics.ts'
 import { log } from '@/log.ts'
+import { acquireRunLease } from '@/build/lease.ts'
 
 export type BuildPhaseOptions = {
     keepVm?: boolean
     skipUpload?: boolean
     ciMode?: boolean
+    /** Immutable repository snapshot selected by this pipeline invocation. */
+    snapshotDir?: string
 }
 
 export type BuildPhaseResult = {
@@ -65,83 +69,67 @@ export const buildPhase = async (
     options: BuildPhaseOptions = {},
     onLine?: (line: string) => void
 ): Promise<BuildPhaseResult> => {
-    const remoteWorkDir = buildRemoteWorkDir(env)
+    const remoteWorkDir = options.snapshotDir ?? buildRemoteWorkDir(env)
     const remoteOutDir = buildRemoteOutDir(env)
     const remoteTmpDir = buildRemoteTmpDir(env)
-
-    // Pre-clean prior artifacts for this recipe so a partial/aborted build
-    // can't leave stale `.vma.zst` or `.json` that syncPhase then pulls down.
-    // Also capture the remote build-start epoch for the mtime gate below.
-    const stalePrefix = `${remoteOutDir}/${recipe.name}-${recipe.arch}`
-    const startedAtRaw = await captureRemote(
-        env.SSH_TARGET,
-        `${sweepStaleDiagnosticsCommand()}; ` +
-            `rm -f ${shellQuote(stalePrefix + '.vma.zst')} ${shellQuote(stalePrefix + '.json')} ${shellQuote(stalePrefix + '.json.tmp')} && date +%s`
-    )
-    const startedAt = Number.parseInt(startedAtRaw.trim(), 10)
-    if (!Number.isFinite(startedAt)) {
-        throw new Error(`could not parse remote epoch: ${startedAtRaw}`)
-    }
     const layout = await inspectRecipeLayout(recipe)
     const buildBridge = bridgeForRecipe(env, recipe, layout)
-
-    let slot: BuildSlot | null = null
-    if (layout.needsBuildNetwork) {
-        slot = await allocateBuildSlot(env)
-        log.info(
-            `build network · ${env.CF_BUILD_BRIDGE} · ${slot.ip} via ${slot.gw} · slot ${slot.slotIndex}`
-        )
-    }
-    const effectiveBuildVmid = recipe.buildVmid
-        ? buildSlotVmid(recipe.buildVmid, slot)
-        : undefined
-    // Packer creates answer-file ISOs and the injector writes ephemeral SSH /
-    // WinRM credentials under TMPDIR. Isolate each build so mode 0700 on the
-    // parent protects even tools that create individual files as 0644, and so
-    // cleanup never races another recipe's active build.
-    const remoteBuildTmpDir = `${remoteTmpDir}/build-${recipe.name}-${effectiveBuildVmid ?? 'plain'}`
+    const remoteBuildTmpDir = `${remoteTmpDir}/build-${recipe.name}-${randomUUID()}`
     const remoteBuildWorkDir = `${remoteBuildTmpDir}/repo`
-    // The recorder needs a vmid to screendump, so diagnostics only run for
-    // networked/VMID builds. Its tmpfs dir is torn down together with the secret
-    // tmp tree — on success, on signals, and (after collection) on failure.
-    const diagEnabled = env.CF_DIAGNOSTICS && effectiveBuildVmid !== undefined
-    const diagRemoteDir = diagEnabled
-        ? diagnosticsRemoteDir(effectiveBuildVmid as number)
-        : undefined
-    const secretCleanupCmd = `rm -rf ${[remoteBuildTmpDir, diagRemoteDir]
-        .filter((p): p is string => p !== undefined)
-        .map(shellQuote)
-        .join(' ')}`
+    const lease = await acquireRunLease(
+        env,
+        'build',
+        recipe,
+        remoteBuildTmpDir,
+        {
+            preserveVm: Boolean(options.keepVm),
+            onWait: message => onLine?.(`[queue] ${message}`),
+        }
+    )
+    let slot: BuildSlot | null = null
     let unregisterSecretCleanup: (() => void) | undefined
-
-    if (recipe.buildVmid) {
-        // Kill any orphaned packer build (and its watchdog subshells) for THIS
-        // recipe left over from a cancelled/failed/timed-out run. Remote SSH
-        // doesn't reliably signal the node-side packer when a run is torn down,
-        // so it keeps running. Historically every recipe used a fixed
-        // build_vmid, so stale packers/watchdogs could stop/start the next live
-        // build's VM. New builds use a slot-derived VMID, but we still kill stale
-        // recipe-local packers to prevent artifact races, then clean the legacy
-        // VMID and this build's assigned VMID.
-        // Match packer (and its watchdog subshell, whose argv embeds the packer
-        // command) by command line. The leading [p] character class is the
-        // classic self-exclusion trick: this pkill's OWN shell has the pattern
-        // string in its argv, but "[p]acker" matches the literal "packer", not
-        // the bracketed "[p]acker" in our own command line — so it can't SIGKILL
-        // itself (which previously failed the build with ssh exit 255).
-        const staleMatch = `[p]acker build .*${recipe.name}`
-        const vmidsToClean = [recipe.buildVmid, effectiveBuildVmid]
-            .filter((vmid): vmid is number => vmid !== undefined)
-            .filter((vmid, i, vmids) => vmids.indexOf(vmid) === i)
-        await captureRemote(
-            env.SSH_TARGET,
-            `pkill -9 -f ${shellQuote(staleMatch)} >/dev/null 2>&1 || true; ` +
-                `sleep 1; ` +
-                vmidsToClean.map(destroyVmCommand).join('; ')
-        )
-    }
+    let secretCleanupCmd = `rm -rf ${shellQuote(remoteBuildTmpDir)}`
+    let startedAt = 0
+    let effectiveBuildVmid: number | undefined
 
     try {
+        if (layout.needsBuildNetwork) {
+            slot = await allocateBuildSlot(env)
+            log.info(
+                `build network · ${env.CF_BUILD_BRIDGE} · ${slot.ip} via ${slot.gw} · slot ${slot.slotIndex}`
+            )
+        }
+        effectiveBuildVmid = recipe.buildVmid
+            ? buildSlotVmid(recipe.buildVmid, slot)
+            : undefined
+        if (effectiveBuildVmid !== undefined)
+            await lease.setVmid(effectiveBuildVmid)
+
+        // Packer creates answer-file ISOs and ephemeral credentials under this
+        // private, run-scoped tree. Diagnostics are keyed by the unique VMID.
+        const diagEnabled =
+            env.CF_DIAGNOSTICS && effectiveBuildVmid !== undefined
+        const diagRemoteDir = diagEnabled
+            ? diagnosticsRemoteDir(effectiveBuildVmid as number)
+            : undefined
+        secretCleanupCmd = `rm -rf ${[remoteBuildTmpDir, diagRemoteDir]
+            .filter((p): p is string => p !== undefined)
+            .map(shellQuote)
+            .join(' ')}`
+
+        // The run lease serializes duplicate recipes, so these stable result
+        // names cannot be removed or replaced by another live build.
+        const stalePrefix = `${remoteOutDir}/${recipe.name}-${recipe.arch}`
+        const startedAtRaw = await captureRemote(
+            env.SSH_TARGET,
+            `${sweepStaleDiagnosticsCommand()}; ` +
+                `rm -f ${shellQuote(stalePrefix + '.vma.zst')} ${shellQuote(stalePrefix + '.json')} ${shellQuote(stalePrefix + '.json.tmp')} && date +%s`
+        )
+        startedAt = Number.parseInt(startedAtRaw.trim(), 10)
+        if (!Number.isFinite(startedAt)) {
+            throw new Error(`could not parse remote epoch: ${startedAtRaw}`)
+        }
+
         await captureRemote(
             env.SSH_TARGET,
             `rm -rf ${shellQuote(remoteBuildTmpDir)} && install -d -m 700 ${shellQuote(remoteBuildTmpDir)} && ${buildWritableRepoCommand(
@@ -174,7 +162,7 @@ export const buildPhase = async (
 
         await remoteStreaming(
             env.SSH_TARGET,
-            `packer init ${recipeHcl}`,
+            `flock -x /var/lib/cofoundry/packer-init.lock packer init ${shellQuote(recipeHcl)}`,
             onLine
         )
 
@@ -205,13 +193,17 @@ export const buildPhase = async (
             options.skipUpload
         )
 
+        const cleanupVmid = effectiveBuildVmid
         const unregisterVmCleanup =
-            effectiveBuildVmid && !options.keepVm
+            cleanupVmid && !options.keepVm
                 ? registerCleanup(() => {
                       process.stderr.write(
-                          `\ncancelled — destroying build VM ${effectiveBuildVmid}\n`
+                          `\ncancelled — destroying build VM ${cleanupVmid}\n`
                       )
-                      const destroyCmd = destroyVmCommand(effectiveBuildVmid)
+                      const destroyCmd = destroyVmCommand(
+                          cleanupVmid,
+                          env.CF_STORAGE
+                      )
                       spawnSync('ssh', [env.SSH_TARGET, destroyCmd], {
                           stdio: 'inherit',
                       })
@@ -292,8 +284,15 @@ export const buildPhase = async (
         // private temp tree also contains vars files, private keys, and
         // generated answer-file ISOs, so remove the whole tree together.
         unregisterSecretCleanup?.()
+        if (effectiveBuildVmid !== undefined && !options.keepVm) {
+            await captureRemote(
+                env.SSH_TARGET,
+                destroyVmCommand(effectiveBuildVmid, env.CF_STORAGE)
+            ).catch(() => {})
+        }
         await captureRemote(env.SSH_TARGET, secretCleanupCmd).catch(() => {})
         await slot?.release()
+        await lease.release()
     }
 
     return { startedAt }

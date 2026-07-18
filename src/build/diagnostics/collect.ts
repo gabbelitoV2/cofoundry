@@ -138,7 +138,9 @@ export const collectDiagnostics = async (
             ? 0
             : (await readdir(framesDir).catch(() => [])).length
         if (input.ciMode) {
-            await rm(framesDir, { recursive: true, force: true }).catch(() => {})
+            await rm(framesDir, { recursive: true, force: true }).catch(
+                () => {}
+            )
         }
 
         await writeManifest(runDir, input, now, frames, logs)
@@ -174,7 +176,9 @@ const writeManifest = (
                 collectedAt: now.toISOString(),
                 ciMode: input.ciMode,
                 error: redactSensitive(errorMessage(input.error)),
-                screenshots: input.ciMode ? 'omitted (CI, public repo)' : frames,
+                screenshots: input.ciMode
+                    ? 'omitted (CI, public repo)'
+                    : frames,
                 logs,
             },
             null,

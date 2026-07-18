@@ -122,6 +122,9 @@ mkdir -p "$snapshots"
         chmod -R a-w "$staging"
         mv "$staging" "$snapshot"
     fi
+    # Refresh last-use time so age-based pruning cannot remove a snapshot that a
+    # newly-started pipeline has pinned but not copied yet.
+    touch "$snapshot"
     rm -f "$link"
     ln -s "$snapshot" "$link"
     if [ -e "$work" ] && [ ! -L "$work" ]; then

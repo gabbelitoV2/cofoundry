@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test'
+import { spawnSync } from 'node:child_process'
 import { ephemeralPackerIsoFind, orphanDiskFind } from '@/prune/node.ts'
 
 const ISO_STORE = '/var/lib/vz/template/iso'
@@ -23,6 +24,22 @@ describe('ephemeralPackerIsoFind', () => {
     test('without preserveVirtio the virtio cache is not spared', () => {
         const cmd = ephemeralPackerIsoFind(ISO_STORE, { preserveVirtio: false })
         expect(cmd).not.toContain('! -name')
+    })
+
+    test('routine mode is age-gated and skips media referenced by a VM', () => {
+        const cmd = ephemeralPackerIsoFind(ISO_STORE, {
+            preserveVirtio: true,
+            olderThanDays: 7,
+            unreferencedOnly: true,
+        })
+        expect(cmd).toContain('-mtime +7')
+        expect(cmd).toContain('/etc/pve/qemu-server')
+        expect(cmd).toContain('grep -RqsF')
+        const result = spawnSync('bash', ['-n'], {
+            input: cmd,
+            encoding: 'utf8',
+        })
+        expect(result.status, result.stderr).toBe(0)
     })
 })
 

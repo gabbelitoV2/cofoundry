@@ -13,5 +13,7 @@ describe('buildSlotAllocationScript', () => {
         expect(script).toContain("bridge='vmbr1'")
         expect(script).toContain('bridge_cidr=$(ip -4')
         expect(script).toContain('if fits_block 100')
+        expect(script).toContain("'test-owner'")
+        expect(script).toContain('/var/lib/cofoundry/netslots')
     })
 })

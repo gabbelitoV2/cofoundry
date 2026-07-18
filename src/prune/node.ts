@@ -5,6 +5,12 @@ import { log } from '@/log.ts'
 import { shellQuote } from '@/util.ts'
 import { remotePaths } from '@/build/paths.ts'
 import { destroyVmCommand } from '@/build/vm.ts'
+import { assetLockPath } from '@/build/prefetch.ts'
+import {
+    RUN_LEASE_DIR,
+    RUN_LEASE_LOCK,
+    sweepRunLeasesScript,
+} from '@/build/lease.ts'
 
 const LEGACY_WORK_DIR = '/tmp/cofoundry'
 
@@ -75,11 +81,23 @@ const removeDirs = async (
 // glob would otherwise catch by accident.
 export const ephemeralPackerIsoFind = (
     isoStore: string,
-    { preserveVirtio }: { preserveVirtio: boolean }
+    {
+        preserveVirtio,
+        olderThanDays,
+        unreferencedOnly = false,
+    }: {
+        preserveVirtio: boolean
+        olderThanDays?: number
+        unreferencedOnly?: boolean
+    }
 ): string =>
     `find ${isoStore} -maxdepth 1 ` +
     (preserveVirtio ? `! -name ${shellQuote(VIRTIO_WIN_ISO)} ` : '') +
-    `\\( -name 'packer*.iso' -o -name 'packer*.iso.tmp' -o -regextype posix-extended -regex '.*\/[0-9a-f]{40}\\.iso' \\) 2>/dev/null || true`
+    `\\( -name 'packer*.iso' -o -name 'packer*.iso.tmp' -o -regextype posix-extended -regex '.*\/[0-9a-f]{40}\\.iso' \\) ` +
+    (olderThanDays === undefined ? '' : `-mtime +${olderThanDays} `) +
+    (unreferencedOnly
+        ? `-print0 2>/dev/null | while IFS= read -r -d '' iso; do base=\${iso##*/}; grep -RqsF "iso/$base" /etc/pve/qemu-server 2>/dev/null || echo "$iso"; done`
+        : `-print 2>/dev/null || true`)
 
 // Build VMs are named `packer-<recipe>` (the vm_name in every recipe), so match
 // by name rather than a VMID range: per-build VMIDs are slot-derived
@@ -89,25 +107,37 @@ export const ephemeralPackerIsoFind = (
 // a full `clean` teardown reaps them too.
 const findBuildVms = async (
     env: Env,
-    { includeTemplates }: { includeTemplates: boolean }
+    {
+        includeTemplates,
+        olderThanDays,
+    }: { includeTemplates: boolean; olderThanDays?: number }
 ): Promise<string[]> =>
     lines(
         await ssh(
             env.SSH_TARGET,
-            includeTemplates
+            includeTemplates && olderThanDays === undefined
                 ? `qm list 2>/dev/null | awk 'NR>1 && $2 ~ /^packer-/ {print $1}'`
-                : `for v in $(qm list 2>/dev/null | awk 'NR>1 && $2 ~ /^packer-/ {print $1}'); do ` +
-                      `qm config "$v" 2>/dev/null | grep -q '^template:' || echo "$v"; ` +
-                      `done`
+                : `active=" $(awk -F '\\t' '{printf "%s ", $3}' ${shellQuote(RUN_LEASE_DIR)}/* 2>/dev/null || true)"; ` +
+                      `now=$(date +%s); ` +
+                      `for v in $(qm list 2>/dev/null | awk 'NR>1 && $2 ~ /^packer-/ {print $1}'); do ` +
+                      `case "$active" in *" $v "*) continue ;; esac; ` +
+                      (includeTemplates
+                          ? ''
+                          : `qm config "$v" 2>/dev/null | grep -q '^template:' && continue; `) +
+                      (olderThanDays === undefined
+                          ? ''
+                          : `modified=$(stat -c %Y "/etc/pve/qemu-server/$v.conf" 2>/dev/null || echo "$now"); ` +
+                            `[ "$((now - modified))" -gt ${olderThanDays * 86400} ] || continue; `) +
+                      `echo "$v"; done`
         )
     )
 
 const reapBuildVms = async (
     env: Env,
     dryRun: boolean,
-    { includeTemplates }: { includeTemplates: boolean }
+    options: { includeTemplates: boolean; olderThanDays?: number }
 ): Promise<void> => {
-    const orphans = await findBuildVms(env, { includeTemplates })
+    const orphans = await findBuildVms(env, options)
     if (orphans.length === 0) {
         log.info('build VMs: none found')
         return
@@ -116,7 +146,10 @@ const reapBuildVms = async (
     for (const vmid of orphans) {
         log.note(`${verb} VM ${vmid}`)
         if (!dryRun) {
-            await ssh(env.SSH_TARGET, destroyVmCommand(Number(vmid)))
+            await ssh(
+                env.SSH_TARGET,
+                destroyVmCommand(Number(vmid), env.CF_STORAGE)
+            )
         }
     }
     log.ok(
@@ -154,6 +187,14 @@ const freeVolumes = async (
 export const runClean = async (env: Env): Promise<void> => {
     const paths = remotePaths(env)
     log.section(`Clean ${dim('·')} ${accent(env.SSH_TARGET)}`)
+    await ssh(
+        env.SSH_TARGET,
+        `for lease in ${shellQuote(RUN_LEASE_DIR)}/*; do ` +
+            `[ -f "$lease" ] || continue; ` +
+            `IFS=$'\\t' read -r _kind _recipe _vmid _memory _cores tmpdir _preserve < "$lease" || true; ` +
+            `case "$tmpdir" in */cofoundry-tmp/build-*|*/cofoundry-verify-*) pkill -9 -f -- "$tmpdir" >/dev/null 2>&1 || true ;; esac; ` +
+            `done`
+    )
     log.step(`removing ${LEGACY_WORK_DIR}`)
     const workSize = await ssh(
         env.SSH_TARGET,
@@ -233,6 +274,15 @@ export const runClean = async (env: Env): Promise<void> => {
         }
     }
 
+    const verifyDirs = lines(
+        await ssh(
+            env.SSH_TARGET,
+            `find ${shellQuote(paths.dump)} -mindepth 1 -maxdepth 1 -type d -name 'cofoundry-verify-*' 2>/dev/null || true`
+        )
+    )
+    await removeDirs(env, verifyDirs, false)
+    report('verify scratch', verifyDirs, false)
+
     // Half-swapped work symlinks (`cofoundry-work.new.<pid>`) are siblings of
     // `cofoundry-work`, so the directory wipe above never touches them. A dirty
     // teardown mid-`mv` leaves one behind.
@@ -262,6 +312,15 @@ export const runClean = async (env: Env): Promise<void> => {
     await freeVolumes(env, orphanDisks, false)
     report('orphaned disks', orphanDisks, false)
 
+    log.step('removing Cofoundry lease and reservation state')
+    await ssh(
+        env.SSH_TARGET,
+        `rm -rf ${shellQuote(RUN_LEASE_DIR)} /var/lib/cofoundry/verify-reservations /var/lib/cofoundry/netslots /var/lib/cofoundry/asset-locks /run/cofoundry-diag; ` +
+            `rm -f ${shellQuote(RUN_LEASE_LOCK)} /var/lib/cofoundry/verify.lock /var/lib/cofoundry/netslot.lock /var/lib/cofoundry/packer-init.lock; ` +
+            `rm -f /etc/dnsmasq.d/cofoundry-hosts.d/slot-*; ` +
+            `(systemctl reload dnsmasq 2>/dev/null || systemctl restart dnsmasq) >/dev/null 2>&1 || true`
+    )
+
     log.blank()
     log.ok('Clean complete.')
 }
@@ -279,18 +338,47 @@ export const runPrune = async (
     log.section(`Prune ${dim('·')} ${accent(env.SSH_TARGET)}`)
     if (dryRun) log.warn('dry-run: no files will be deleted')
 
-    // 1. Ephemeral Packer ISOs (any age) — packer-prefixed names and SHA-hash
-    // named files from PACKER_CACHE_DIR, all landing in the Proxmox ISO store.
-    // The persistent virtio-win cache shares the `packer-` prefix, so preserve
-    // it here — re-downloading ~700MB on the next Windows build is not cleanup.
-    log.step('ephemeral Packer ISOs in Proxmox ISO storage')
-    const packerIsos = lines(
+    // A stale heartbeat is the only evidence that authorizes immediate cleanup
+    // of a run's VM and private scratch. Active lease VMIDs remain protected by
+    // the age-gated legacy sweep below.
+    if (!dryRun) {
         await ssh(
             env.SSH_TARGET,
-            ephemeralPackerIsoFind(paths.isoStore, { preserveVirtio: true })
+            `mkdir -p ${shellQuote(RUN_LEASE_DIR)}; exec 9>${shellQuote(RUN_LEASE_LOCK)}; flock -x 9; ${sweepRunLeasesScript()}`
+        )
+    }
+
+    // 1. Old, unreferenced Packer ISOs. Prefetch touches a cache hit, downloads
+    // under a destination lock, and VMs reference attached media in their config;
+    // all three checks prevent pruning a live build's media.
+    log.step('ephemeral Packer ISOs in Proxmox ISO storage')
+    const isoCandidates = lines(
+        await ssh(
+            env.SSH_TARGET,
+            ephemeralPackerIsoFind(paths.isoStore, {
+                preserveVirtio: true,
+                olderThanDays: days,
+                unreferencedOnly: true,
+            })
         )
     )
-    await remove(env, packerIsos, dryRun)
+    const packerIsos: string[] = []
+    if (dryRun) {
+        packerIsos.push(...isoCandidates)
+    } else {
+        for (const iso of isoCandidates) {
+            const base = iso.split('/').pop() ?? ''
+            const lock = assetLockPath(iso)
+            const removed = await ssh(
+                env.SSH_TARGET,
+                `mkdir -p ${shellQuote(lock.replace(/\/[^/]+$/, ''))}; exec 9>${shellQuote(lock)}; flock -x 9; ` +
+                    `if find ${shellQuote(iso)} -maxdepth 0 -mtime +${days} -print -quit 2>/dev/null | grep -q . ` +
+                    `&& ! grep -RqsF ${shellQuote(`iso/${base}`)} /etc/pve/qemu-server 2>/dev/null; then ` +
+                    `rm -f ${shellQuote(iso)}; echo ${shellQuote(iso)}; fi`
+            )
+            if (removed) packerIsos.push(removed)
+        }
+    }
     report('ephemeral Packer ISOs', packerIsos, dryRun)
 
     // 2. Packer's local ISO download cache. These are hash-named staging files
@@ -299,7 +387,7 @@ export const runPrune = async (
     const downloadedIsos = lines(
         await ssh(
             env.SSH_TARGET,
-            `find ${paths.downloadedIsoCache} -maxdepth 1 \\( -name '*.iso' -o -name '*.iso.lock' \\) 2>/dev/null || true`
+            `find ${paths.downloadedIsoCache} -maxdepth 1 \\( -name '*.iso' -o -name '*.iso.lock' \\) -mtime +${days} 2>/dev/null || true`
         )
     )
     await remove(env, downloadedIsos, dryRun)
@@ -326,7 +414,10 @@ export const runPrune = async (
     // build destroys its VM after vzdump, so a lingering `packer-*` template is
     // an intentional artifact we must not delete.
     log.step('orphaned build VMs (packer-*, excluding templates)')
-    await reapBuildVms(env, dryRun, { includeTemplates: false })
+    await reapBuildVms(env, dryRun, {
+        includeTemplates: false,
+        olderThanDays: days,
+    })
 
     // 5. Orphaned per-build repo scratch in cofoundry-tmp: writable repo copies
     // (`build-*`), upload tarballs (`repo-*.tar.gz`), and download staging
@@ -342,6 +433,15 @@ export const runPrune = async (
     )
     await removeDirs(env, staleScratch, dryRun)
     report('stale build scratch', staleScratch, dryRun)
+
+    const staleVerify = lines(
+        await ssh(
+            env.SSH_TARGET,
+            `find ${shellQuote(paths.dump)} -mindepth 1 -maxdepth 1 -type d -name 'cofoundry-verify-*' -mtime +${days} 2>/dev/null || true`
+        )
+    )
+    await removeDirs(env, staleVerify, dryRun)
+    report('stale verify scratch', staleVerify, dryRun)
 
     // 6. Content-addressed repository snapshots older than --days. Keep the
     // snapshot selected by the stable work symlink even if it is old.
@@ -369,29 +469,27 @@ export const runPrune = async (
     const workLinks = lines(
         await ssh(
             env.SSH_TARGET,
-            `find ${paths.dump} -maxdepth 1 -name ${shellQuote(`${paths.work.split('/').pop()}.new.*`)} 2>/dev/null || true`
+            `find ${paths.dump} -maxdepth 1 -name ${shellQuote(`${paths.work.split('/').pop()}.new.*`)} -mtime +${days} 2>/dev/null || true`
         )
     )
     await removeDirs(env, workLinks, dryRun)
     report('orphaned work links', workLinks, dryRun)
 
-    // 8. Current working link (only if no other process is using its target).
+    // 8. The current link is tiny and may be needed between two SSH operations.
+    // Keep valid links; only a dangling link is garbage.
     log.step(`working dir ${paths.work}`)
-    const workInUse = await ssh(
-        env.SSH_TARGET,
-        `lsof +D ${shellQuote(paths.work)} 2>/dev/null | tail -n +2 | head -1 | wc -l`
+    const dangling =
+        (await ssh(
+            env.SSH_TARGET,
+            `[ -L ${shellQuote(paths.work)} ] && [ ! -e ${shellQuote(paths.work)} ] && echo 1 || echo 0`
+        )) === '1'
+    if (dangling && !dryRun)
+        await ssh(env.SSH_TARGET, `rm -f ${shellQuote(paths.work)}`)
+    log.info(
+        dangling
+            ? `${paths.work}: ${dryRun ? 'would remove dangling link' : 'removed dangling link'}`
+            : `${paths.work}: retained`
     )
-    if (workInUse.trim() !== '0') {
-        log.info(`${paths.work}: in use, skipping`)
-    } else {
-        if (dryRun) {
-            const sz = await ssh(env.SSH_TARGET, sizeOrAbsent(paths.work))
-            log.info(`${paths.work}: would remove (${sz})`)
-        } else {
-            await ssh(env.SSH_TARGET, `rm -rf ${shellQuote(paths.work)}`)
-            log.ok(`removed ${paths.work}`)
-        }
-    }
 
     log.blank()
     log.ok(dryRun ? 'Prune dry-run complete.' : 'Prune complete.')

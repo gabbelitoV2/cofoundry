@@ -115,9 +115,9 @@ export const runPipeline = async (
     })
 
     try {
-        if (!opts.skipRepoSync) {
-            await runRepoSync(env, opts, renderer, dependencies)
-        }
+        const snapshotDir = opts.skipRepoSync
+            ? undefined
+            : await runRepoSync(env, opts, renderer, dependencies)
 
         await Promise.allSettled(
             recipes.map(recipe =>
@@ -125,6 +125,7 @@ export const runPipeline = async (
                     env,
                     recipe,
                     opts,
+                    snapshotDir,
                     renderer,
                     {
                         prefetchQ,
@@ -230,10 +231,10 @@ const runRepoSync = async (
     opts: PipelineOptions,
     renderer: Renderer,
     dependencies: PipelineDependencies
-): Promise<void> => {
+): Promise<string> => {
     const handle = renderer.task('sync repo to remote')
     try {
-        await dependencies.syncRepo(env, {
+        const snapshotDir = await dependencies.syncRepo(env, {
             onPhase: phase => handle.setPhase(phase),
             onProgress: ev => {
                 handle.setProgress(
@@ -250,6 +251,7 @@ const runRepoSync = async (
             },
         })
         handle.succeed()
+        return snapshotDir
     } catch (err) {
         const msg = redactSensitive(
             err instanceof Error ? err.message : String(err)
@@ -297,6 +299,7 @@ const runRecipe = async (
     env: Env,
     recipe: RecipeInfo,
     opts: PipelineOptions,
+    snapshotDir: string | undefined,
     renderer: Renderer,
     ctx: RecipeContext,
     dependencies: PipelineDependencies
@@ -340,6 +343,7 @@ const runRecipe = async (
                         keepVm: opts.keepVm,
                         skipUpload: opts.skipUpload,
                         ciMode: opts.ci,
+                        snapshotDir,
                     },
                     line => {
                         const trimmed = line.trim()

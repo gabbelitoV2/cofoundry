@@ -11,7 +11,10 @@ export const diagnosticsRemoteDir = (vmid: number): string =>
     `${DIAG_TMPFS_BASE}/${vmid}`
 
 /** Local per-run dir name: `<recipe>-<arch>-<YYYYMMDD-HHMMSS>`. */
-export const diagnosticsRunDirName = (recipe: RecipeInfo, now: Date): string => {
+export const diagnosticsRunDirName = (
+    recipe: RecipeInfo,
+    now: Date
+): string => {
     const pad = (n: number): string => String(n).padStart(2, '0')
     const date = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}`
     const time = `${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`

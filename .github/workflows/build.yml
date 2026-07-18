@@ -192,6 +192,19 @@ jobs:
         if: always()
         run: bun run cf prune --r2 --keep 5
 
+      # ── Upload failure diagnostics ─────────────────────────────────────────
+      # On failure `cf build` writes scrubbed in-guest logs + a manifest to
+      # ./diagnostics (screenshots are omitted in CI: this repo is public and
+      # framebuffer images can't be redacted). Short retention; safe to attach.
+      - name: Upload failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: diagnostics-${{ inputs.recipe }}
+          path: diagnostics/
+          retention-days: 7
+          if-no-files-found: ignore
+
       # ── Upload artifact ────────────────────────────────────────────────────
       - uses: actions/upload-artifact@v7
         with:

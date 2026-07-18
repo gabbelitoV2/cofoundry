@@ -48,6 +48,17 @@ const EnvSchema = z.object({
     CF_BUILD_MEMORY_BUDGET_MB: z.coerce.number().int().min(1).optional(),
     CF_BUILD_CPU_BUDGET: z.coerce.number().int().min(1).optional(),
 
+    // On build failure, record framebuffer screenshots + in-guest logs and pull
+    // them to ./diagnostics. Screenshots are captured on a RAM-backed tmpfs ring
+    // buffer during the build (Packer deletes the VM on failure). Default on;
+    // set CF_DIAGNOSTICS=0 to disable entirely.
+    CF_DIAGNOSTICS: z
+        .preprocess(
+            v => !(v === '0' || v === 'false' || v === false),
+            z.boolean()
+        )
+        .default(true),
+
     // If set, skip destroying the build VM on abort (useful for debugging failed builds).
     CF_KEEP_VM: z
         .preprocess(v => v === '1' || v === 'true' || v === true, z.boolean())

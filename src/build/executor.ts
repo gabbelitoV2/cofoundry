@@ -20,11 +20,20 @@ import { buildVmWatchdog } from '@/build/watchdog.ts'
 import { bridgeForRecipe, inspectRecipeLayout } from '@/build/recipe.ts'
 import { buildAttemptCount, runWithRetries } from '@/build/retry.ts'
 import { buildSlotVmid, destroyVmCommand } from '@/build/vm.ts'
+import {
+    buildDiagnosticsRecorder,
+    collectDiagnostics,
+    diagnosticsRemoteDir,
+    guestLogSpecs,
+    recorderLifetimeSec,
+    sweepStaleDiagnosticsCommand,
+} from '@/build/diagnostics.ts'
 import { log } from '@/log.ts'
 
 export type BuildPhaseOptions = {
     keepVm?: boolean
     skipUpload?: boolean
+    ciMode?: boolean
 }
 
 export type BuildPhaseResult = {
@@ -66,7 +75,8 @@ export const buildPhase = async (
     const stalePrefix = `${remoteOutDir}/${recipe.name}-${recipe.arch}`
     const startedAtRaw = await captureRemote(
         env.SSH_TARGET,
-        `rm -f ${shellQuote(stalePrefix + '.vma.zst')} ${shellQuote(stalePrefix + '.json')} ${shellQuote(stalePrefix + '.json.tmp')} && date +%s`
+        `${sweepStaleDiagnosticsCommand()}; ` +
+            `rm -f ${shellQuote(stalePrefix + '.vma.zst')} ${shellQuote(stalePrefix + '.json')} ${shellQuote(stalePrefix + '.json.tmp')} && date +%s`
     )
     const startedAt = Number.parseInt(startedAtRaw.trim(), 10)
     if (!Number.isFinite(startedAt)) {
@@ -91,7 +101,17 @@ export const buildPhase = async (
     // cleanup never races another recipe's active build.
     const remoteBuildTmpDir = `${remoteTmpDir}/build-${recipe.name}-${effectiveBuildVmid ?? 'plain'}`
     const remoteBuildWorkDir = `${remoteBuildTmpDir}/repo`
-    const secretCleanupCmd = `rm -rf ${shellQuote(remoteBuildTmpDir)}`
+    // The recorder needs a vmid to screendump, so diagnostics only run for
+    // networked/VMID builds. Its tmpfs dir is torn down together with the secret
+    // tmp tree — on success, on signals, and (after collection) on failure.
+    const diagEnabled = env.CF_DIAGNOSTICS && effectiveBuildVmid !== undefined
+    const diagRemoteDir = diagEnabled
+        ? diagnosticsRemoteDir(effectiveBuildVmid as number)
+        : undefined
+    const secretCleanupCmd = `rm -rf ${[remoteBuildTmpDir, diagRemoteDir]
+        .filter((p): p is string => p !== undefined)
+        .map(shellQuote)
+        .join(' ')}`
     let unregisterSecretCleanup: (() => void) | undefined
 
     if (recipe.buildVmid) {
@@ -215,6 +235,15 @@ export const buildPhase = async (
                       layout.isWindows
                   )
                 : ''
+        // Screenshot/log recorder. Emitted AFTER the watchdog so its EXIT/signal
+        // traps supersede the watchdog's — it re-kills $_WDOG_PID too, so both
+        // subshells tear down together.
+        const recorder = diagEnabled
+            ? buildDiagnosticsRecorder(effectiveBuildVmid as number, {
+                  maxLifetimeSec: recorderLifetimeSec(layout.isWindows),
+                  guestLogs: guestLogSpecs(recipe.group),
+              })
+            : ''
         // Windows builds intermittently fail mid-install (component-store
         // corruption in the specialize pass) on busy nodes. Retry the whole
         // packer build — `-force` recreates the VM from scratch each attempt,
@@ -225,18 +254,36 @@ export const buildPhase = async (
             Boolean(options.keepVm),
             env.CF_BUILD_ATTEMPTS
         )
+        let lastAttempt = 0
         try {
             await runWithRetries(
                 maxAttempts,
-                async () => {
+                async attempt => {
+                    lastAttempt = attempt
                     await remoteStreamingScript(
                         env.SSH_TARGET,
-                        `${watchdog}${remoteEnv} ${packerArgs.join(' ')}`,
+                        `${watchdog}${recorder}${remoteEnv} ${packerArgs.join(' ')}`,
                         onLine
                     )
                 },
                 onLine
             )
+        } catch (err) {
+            // Collect BEFORE the outer finally wipes the vars file (the source of
+            // the ephemeral secret used to scrub logs) and the tmpfs recorder dir.
+            if (diagEnabled) {
+                await collectDiagnostics({
+                    env,
+                    recipe,
+                    vmid: effectiveBuildVmid as number,
+                    isWindows: layout.isWindows,
+                    varsFile,
+                    ciMode: Boolean(options.ciMode),
+                    attempt: lastAttempt,
+                    error: err,
+                })
+            }
+            throw err
         } finally {
             unregisterVmCleanup?.()
         }

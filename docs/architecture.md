@@ -46,6 +46,37 @@ index. Cleanup handlers release secrets, reservations, watchdogs, and transient
 VM state on normal completion and supported signals; stale-state reconciliation
 handles interrupted remote processes on the next run.
 
+### Failure diagnostics
+
+Packer deletes the build VM as soon as a build errors, so there is normally
+nothing left to inspect after an SSH/WinRM timeout or a provisioner failure. To
+preserve evidence, each VMID build prepends a **recorder** subshell to the
+remote build script (a sibling of `buildVmWatchdog`, in `src/build/diagnostics/`).
+While the build runs it screendumps the emulated framebuffer every few seconds
+into a ring buffer and periodically snapshots the recipe's in-guest log area
+(cloud-init/subiquity on Linux, Panther/CBS on Windows) through the QEMU guest
+agent. On failure `cf` pulls the ring buffer down to `./diagnostics/<recipe>-<arch>-<ts>/`.
+
+The HMP `screendump` format is `screendump FILE [-f FORMAT]`; PVE's `pve-qemu`
+is commonly built without libpng, so the recorder probes PNG once and otherwise
+captures PPM. Raw PPM is ~3 MB/frame, but a text-mode installer console gzips
+~70x (~40 KB/frame observed), so PPM frames are gzipped in the ring. The
+in-guest log capture is genuinely useful on Windows, where `qemu-ga` runs during
+the update/finalize phases; during a Linux _autoinstall_ the guest agent isn't
+up yet (it lives in the installed system, not the live installer), so those
+captures are empty and the screenshots carry the diagnosis instead.
+
+The recorder writes to a RAM-backed tmpfs (`/run/cofoundry-diag/<vmid>`), never
+to VM storage under `PVE_DUMP_DIR`, so it cannot fill the filesystem that holds
+guest disks and PVE state. It is bounded four ways — an orphan check, a
+max-lifetime backstop, a free-space guard, and a fixed-size ring buffer — and
+its dir is torn down with the per-build secret tree on success, signals, and
+(after collection) failure; a start-of-build sweep reaps anything a SIGKILL left
+behind. Because the repository is public, screenshots (unredactable images) are
+pulled only on local runs; in CI only the in-guest logs are collected, after
+exact-value scrubbing of the ephemeral build password. Disable the whole
+feature with `CF_DIAGNOSTICS=0`.
+
 ### Repository snapshots and platform support
 
 Repository upload must work from Windows, macOS, and Linux without extra local

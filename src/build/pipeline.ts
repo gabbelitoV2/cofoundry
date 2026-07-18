@@ -339,6 +339,7 @@ const runRecipe = async (
                     {
                         keepVm: opts.keepVm,
                         skipUpload: opts.skipUpload,
+                        ciMode: opts.ci,
                     },
                     line => {
                         const trimmed = line.trim()

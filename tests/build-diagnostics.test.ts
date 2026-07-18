@@ -1,14 +1,23 @@
 import { describe, expect, test } from 'bun:test'
 import {
-    buildDiagnosticsRecorder,
+    DIAG_TMPFS_BASE,
     diagnosticsRemoteDir,
-    guestLogSpecs,
-    linuxGuestLogs,
+} from '@/build/diagnostics/paths.ts'
+import {
+    buildDiagnosticsRecorder,
     recorderLifetimeSec,
     sweepStaleDiagnosticsCommand,
+} from '@/build/diagnostics/recorder.ts'
+import {
+    debianGuestLogs,
+    genericLinuxGuestLogs,
+    guestLogSpecs,
+    parseGuestExecOutput,
+    rhelGuestLogs,
+    ubuntuGuestLogs,
     windowsGuestLogs,
-    DIAG_TMPFS_BASE,
-} from '@/build/diagnostics.ts'
+} from '@/build/diagnostics/guest-logs.ts'
+import { addSensitiveValues } from '@/util.ts'
 
 describe('diagnosticsRemoteDir', () => {
     test('lives on the tmpfs base, keyed by vmid', () => {
@@ -20,7 +29,7 @@ describe('diagnosticsRemoteDir', () => {
 describe('buildDiagnosticsRecorder', () => {
     const script = buildDiagnosticsRecorder(100201, {
         maxLifetimeSec: 7200,
-        guestLogs: linuxGuestLogs,
+        guestLogs: ubuntuGuestLogs,
     })
 
     test('captures via qm monitor into the vmid tmpfs dir', () => {
@@ -41,9 +50,12 @@ describe('buildDiagnosticsRecorder', () => {
         expect(script).toContain('ps -o ppid= -p $BASHPID')
     })
 
-    test('probes PNG and falls back to PPM', () => {
-        expect(script).toContain('screendump -f png')
-        expect(script).toContain('_ext="ppm"')
+    test('probes PNG with filename-first HMP syntax, falls back to gzipped PPM', () => {
+        // HMP syntax is `screendump FILE [-f FORMAT]` — the flag comes AFTER the
+        // path, or QEMU rejects it with "invalid char '/' in expression".
+        expect(script).toContain('.probe -f png')
+        expect(script).toContain('_ext="ppm.gz"')
+        expect(script).toContain('gzip -f "$_raw"')
     })
 
     test('tears down the watchdog too, so appending it does not orphan the watchdog', () => {
@@ -60,16 +72,36 @@ describe('buildDiagnosticsRecorder', () => {
         const noLogs = buildDiagnosticsRecorder(1, {
             maxLifetimeSec: 60,
             guestLogIntervalSec: 0,
-            guestLogs: linuxGuestLogs,
+            guestLogs: ubuntuGuestLogs,
         })
         expect(noLogs).not.toContain('qm guest exec')
     })
 })
 
 describe('guestLogSpecs', () => {
-    test('selects Panther for Windows and cloud-init for Linux', () => {
-        expect(guestLogSpecs(true)).toBe(windowsGuestLogs)
-        expect(guestLogSpecs(false)).toBe(linuxGuestLogs)
+    test('maps each recipe group to its family log set', () => {
+        expect(guestLogSpecs('windows-server')).toBe(windowsGuestLogs)
+        expect(guestLogSpecs('ubuntu')).toBe(ubuntuGuestLogs)
+        expect(guestLogSpecs('debian')).toBe(debianGuestLogs)
+        expect(guestLogSpecs('almalinux')).toBe(rhelGuestLogs)
+        expect(guestLogSpecs('rocky-linux')).toBe(rhelGuestLogs)
+    })
+
+    test('falls back to a generic Linux set for unknown/blank groups', () => {
+        expect(guestLogSpecs(undefined)).toBe(genericLinuxGuestLogs)
+        expect(guestLogSpecs('freebsd-42')).toBe(genericLinuxGuestLogs)
+    })
+
+    test('targets the right installer log per family', () => {
+        expect(ubuntuGuestLogs.some(s => s.name === 'subiquity')).toBe(true)
+        expect(
+            rhelGuestLogs.some(s => s.argv.join(' ').includes('anaconda'))
+        ).toBe(true)
+        expect(
+            debianGuestLogs.some(s =>
+                s.argv.join(' ').includes('/var/log/syslog')
+            )
+        ).toBe(true)
         expect(windowsGuestLogs.some(s => s.name.startsWith('panther'))).toBe(
             true
         )
@@ -82,6 +114,31 @@ describe('sweepStaleDiagnosticsCommand', () => {
         expect(cmd).toContain("find '/run/cofoundry-diag'")
         expect(cmd).toContain('-mmin +360')
         expect(cmd).toContain('|| true')
+    })
+})
+
+describe('parseGuestExecOutput', () => {
+    test('unwraps the guest-agent JSON out-data field', () => {
+        expect(
+            parseGuestExecOutput(
+                '{"out-data":"hello from panther\\n","exitcode":0}'
+            )
+        ).toBe('hello from panther')
+    })
+
+    test('keeps non-JSON agent output as raw text', () => {
+        expect(parseGuestExecOutput('  guest agent not running  ')).toBe(
+            'guest agent not running'
+        )
+    })
+
+    test('scrubs a registered ephemeral secret out of the log', () => {
+        addSensitiveValues('S3cretUnattendPw24')
+        const out = parseGuestExecOutput(
+            '{"out-data":"AdminPassword=S3cretUnattendPw24 set"}'
+        )
+        expect(out).not.toContain('S3cretUnattendPw24')
+        expect(out).toContain('[REDACTED]')
     })
 })
 

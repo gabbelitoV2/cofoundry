@@ -1,3 +1,4 @@
+import { spawn } from 'node:child_process'
 import { execa, ExecaError } from 'execa'
 import { redactSensitive } from '@/util.ts'
 
@@ -76,6 +77,28 @@ export const captureRemote = async (
         throw err
     }
 }
+
+/**
+ * Stream a gzip tarball of a remote directory back as a Buffer. Uses `spawn`
+ * with manual chunk collection rather than execa's `encoding: 'buffer'`, which
+ * Bun's child_process shim rejects. Binary-safe, unlike captureRemote (utf8). A
+ * missing directory (or any ssh error) yields an empty archive rather than
+ * throwing, so callers on a best-effort path (diagnostics) needn't pre-check.
+ */
+export const remoteTarball = (
+    target: string,
+    remoteDir: string
+): Promise<Buffer> =>
+    new Promise(resolve => {
+        const cmd = `if [ -d ${remoteDir} ]; then tar -C ${remoteDir} -czf - . 2>/dev/null; fi`
+        const child = spawn('ssh', [...SSH_OPTS, target, cmd], {
+            stdio: ['ignore', 'pipe', 'ignore'],
+        })
+        const chunks: Buffer[] = []
+        child.stdout.on('data', (c: Buffer) => chunks.push(c))
+        child.on('error', () => resolve(Buffer.alloc(0)))
+        child.on('close', () => resolve(Buffer.concat(chunks)))
+    })
 
 export const remoteStreaming = (
     target: string,

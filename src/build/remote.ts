@@ -137,6 +137,24 @@ const WGET_EXIT: Record<number, string> = {
     8: 'server returned an error response (e.g. 404 — URL may be stale)',
 }
 
+// A wget failure that carries its exit code, so callers can distinguish a
+// transient fault (retry) from a permanent one (a stale URL / 404 — exit 8 —
+// or a bad-invocation exit 2, where retrying only wastes backoff).
+export class WgetError extends Error {
+    constructor(
+        message: string,
+        readonly exitCode: number
+    ) {
+        super(message)
+        this.name = 'WgetError'
+    }
+}
+
+// wget exit codes that will never succeed on retry: a stale/absent URL and a
+// malformed command line. Everything else is treated as potentially transient.
+export const isPermanentWgetExit = (code: number): boolean =>
+    code === 8 || code === 2
+
 // Runs a remote wget via SSH with a forced PTY (-t -t) so wget detects a
 // terminal and streams live progress. 2>&1 merges wget's stderr (where it
 // writes the bar) into the PTY stdout that we capture.
@@ -182,8 +200,9 @@ export const remoteWgetCapture = async (
             const meaning = WGET_EXIT[code] ?? 'unknown wget error'
             const what = context?.what ?? 'download'
             const url = context?.url ? ` ${context.url}` : ''
-            throw new Error(
-                `${what} failed: wget exit ${code} — ${meaning}${url ? ` (${url.trim()})` : ''}`
+            throw new WgetError(
+                `${what} failed: wget exit ${code} — ${meaning}${url ? ` (${url.trim()})` : ''}`,
+                code
             )
         }
         if (err instanceof Error) throw new Error(redactSensitive(err.message))

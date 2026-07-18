@@ -320,6 +320,7 @@ Then go to **Settings → Secrets and variables → Actions**.
 | -------------------------- | -------------------------------------------------------------------- |
 | `PVE_TOKEN_SECRET`         | Token secret from Part 1 step 1                                      |
 | `SSH_PRIVATE_KEY`          | Contents of `~/.ssh/cofoundry_ci`. Omit if using Tailscale SSH.      |
+| `TS_OAUTH_CLIENT_ID`       | Tailscale OAuth client ID (only if using Tailscale)                  |
 | `TS_OAUTH_SECRET`          | Tailscale OAuth secret (only if using Tailscale)                     |
 | `R2_ACCESS_KEY_ID`         | R2 API token access key                                              |
 | `R2_SECRET_ACCESS_KEY`     | R2 API token secret                                                  |
@@ -388,10 +389,9 @@ for the complete runtime behavior.
 
 **Tailscale** (only if using Tailscale — Variables tab):
 
-| Variable             | Value                                                          |
-| -------------------- | -------------------------------------------------------------- |
-| `TS_OAUTH_CLIENT_ID` | Tailscale OAuth client ID                                      |
-| `TS_TAG`             | Tag the OAuth client is scoped to. Default if unset: `tag:ci`. |
+| Variable | Value                                                          |
+| -------- | -------------------------------------------------------------- |
+| `TS_TAG` | Tag the OAuth client is scoped to. Default if unset: `tag:ci`. |
 
 Everything else — `PVE_PORT`, `PVE_DUMP_DIR`, `CF_STORAGE`, `CF_ISO_STORAGE`,
 `CF_BRIDGE`, and the entire upload layout — now comes from `cofoundry.toml`. Run

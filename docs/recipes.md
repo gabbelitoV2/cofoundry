@@ -61,6 +61,16 @@ Copy the matching `user-data` and empty `meta-data` files under
 `recipes/<recipe>/http/`. Update release-specific package or boot arguments only
 when required by that installer.
 
+Keep `boot_key_interval = "100ms"`. Proxmox types the boot command through the
+QEMU `sendkey` API; with no interval the guest keyboard buffer intermittently
+drops characters. This was observed corrupting the initramfs `ip=` netmask
+(`…255.255.255.0` arriving as `…255.25.250`), which the installer could not
+parse — networking never came up, the autoinstall user-data was never fetched,
+and the build failed with a 30-minute SSH timeout. The failure was diagnosed
+from a framebuffer screenshot captured by the build diagnostics recorder (see
+[architecture.md](architecture.md#failure-diagnostics)); spacing the keystrokes
+resolves it.
+
 ### Debian preseed
 
 Copy a nearby `preseed.cfg`. The committed file must contain

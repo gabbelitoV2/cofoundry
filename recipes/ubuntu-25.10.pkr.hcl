@@ -146,6 +146,13 @@ source "proxmox-iso" "ubuntu-25-10" {
   http_bind_address = var.build_gw
 
   boot_wait = "5s"
+  # Space out simulated keystrokes. Proxmox sends the boot command via the
+  # QEMU `sendkey` API; with no interval the guest keyboard buffer drops
+  # characters, which corrupted the `ip=` netmask (…255.255.255.0 arriving as
+  # …255.25.250) and left the installer unable to bring up networking, so it
+  # never fetched the autoinstall user-data and SSH timed out. See
+  # docs/recipes.md#ubuntu-autoinstall.
+  boot_key_interval = "100ms"
   boot_command = [
     "e<wait>",
     "<down><down><down><end>",

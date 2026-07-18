@@ -1,8 +1,8 @@
 # display: Debian 12 (Bookworm)
 # group: debian
 # build_vmid: 4001
-# iso_url: https://cdimage.debian.org/cdimage/archive/12.14.0/amd64/iso-cd/debian-12.14.0-amd64-netinst.iso
-# iso_target_path: ${var.iso_cache_dir}/packer-debian-12.14.0-amd64-netinst.iso
+# iso_url: https://cdimage.debian.org/cdimage/archive/12.15.0/amd64/iso-cd/debian-12.15.0-amd64-netinst.iso
+# iso_target_path: ${var.iso_cache_dir}/packer-debian-12.15.0-amd64-netinst.iso
 # iso_checksum_url: https://cdimage.debian.org/cdimage/archive/latest-12/amd64/iso-cd/SHA256SUMS
 # iso_filename_re: debian-12\.\d+\.\d+-amd64-netinst\.iso
 
@@ -139,8 +139,8 @@ source "proxmox-iso" "debian-12" {
 
   boot_iso {
     type         = "ide"
-    iso_file     = "${var.proxmox_iso_storage_pool}:iso/packer-debian-12.14.0-amd64-netinst.iso"
-    iso_checksum = "sha256:adfcbb50782af99d457467f9b38c9e0fb3b1b6e211e0202f099aa58874b3f923"
+    iso_file     = "${var.proxmox_iso_storage_pool}:iso/packer-debian-12.15.0-amd64-netinst.iso"
+    iso_checksum = "sha256:cd4462c06aa8892e692c0c4b9c17802f38c8ab8690e85cbfb5ccaa5956e9af17"
     unmount      = true
   }
 

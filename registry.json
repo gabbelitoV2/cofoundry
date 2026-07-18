@@ -2,7 +2,7 @@
   "schema_version": "1",
   "name": "Cofoundry Templates",
   "description": "Proxmox VM templates built with Cofoundry",
-  "generated_at": "2026-07-18T07:35:11.744Z",
+  "generated_at": "2026-07-18T07:53:59.343Z",
   "groups": [
     {
       "id": "almalinux",
@@ -75,6 +75,23 @@
           "url": "https://cofoundry.cdn.convoypanel.com/templates/debian/debian-13-amd64/012b1bad9812de2ab5ed6cfa6b2256a83ffa459087142fe6cc694ee8a94fe0f0.vma.zst",
           "built_at": "2026-07-18T07:34:15Z",
           "suggested_vmid": 4002
+        }
+      ]
+    },
+    {
+      "id": "rocky-linux",
+      "display_name": "Rocky Linux",
+      "description": null,
+      "templates": [
+        {
+          "name": "rocky-linux-10-amd64",
+          "display": "Rocky Linux 10",
+          "arch": "amd64",
+          "sha256": "6b02d462344a9d88789f31df25591d1db1b4e4a45b5a042dac715d56aee3212f",
+          "size": 1021560000,
+          "url": "https://cofoundry.cdn.convoypanel.com/templates/rocky-linux/rocky-linux-10-amd64/6b02d462344a9d88789f31df25591d1db1b4e4a45b5a042dac715d56aee3212f.vma.zst",
+          "built_at": "2026-07-18T07:52:54Z",
+          "suggested_vmid": 5002
         }
       ]
     }

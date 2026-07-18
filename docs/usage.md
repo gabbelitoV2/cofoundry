@@ -22,6 +22,25 @@ dist/debian-12.json          # sidecar (name, sha256, size, url, built_at)
 cf list
 ```
 
+## Cloning a template
+
+Cofoundry templates do not contain a baked-in DNS server. When deploying a
+clone, set an explicit nameserver that the VM can reach.
+
+This is especially important when the Proxmox node accepts Tailscale MagicDNS.
+Tailscale sets the node's resolver to `100.100.100.100`, and Proxmox uses the
+node's resolver as the default for a cloud-init VM without its own nameserver.
+A clone that is not on the tailnet cannot reach that resolver, so DNS fails.
+This affects the deployed clone, not the Cofoundry build or its GitHub Actions
+runner.
+
+On Ubuntu, `/etc/resolv.conf` normally points to the systemd-resolved stub at
+`127.0.0.53`; use `resolvectl status` to see the actual upstream resolver.
+
+Either give the clone an explicit reachable nameserver, or keep the Proxmox
+node from accepting MagicDNS with `tailscale set --accept-dns=false` and set the
+node's resolver in **Datacenter → DNS** (for example, `1.1.1.1`).
+
 ## Build everything
 
 Omit recipe names to build everything. Builds are stage-pipelined, continue on

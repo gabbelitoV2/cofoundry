@@ -68,7 +68,7 @@ drops characters. This was observed corrupting the initramfs `ip=` netmask
 parse — networking never came up, the autoinstall user-data was never fetched,
 and the build failed with a 30-minute SSH timeout. The failure was diagnosed
 from a framebuffer screenshot captured by the build diagnostics recorder (see
-[architecture.md](architecture.md#failure-diagnostics)); spacing the keystrokes
+[diagnostics.md](diagnostics.md)); spacing the keystrokes
 resolves it.
 
 ### Debian preseed

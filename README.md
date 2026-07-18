@@ -13,6 +13,7 @@ installations, then exports `.vma.zst` artifacts ready to be served by
 | [Recipes](docs/recipes.md)           | Supported templates and how to add new ones                        |
 | [Windows recipes](docs/windows.md)   | Windows configuration and troubleshooting                          |
 | [Architecture](docs/architecture.md) | Source layout and implementation boundaries                        |
+| [Diagnostics](docs/diagnostics.md)   | How build-failure evidence is recorded and collected              |
 
 ## Supported recipes
 

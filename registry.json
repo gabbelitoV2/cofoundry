@@ -2,7 +2,7 @@
   "schema_version": "1",
   "name": "Cofoundry Templates",
   "description": "Proxmox VM templates built with Cofoundry",
-  "generated_at": "2026-07-18T09:56:23.542Z",
+  "generated_at": "2026-07-18T11:47:56.061Z",
   "groups": [
     {
       "id": "almalinux",
@@ -149,6 +149,23 @@
           "url": "https://cofoundry.cdn.convoypanel.com/templates/ubuntu/ubuntu-25.10-amd64/a0fec9f60f0141cf531b8d7e8d6379f4dae82e799a8e30f1ec74d78b06f32ac7.vma.zst",
           "built_at": "2026-07-18T09:55:28Z",
           "suggested_vmid": 1004
+        }
+      ]
+    },
+    {
+      "id": "windows-server",
+      "display_name": "Windows Server",
+      "description": null,
+      "templates": [
+        {
+          "name": "windows-server-2019-amd64",
+          "display": "Windows Server 2019 Datacenter",
+          "arch": "amd64",
+          "sha256": "a86f9893fec0dab821e7ddee2c7a66d149ae751dcd4a82579c704341a177b4dc",
+          "size": 7675523309,
+          "url": "https://cofoundry.cdn.convoypanel.com/templates/windows-server/windows-server-2019-amd64/a86f9893fec0dab821e7ddee2c7a66d149ae751dcd4a82579c704341a177b4dc.vma.zst",
+          "built_at": "2026-07-18T11:45:36Z",
+          "suggested_vmid": 2000
         }
       ]
     }

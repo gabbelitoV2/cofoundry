@@ -80,12 +80,40 @@ const assembleRegistry = (
     }
 }
 
+/**
+ * Read the existing registry at `outPath`, if any. Returns null when the file
+ * is missing or unparseable so callers just treat it as a fresh write.
+ */
+const readExistingRegistry = async (
+    outPath: string
+): Promise<Registry | null> => {
+    try {
+        return JSON.parse(await readFile(outPath, 'utf8')) as Registry
+    } catch {
+        return null
+    }
+}
+
 const writeRegistry = async (
     outPath: string,
     registry: Registry
 ): Promise<string> => {
     const parent = dirname(outPath)
     if (parent && parent !== '.') await mkdir(parent, { recursive: true })
+
+    // Keep the file byte-stable when only `generated_at` would change: every
+    // publish regenerates the whole registry with a fresh timestamp, so without
+    // this a no-op rebuild still produces a diff and defeats the CI commit
+    // guard (`git diff --quiet`), churning registry.json's history. Reuse the
+    // prior timestamp whenever the template data is otherwise identical.
+    const existing = await readExistingRegistry(outPath)
+    if (existing) {
+        const sameExceptTimestamp =
+            JSON.stringify({ ...existing, generated_at: '' }) ===
+            JSON.stringify({ ...registry, generated_at: '' })
+        if (sameExceptTimestamp) registry.generated_at = existing.generated_at
+    }
+
     await writeFile(outPath, JSON.stringify(registry, null, 2) + '\n')
     const templateCount = registry.groups.reduce(
         (n, g) => n + g.templates.length,
@@ -127,35 +155,36 @@ export interface R2Object {
     Size: number
 }
 
-const escapeRegex = (value: string): string =>
-    value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-
 const normalizeR2Prefix = (prefix: string): string => {
     const trimmed = prefix.replace(/^\/+|\/+$/g, '')
     return trimmed ? `${trimmed}/` : ''
 }
 
-export const selectNewestR2Sidecars = (
-    objects: R2Object[],
-    prefix: string
-): Map<string, R2Object> => {
-    const newest = new Map<string, R2Object>()
-    const normalizedPrefix = normalizeR2Prefix(prefix)
-    const escapedPrefix = escapeRegex(normalizedPrefix)
-    const prefixPattern = new RegExp(`^(${escapedPrefix}[^/]+)/`)
+export interface R2Sidecar {
+    key: string
+    lastModified: string
+    sidecar: Sidecar
+}
 
-    for (const obj of objects) {
-        if (!obj.Key.endsWith('.json')) continue
-        const m = obj.Key.match(prefixPattern)
-        if (!m) continue
-        const templatePrefix = m[1]!
-        const cur = newest.get(templatePrefix)
-        if (!cur || obj.LastModified > cur.LastModified) {
-            newest.set(templatePrefix, obj)
-        }
+/**
+ * Keep the newest sidecar per template. The template identity comes from the
+ * sidecar CONTENT (`name` is already `recipe-arch` and constant across
+ * versions), never from the R2 key. Key layout is user-configurable via
+ * `[upload].layout` / `[upload].key`, so any scheme that parses the key path
+ * breaks on some layout — e.g. `grouped` (templates/<group>/<recipe>-<arch>/…)
+ * would collapse a whole group to one entry, and a custom
+ * `{{recipe}}/{{recipe}}-{{arch}}-{{sha256}}` would collapse archs of the same
+ * recipe. Grouping on content is correct for every layout.
+ */
+export const selectNewestSidecars = (items: R2Sidecar[]): R2Sidecar[] => {
+    const newest = new Map<string, R2Sidecar>()
+    for (const item of items) {
+        const id = item.sidecar.name
+        if (!id) continue
+        const cur = newest.get(id)
+        if (!cur || item.lastModified > cur.lastModified) newest.set(id, item)
     }
-
-    return newest
+    return [...newest.values()]
 }
 
 const awsS3api = async (endpoint: string, args: string[]): Promise<string> => {
@@ -181,9 +210,11 @@ const awsS3Get = async (
 }
 
 /**
- * Aggregate sidecar JSONs from R2 into a registry. For each template prefix,
- * takes the newest `.json` — the registry should advertise the current artifact
- * per template, not the full history.
+ * Aggregate sidecar JSONs from R2 into a registry, advertising the newest
+ * artifact per template (not the full history). Every `.json` under the prefix
+ * is fetched and parsed: the template identity lives in the sidecar content,
+ * not the layout-dependent key, so we can't select newest-per-template from the
+ * listing alone. Object count is bounded by the retention `cf prune --r2` keeps.
  */
 export const buildManifestFromR2 = async (
     location: { endpoint: string; bucket: string; prefix: string },
@@ -203,21 +234,36 @@ export const buildManifestFromR2 = async (
     const parsed = raw.trim() ? JSON.parse(raw) : { Contents: [] }
     const objects: R2Object[] = parsed.Contents ?? []
 
-    // Pick newest .json per per-template prefix.
-    const newest = selectNewestR2Sidecars(objects, normalizedPrefix)
+    // The mirrored registry.json also ends in .json; never treat it as a sidecar.
+    const sidecarObjects = objects.filter(
+        o => o.Key.endsWith('.json') && basename(o.Key) !== 'registry.json'
+    )
+    const fetched = (
+        await Promise.all(
+            sidecarObjects.map(async o => {
+                const body = await awsS3Get(endpoint, bucket, o.Key)
+                try {
+                    return {
+                        key: o.Key,
+                        lastModified: o.LastModified,
+                        sidecar: JSON.parse(body) as Sidecar,
+                    }
+                } catch {
+                    log.warn(`Skipping unparseable sidecar ${o.Key}`)
+                    return null
+                }
+            })
+        )
+    ).filter((x): x is R2Sidecar => x !== null)
+
+    const newest = selectNewestSidecars(fetched)
 
     const groupDefs = await loadGroupDefs()
     const sidecars: Sidecar[] = []
-    for (const [templatePrefix, obj] of newest) {
-        const body = await awsS3Get(endpoint, bucket, obj.Key)
-        const parsedSidecar = JSON.parse(body) as Sidecar
-        sidecars.push(parsedSidecar)
-        const displayPrefix = templatePrefix.replace(
-            new RegExp(`^${escapeRegex(normalizedPrefix)}`),
-            ''
-        )
+    for (const { sidecar } of newest) {
+        sidecars.push(sidecar)
         log.raw(
-            `  ${pc.green('+')} ${pc.cyan(displayPrefix.padEnd(28))} ${pc.dim(parsedSidecar.sha256.slice(0, 12) + '…')}  ${byteSize(parsedSidecar.size)}`
+            `  ${pc.green('+')} ${pc.cyan(sidecar.name.padEnd(28))} ${pc.dim(sidecar.sha256.slice(0, 12) + '…')}  ${byteSize(sidecar.size)}`
         )
     }
 

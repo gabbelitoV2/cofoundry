@@ -130,7 +130,7 @@ jobs:
       # cofoundry-build concurrency group serializes builds (no push race).
       # Mint the app token here—not at job start—because Windows builds can run
       # longer than the token's one-hour lifetime.
-      - uses: actions/create-github-app-token@v2
+      - uses: actions/create-github-app-token@v3
         id: registry-app-token
         if: env.HAS_REGISTRY_APP == 'true'
         with:

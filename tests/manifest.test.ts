@@ -2,7 +2,31 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { mkdtemp, copyFile, readFile, readdir, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { buildManifest, selectNewestR2Sidecars } from '../src/manifest.ts'
+import {
+    buildManifest,
+    selectNewestSidecars,
+    type R2Sidecar,
+} from '../src/manifest.ts'
+
+const sc = (
+    name: string,
+    lastModified: string,
+    extra: Record<string, unknown> = {}
+): R2Sidecar => ({
+    key: `templates/${name}/${lastModified}.json`,
+    lastModified,
+    sidecar: {
+        name,
+        display: name,
+        arch: 'amd64',
+        group: name.split('-')[0]!,
+        sha256: lastModified.replace(/\D/g, ''),
+        size: 100,
+        url: `https://example.com/${name}.vma.zst`,
+        built_at: lastModified,
+        ...extra,
+    } as R2Sidecar['sidecar'],
+})
 
 const FIXTURES = new URL('./fixtures/sidecars/', import.meta.url).pathname
 
@@ -90,65 +114,72 @@ describe('buildManifest', () => {
         ).toBeUndefined()
     })
 
+    test('keeps registry.json byte-stable when only generated_at would change', async () => {
+        await buildManifest(sourceDir, outPath)
+        const first = await readFile(outPath, 'utf8')
+        // Re-publish from the same sidecars: nothing but generated_at would
+        // otherwise change, so the file must be untouched (CI commit guard).
+        await buildManifest(sourceDir, outPath)
+        const second = await readFile(outPath, 'utf8')
+        expect(second).toBe(first)
+    })
+
     afterEach(async () => {
         await rm(sourceDir, { recursive: true, force: true })
     })
 })
 
-describe('selectNewestR2Sidecars', () => {
-    test('supports scanning from the bucket root', () => {
-        const newest = selectNewestR2Sidecars(
-            [
-                {
-                    Key: 'almalinux-10/almalinux-10-amd64-old.json',
-                    LastModified: '2026-01-01T00:00:00.000Z',
-                    Size: 100,
-                },
-                {
-                    Key: 'almalinux-10/almalinux-10-amd64-new.json',
-                    LastModified: '2026-02-01T00:00:00.000Z',
-                    Size: 100,
-                },
-                {
-                    Key: 'almalinux-10/almalinux-10-amd64-new.vma.zst',
-                    LastModified: '2026-02-01T00:00:00.000Z',
-                    Size: 1000,
-                },
-            ],
-            ''
-        )
+describe('selectNewestSidecars', () => {
+    const names = (items: R2Sidecar[]): string[] =>
+        items.map(i => i.sidecar.name).sort()
 
-        expect([...newest.keys()]).toEqual(['almalinux-10'])
-        expect(newest.get('almalinux-10')?.Key).toBe(
-            'almalinux-10/almalinux-10-amd64-new.json'
-        )
+    test('picks the newest version per template by LastModified', () => {
+        const newest = selectNewestSidecars([
+            sc('almalinux-10-amd64', '2026-01-01T00:00:00.000Z'),
+            sc('almalinux-10-amd64', '2026-02-01T00:00:00.000Z'),
+        ])
+        expect(newest).toHaveLength(1)
+        expect(newest[0]?.lastModified).toBe('2026-02-01T00:00:00.000Z')
     })
 
-    test('uses the configured prefix when grouping templates', () => {
-        const newest = selectNewestR2Sidecars(
-            [
-                {
-                    Key: 'templates/debian-12-amd64/old.json',
-                    LastModified: '2026-01-01T00:00:00.000Z',
-                    Size: 100,
-                },
-                {
-                    Key: 'templates/debian-12-amd64/new.json',
-                    LastModified: '2026-02-01T00:00:00.000Z',
-                    Size: 100,
-                },
-                {
-                    Key: 'debian-12/debian-12-amd64-new.json',
-                    LastModified: '2026-03-01T00:00:00.000Z',
-                    Size: 100,
-                },
-            ],
-            'templates/'
-        )
+    test('keeps every template in a group distinct (no group collapse)', () => {
+        // Three AlmaLinux releases share the `almalinux` group but are separate
+        // templates; grouping on content name must keep all three.
+        const newest = selectNewestSidecars([
+            sc('almalinux-8-amd64', '2026-01-01T00:00:00.000Z'),
+            sc('almalinux-9-amd64', '2026-02-01T00:00:00.000Z'),
+            sc('almalinux-10-amd64', '2026-03-01T00:00:00.000Z'),
+            sc('debian-12-amd64', '2026-04-01T00:00:00.000Z'),
+        ])
+        expect(names(newest)).toEqual([
+            'almalinux-10-amd64',
+            'almalinux-8-amd64',
+            'almalinux-9-amd64',
+            'debian-12-amd64',
+        ])
+    })
 
-        expect([...newest.keys()]).toEqual(['templates/debian-12-amd64'])
-        expect(newest.get('templates/debian-12-amd64')?.Key).toBe(
-            'templates/debian-12-amd64/new.json'
-        )
+    test('keeps distinct archs of the same recipe distinct', () => {
+        // A custom key like {{recipe}}/{{recipe}}-{{arch}}-{{sha256}} shares a
+        // directory across archs; content grouping still separates them.
+        const newest = selectNewestSidecars([
+            sc('debian-12-amd64', '2026-01-01T00:00:00.000Z'),
+            sc('debian-12-arm64', '2026-01-01T00:00:00.000Z', {
+                arch: 'arm64',
+            }),
+        ])
+        expect(names(newest)).toEqual(['debian-12-amd64', 'debian-12-arm64'])
+    })
+
+    test('ignores sidecars with no name', () => {
+        const newest = selectNewestSidecars([
+            { ...sc('debian-12-amd64', '2026-01-01T00:00:00.000Z') },
+            {
+                key: 'templates/registry.json',
+                lastModified: '2026-02-01T00:00:00.000Z',
+                sidecar: { name: '' } as R2Sidecar['sidecar'],
+            },
+        ])
+        expect(names(newest)).toEqual(['debian-12-amd64'])
     })
 })

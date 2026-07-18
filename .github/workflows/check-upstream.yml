@@ -80,7 +80,7 @@ jobs:
       # upstream-checksums push. See docs/setup.md#3.
       HAS_REGISTRY_APP: ${{ secrets.REGISTRY_APP_ID != '' && secrets.REGISTRY_APP_PRIVATE_KEY != '' }}
     steps:
-      - uses: actions/create-github-app-token@v2
+      - uses: actions/create-github-app-token@v3
         id: registry-app-token
         if: env.HAS_REGISTRY_APP == 'true'
         with:
@@ -94,7 +94,7 @@ jobs:
           ref: main
           token: ${{ steps.registry-app-token.outputs.token || github.token }}
 
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@v8
         with:
           name: upstream-checksums
           path: .

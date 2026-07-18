@@ -137,6 +137,24 @@ const WGET_EXIT: Record<number, string> = {
     8: 'server returned an error response (e.g. 404 — URL may be stale)',
 }
 
+// A wget failure that carries its exit code, so callers can distinguish a
+// transient fault (retry) from a permanent one (a stale URL / 404 — exit 8 —
+// or a bad-invocation exit 2, where retrying only wastes backoff).
+export class WgetError extends Error {
+    constructor(
+        message: string,
+        readonly exitCode: number
+    ) {
+        super(message)
+        this.name = 'WgetError'
+    }
+}
+
+// wget exit codes that will never succeed on retry: a stale/absent URL and a
+// malformed command line. Everything else is treated as potentially transient.
+export const isPermanentWgetExit = (code: number): boolean =>
+    code === 8 || code === 2
+
 // Runs a remote wget via SSH with a forced PTY (-t -t) so wget detects a
 // terminal and streams live progress. 2>&1 merges wget's stderr (where it
 // writes the bar) into the PTY stdout that we capture.
@@ -182,8 +200,9 @@ export const remoteWgetCapture = async (
             const meaning = WGET_EXIT[code] ?? 'unknown wget error'
             const what = context?.what ?? 'download'
             const url = context?.url ? ` ${context.url}` : ''
-            throw new Error(
-                `${what} failed: wget exit ${code} — ${meaning}${url ? ` (${url.trim()})` : ''}`
+            throw new WgetError(
+                `${what} failed: wget exit ${code} — ${meaning}${url ? ` (${url.trim()})` : ''}`,
+                code
             )
         }
         if (err instanceof Error) throw new Error(redactSensitive(err.message))
@@ -219,18 +238,29 @@ export const streaming = async (
             }
             return
         }
-        let buf = ''
-        const onChunk = (chunk: Buffer): void => {
-            buf += chunk.toString()
-            const parts = buf.split(/\r?\n/)
-            buf = parts.pop() ?? ''
-            for (const part of parts) if (part) onLine(part)
+        // Assemble lines per stream. stdout and stderr arrive as independent
+        // chunk sequences, so a partial line held from one must never be spliced
+        // onto the other: a single shared buffer corrupts — and can drop — lines
+        // at the boundary whenever both streams are active at once.
+        const flushers: Array<() => void> = []
+        const attach = (stream: NodeJS.ReadableStream | null): void => {
+            if (!stream) return
+            let buf = ''
+            stream.on('data', (chunk: Buffer) => {
+                buf += chunk.toString()
+                const parts = buf.split(/\r?\n/)
+                buf = parts.pop() ?? ''
+                for (const part of parts) if (part) onLine(part)
+            })
+            flushers.push(() => {
+                if (buf) onLine(buf)
+            })
         }
-        proc.stdout?.on('data', onChunk)
-        proc.stderr?.on('data', onChunk)
+        attach(proc.stdout)
+        attach(proc.stderr)
         try {
             await proc
-            if (buf) onLine(buf)
+            for (const flush of flushers) flush()
         } finally {
             activeProcs.delete(proc as unknown as KillableProc)
         }

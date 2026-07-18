@@ -1,10 +1,15 @@
-import pRetry from 'p-retry'
+import pRetry, { AbortError } from 'p-retry'
 import { createHash } from 'node:crypto'
 import type { RecipeInfo } from '@/config.ts'
 import type { Env } from '@/env.ts'
 import { shellQuote } from '@/util.ts'
 import { remotePaths } from '@/build/paths.ts'
-import { captureRemote, remoteWgetCapture } from '@/build/remote.ts'
+import {
+    captureRemote,
+    isPermanentWgetExit,
+    remoteWgetCapture,
+    WgetError,
+} from '@/build/remote.ts'
 
 export type PrefetchProgress = (slot: string, line: string) => void
 
@@ -38,7 +43,10 @@ export const assetFetchCommand = (
         `if ${valid}; then touch ${shellQuote(destination)}; exit 0; fi; ` +
         `rm -f ${shellQuote(destination)}; ` +
         `tmp=${shellQuote(`${destination}.tmp`)}.$$; trap 'rm -f "$tmp"' EXIT; ` +
-        `wget -q --show-progress --progress=bar:force:noscroll -O "$tmp" ${shellQuote(url)}; ` +
+        // wget's own retries resume a stalled/refused transfer mid-stream before
+        // the process ever exits; the pRetry wrapper in fetchAsset then re-runs
+        // the whole command only if wget still gives up.
+        `wget -q --show-progress --progress=bar:force:noscroll --tries=3 --retry-connrefused --waitretry=5 -O "$tmp" ${shellQuote(url)}; ` +
         `${downloadedValid}; mv -f "$tmp" ${shellQuote(destination)}`
     )
 }
@@ -51,11 +59,31 @@ const fetchAsset = async (
     onLine?: PrefetchProgress,
     checksum?: Checksum
 ): Promise<void> => {
-    await remoteWgetCapture(
-        env.SSH_TARGET,
-        assetFetchCommand(destination, url, checksum),
-        line => onLine?.(slot, line),
-        { url, what: `${slot} fetch` }
+    // The fetch command is idempotent (flock-serialized, checksum-validated,
+    // temp download published by atomic rename), so a transient network blip is
+    // safe to retry rather than failing the whole build. Mirrors the retry that
+    // fetchCloudbaseInit already applies to the Windows MSI download. A permanent
+    // failure (stale URL / bad invocation) aborts immediately — retrying it only
+    // wastes backoff and buries the real "your URL is wrong" signal.
+    await pRetry(
+        async () => {
+            try {
+                await remoteWgetCapture(
+                    env.SSH_TARGET,
+                    assetFetchCommand(destination, url, checksum),
+                    line => onLine?.(slot, line),
+                    { url, what: `${slot} fetch` }
+                )
+            } catch (err) {
+                if (
+                    err instanceof WgetError &&
+                    isPermanentWgetExit(err.exitCode)
+                )
+                    throw new AbortError(err)
+                throw err
+            }
+        },
+        { retries: 3, minTimeout: 1000, factor: 2 }
     )
 }
 

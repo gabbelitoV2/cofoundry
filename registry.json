@@ -2,7 +2,7 @@
   "schema_version": "1",
   "name": "Cofoundry Templates",
   "description": "Proxmox VM templates built with Cofoundry",
-  "generated_at": "2026-07-18T06:52:01.451Z",
+  "generated_at": "2026-07-18T07:02:22.293Z",
   "groups": [
     {
       "id": "almalinux",
@@ -28,6 +28,16 @@
           "url": "https://cofoundry.cdn.convoypanel.com/templates/almalinux/almalinux-8-amd64/d0460b39f2935beeb3ac58466e494fb43d4b9eabc656bb7dd0c53c2bdf7dc2ec.vma.zst",
           "built_at": "2026-07-18T06:50:53Z",
           "suggested_vmid": 6000
+        },
+        {
+          "name": "almalinux-9-amd64",
+          "display": "AlmaLinux 9",
+          "arch": "amd64",
+          "sha256": "4bfa596a75bbf6a69d131a2e0b56c8eddb9de80838402c5da4b158f9d503761f",
+          "size": 1224107619,
+          "url": "https://cofoundry.cdn.convoypanel.com/templates/almalinux/almalinux-9-amd64/4bfa596a75bbf6a69d131a2e0b56c8eddb9de80838402c5da4b158f9d503761f.vma.zst",
+          "built_at": "2026-07-18T07:01:16Z",
+          "suggested_vmid": 6001
         }
       ]
     }

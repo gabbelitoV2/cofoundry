@@ -317,6 +317,13 @@ const runRecipe = async (
 
     // ── build ──
     let buildStartedAt: number | undefined
+    // Packer's `A template was created: <id>` banner is the meaningful result
+    // line, but later benign teardown chatter (e.g. a `-force` cleanup printing
+    // "Configuration file '…/<vmid>.conf' does not exist") can be the actual
+    // last stream line and evict the banner from the renderer's 1-slot log ring.
+    // Stash the banner and re-log it after a successful build so the summary
+    // row always shows the created template rather than trailing noise.
+    let templateSummary: string | undefined
     try {
         await runBuildQueued(
             ctx.buildQ,
@@ -336,6 +343,9 @@ const runRecipe = async (
                     line => {
                         const trimmed = line.trim()
                         if (!trimmed) return
+                        if (trimmed.includes('A template was created:')) {
+                            templateSummary = trimmed
+                        }
                         handle.log(
                             opts.verbose ? trimmed : trimmed.slice(0, 200)
                         )
@@ -346,6 +356,12 @@ const runRecipe = async (
         )
     } catch (err) {
         throw recordFailure(ctx, recipe, err, handle)
+    }
+
+    if (templateSummary) {
+        handle.log(
+            opts.verbose ? templateSummary : templateSummary.slice(0, 200)
+        )
     }
 
     if (!opts.syncBack) {

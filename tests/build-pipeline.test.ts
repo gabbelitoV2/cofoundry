@@ -115,6 +115,47 @@ describe('runPipeline', () => {
         ).rejects.toThrow('build memory budget must be a positive integer')
     })
 
+    test('re-surfaces the template banner past trailing teardown noise', async () => {
+        const events: string[] = []
+        const deps = dependencies(events)
+        deps.build = async (_env, _recipe, _options, onLine) => {
+            events.push('build')
+            onLine?.(
+                '--> proxmox-iso.debian-12: A template was created: 400102'
+            )
+            onLine?.(
+                "Configuration file 'nodes/n/qemu-server/400102.conf' does not exist"
+            )
+            return { startedAt: 123 }
+        }
+
+        const written: string[] = []
+        const original = process.stderr.write.bind(process.stderr)
+        process.stderr.write = ((chunk: unknown) => {
+            written.push(String(chunk))
+            return true
+        }) as typeof process.stderr.write
+        try {
+            await runPipeline(
+                env,
+                [recipe],
+                { syncBack: false, skipRepoSync: true, ci: true },
+                deps
+            )
+        } finally {
+            process.stderr.write = original
+        }
+
+        const out = written.join('')
+        const bannerIdx = out.lastIndexOf('A template was created: 400102')
+        const noiseIdx = out.lastIndexOf('does not exist')
+        expect(bannerIdx).toBeGreaterThan(-1)
+        expect(noiseIdx).toBeGreaterThan(-1)
+        // The banner must be re-logged AFTER the teardown noise so the summary
+        // ring buffer ends on the created template, not the benign warning.
+        expect(bannerIdx).toBeGreaterThan(noiseIdx)
+    })
+
     test('rejects duplicate recipes in a parallel build', async () => {
         expect(
             runPipeline(

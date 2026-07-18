@@ -31,6 +31,10 @@ jobs:
     # cofoundry.toml references via ${VAR}. `vars.X || secrets.X` lets you keep
     # any coordinate hidden as a Secret instead of a Variable.
     env:
+      # 'true' only when a registry-writer GitHub App is configured. When empty
+      # (no ruleset on main), the workflow falls back to the default
+      # GITHUB_TOKEN for the registry.json push. See docs/setup.md#3.
+      HAS_REGISTRY_APP: ${{ secrets.REGISTRY_APP_ID != '' && secrets.REGISTRY_APP_PRIVATE_KEY != '' }}
       # ── secrets (env only) ──
       PVE_TOKEN_SECRET: ${{ secrets.PVE_TOKEN_SECRET }}
       AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
@@ -44,7 +48,14 @@ jobs:
       R2_ENDPOINT: ${{ vars.R2_ENDPOINT || secrets.R2_ENDPOINT }}
       R2_BUCKET: ${{ vars.R2_BUCKET || secrets.R2_BUCKET }}
     steps:
+      # In the app path we set our own http.extraheader with the registry app
+      # token below, so drop checkout's baked-in GITHUB_TOKEN credential —
+      # otherwise git sends two Authorization headers and github.com rejects the
+      # fetch with `400 Duplicate header: "Authorization"`. In the no-app path we
+      # keep it, because the registry.json push then relies on GITHUB_TOKEN.
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: ${{ env.HAS_REGISTRY_APP != 'true' }}
 
       - uses: oven-sh/setup-bun@v2
 
@@ -121,6 +132,7 @@ jobs:
       # longer than the token's one-hour lifetime.
       - uses: actions/create-github-app-token@v2
         id: registry-app-token
+        if: env.HAS_REGISTRY_APP == 'true'
         with:
           app-id: ${{ secrets.REGISTRY_APP_ID }}
           private-key: ${{ secrets.REGISTRY_APP_PRIVATE_KEY }}
@@ -129,9 +141,14 @@ jobs:
         env:
           REGISTRY_TOKEN: ${{ steps.registry-app-token.outputs.token }}
         run: |
-          git config --local --unset-all http.https://github.com/.extraheader || true
-          AUTH=$(printf 'x-access-token:%s' "$REGISTRY_TOKEN" | base64 -w0)
-          git config --local http.https://github.com/.extraheader "AUTHORIZATION: basic $AUTH"
+          # App path: install the app token as the sole http.extraheader (the
+          # persisted GITHUB_TOKEN credential was dropped at checkout, so there's
+          # nothing to unset). No-app path: REGISTRY_TOKEN is empty and we leave
+          # checkout's persisted GITHUB_TOKEN credential in place.
+          if [ -n "$REGISTRY_TOKEN" ]; then
+            AUTH=$(printf 'x-access-token:%s' "$REGISTRY_TOKEN" | base64 -w0)
+            git config --local http.https://github.com/.extraheader "AUTHORIZATION: basic $AUTH"
+          fi
           git fetch origin main
           git reset --hard origin/main
 

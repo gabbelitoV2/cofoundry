@@ -282,9 +282,20 @@ ruleset bypass list instead.
 - Repository permissions: **Contents: Read and write**
 - Install it on this repository only
 
-After creating the app, copy its app ID and generate a private key. Add them
-as the `REGISTRY_APP_ID` and `REGISTRY_APP_PRIVATE_KEY` repo secrets in the
-next step.
+After creating the app, copy its app ID and generate a private key. Generating
+the key downloads a `.pem` file to your machine (GitHub shows it only once — if
+you lose it, generate a new one). Add both as repo secrets in the next step:
+
+- `REGISTRY_APP_ID` — the numeric app ID shown on the app's settings page.
+- `REGISTRY_APP_PRIVATE_KEY` — the **entire contents** of the downloaded
+  `.pem` file, including the `-----BEGIN RSA PRIVATE KEY-----` and
+  `-----END RSA PRIVATE KEY-----` lines and every newline between them. Paste
+  it verbatim; do not strip the header/footer or collapse it to one line. On
+  the command line you can pipe it straight in:
+
+  ```sh
+  gh secret set REGISTRY_APP_PRIVATE_KEY < ~/Downloads/cofoundry-registry-writer.*.private-key.pem
+  ```
 
 **Allow it through the branch ruleset** (repo → **Settings → Rules → Rulesets**):
 

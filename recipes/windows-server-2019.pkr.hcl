@@ -67,7 +67,7 @@ locals {
   # local drives the guest-side partition shrink (Finalize.ps1).
   final_disk_size = "30G"
 
-  ps_execute = "powershell -executionpolicy bypass \"& { $ErrorActionPreference='Stop'; $_p='{{.Path}}'; $_dl=[DateTime]::Now.AddSeconds(120); while (-not (Test-Path $_p) -and [DateTime]::Now -lt $_dl) { Start-Sleep 2 }; . {{.Vars}}; & $_p; exit $LastExitCode }\""
+  ps_execute = "powershell -executionpolicy bypass \"& { $ErrorActionPreference='Stop'; $_p='{{.Path}}'; $_v='{{.Vars}}'; $_dl=[DateTime]::Now.AddSeconds(120); while ((-not (Test-Path $_p) -or -not (Test-Path $_v)) -and [DateTime]::Now -lt $_dl) { Start-Sleep 2 }; . $_v; & $_p; exit $LastExitCode }\""
 }
 
 source "proxmox-iso" "windows-server-2019" {

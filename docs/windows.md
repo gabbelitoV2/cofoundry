@@ -186,7 +186,7 @@ To confirm driver directories on the actual VirtIO ISO:
 ```sh
 ssh "$SSH_TARGET"
 mkdir -p /tmp/vm
-mount -o loop /var/lib/vz/template/iso/packer-virtio-win.iso /tmp/vm
+mount -o loop /var/lib/vz/template/iso/packer-virtio-win-<version>.iso /tmp/vm
 ls /tmp/vm/vioscsi/
 umount /tmp/vm
 ```

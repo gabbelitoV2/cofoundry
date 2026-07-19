@@ -1,7 +1,11 @@
 import pRetry, { AbortError } from 'p-retry'
 import { createHash } from 'node:crypto'
 import type { RecipeInfo } from '@/config.ts'
-import type { Env } from '@/env.ts'
+import {
+    CLOUDBASE_INIT_DEFAULT_VERSION,
+    VIRTIO_WIN_DEFAULT_VERSION,
+    type Env,
+} from '@/env.ts'
 import { shellQuote } from '@/util.ts'
 import { remotePaths } from '@/build/paths.ts'
 import {
@@ -13,7 +17,11 @@ import {
 
 export type PrefetchProgress = (slot: string, line: string) => void
 
-type Checksum = { url: string; filenamePattern: string }
+// Either a vendor-published checksum file to match a filename pattern in, or
+// a literal pinned sha256 for sources whose vendor publishes none.
+export type Checksum =
+    | { url: string; filenamePattern: string }
+    | { sha256: string }
 const ASSET_LOCK_DIR = '/var/lib/cofoundry/asset-locks'
 
 /** A bounded lock pool avoids one persistent lock inode per historical ISO. */
@@ -22,6 +30,9 @@ export const assetLockPath = (destination: string): string =>
 
 const checksumCommand = (pathArg: string, checksum?: Checksum): string => {
     if (!checksum) return `test -s ${pathArg}`
+    if ('sha256' in checksum) {
+        return `actual=$(sha256sum ${pathArg} | awk '{print $1}') && [ "$actual" = ${shellQuote(checksum.sha256.toLowerCase())} ]`
+    }
     return (
         `expected=$(curl -fsSL ${shellQuote(checksum.url)} 2>/dev/null | ` +
         `python3 -c ${shellQuote("import re,sys; p=re.compile(sys.argv[1]); lines=(line for line in sys.stdin if p.search(line)); line=next(lines, ''); hashes=re.findall(r'(?i)\\b[0-9a-f]{64}\\b', line); print(hashes[0].lower() if hashes else '')")} ${shellQuote(checksum.filenamePattern)} || true); ` +
@@ -79,9 +90,8 @@ const fetchAsset = async (
 ): Promise<void> => {
     // The fetch command is idempotent (flock-serialized, checksum-validated,
     // temp download published by atomic rename), so a transient network blip is
-    // safe to retry rather than failing the whole build. Mirrors the retry that
-    // fetchCloudbaseInit already applies to the Windows MSI download. A permanent
-    // failure (stale URL / bad invocation) aborts immediately — retrying it only
+    // safe to retry rather than failing the whole build. A permanent failure
+    // (stale URL / bad invocation) aborts immediately — retrying it only
     // wastes backoff and buries the real "your URL is wrong" signal.
     await pRetry(
         async () => {
@@ -105,29 +115,58 @@ const fetchAsset = async (
     )
 }
 
-const fetchCloudbaseInit = async (
-    env: Env,
-    destination: string,
-    onLine?: PrefetchProgress
-): Promise<void> => {
-    const command =
-        `set -e; mkdir -p ${shellQuote(ASSET_LOCK_DIR)}; exec 9>${shellQuote(assetLockPath(destination))}; flock -x 9; ` +
-        `if test -s ${shellQuote(destination)}; then touch ${shellQuote(destination)}; exit 0; fi; ` +
-        `tmp=${shellQuote(`${destination}.tmp`)}.$$; trap 'rm -f "$tmp"' EXIT; ` +
-        `url=$(curl -fsSL https://api.github.com/repos/cloudbase/cloudbase-init/releases/latest | python3 -c "import sys,json; r=json.load(sys.stdin); print(next(a['browser_download_url'] for a in r['assets'] if 'x64' in a['name'] and a['name'].endswith('.msi')))"); ` +
-        `wget -q --show-progress --progress=bar:force:noscroll -O "$tmp" "$url"; ` +
-        `test -s "$tmp"; mv -f "$tmp" ${shellQuote(destination)}`
-    await pRetry(
-        () =>
-            remoteWgetCapture(
-                env.SSH_TARGET,
-                command,
-                line => onLine?.('msi', line),
-                { what: 'cloudbase-init msi fetch' }
-            ),
-        { retries: 3, minTimeout: 1000, factor: 2 }
-    )
+// ── Pinned Windows assets ─────────────────────────────────────────────────────
+// Default SHA256 pins for the default versions in src/env.ts, computed from
+// the vendor downloads themselves (GitHub release asset / fedorapeople
+// archive) — neither vendor publishes a usable checksum file for these
+// artifacts (the virtio-win CHECKSUM file covers only the RPMs, as MD5).
+const CLOUDBASE_INIT_DEFAULT_SHA256 =
+    '0e7fa42e0cbc0ce7657f85730b0c6cc7afc4087a3639df0ff51a721a0be19bd5'
+const VIRTIO_WIN_DEFAULT_SHA256 =
+    'e14cf2b94492c3e925f0070ba7fdfedeb2048c91eea9c5a5afb30232a3976331'
+
+/** The built-in pin only describes the default version; validating any other
+ *  release against it would always fail, so an overridden version without an
+ *  explicit CF_*_SHA256 falls back to the plain non-empty check. */
+export const pinnedChecksum = (
+    override: string | undefined,
+    version: string,
+    defaultVersion: string,
+    defaultSha256: string
+): Checksum | undefined => {
+    if (override) return { sha256: override }
+    return version === defaultVersion ? { sha256: defaultSha256 } : undefined
 }
+
+// Upstream names the release asset with an underscored version, e.g.
+// CloudbaseInitSetup_1_1_8_x64.msi. Reusing that name as the node-side cache
+// key makes the version part of the key, so a version bump refetches instead
+// of reusing the previous release forever. buildWritableRepoCommand installs
+// the cached file into each build copy under the version-less name the
+// recipes reference.
+const cloudbaseInitMsiName = (version: string): string =>
+    `CloudbaseInitSetup_${version.replace(/\./g, '_')}_x64.msi`
+
+export const cloudbaseInitMsiUrl = (version: string): string =>
+    `https://github.com/cloudbase/cloudbase-init/releases/download/${version}/${cloudbaseInitMsiName(version)}`
+
+export const cloudbaseInitMsiCachePath = (
+    env: Pick<Env, 'PVE_DUMP_DIR' | 'CF_CLOUDBASE_INIT_VERSION'>
+): string =>
+    `${remotePaths(env).assetCache}/${cloudbaseInitMsiName(env.CF_CLOUDBASE_INIT_VERSION)}`
+
+/** Versioned cache filename in the Proxmox ISO store. The Windows recipes
+ *  receive it through the `virtio_win_iso` Packer variable, and the prune
+ *  preserve-glob (src/prune/node.ts) spares every version. */
+export const virtioWinIsoFilename = (
+    env: Pick<Env, 'CF_VIRTIO_WIN_VERSION'>
+): string => `packer-virtio-win-${env.CF_VIRTIO_WIN_VERSION}.iso`
+
+// `virtio-win.iso` inside a versioned archive directory is that release's ISO
+// under a stable per-directory name — unlike the floating stable-virtio/
+// symlink, whose content changes under the same URL with every release.
+export const virtioWinIsoUrl = (version: string): string =>
+    `https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/archive-virtio/virtio-win-${version}/virtio-win.iso`
 
 export const prefetchPhase = async (
     env: Env,
@@ -156,18 +195,35 @@ export const prefetchPhase = async (
 
     if (!recipe.name.startsWith('windows-')) return
 
-    const assetCache = remotePaths(env).assetCache
-    await captureRemote(env.SSH_TARGET, `mkdir -p ${shellQuote(assetCache)}`)
-    await fetchCloudbaseInit(
-        env,
-        `${assetCache}/CloudbaseInitSetup_x64.msi`,
-        onLine
+    const paths = remotePaths(env)
+    await captureRemote(
+        env.SSH_TARGET,
+        `mkdir -p ${shellQuote(paths.assetCache)}`
     )
     await fetchAsset(
         env,
-        '/var/lib/vz/template/iso/packer-virtio-win.iso',
-        'https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/stable-virtio/virtio-win.iso',
+        cloudbaseInitMsiCachePath(env),
+        cloudbaseInitMsiUrl(env.CF_CLOUDBASE_INIT_VERSION),
+        'msi',
+        onLine,
+        pinnedChecksum(
+            env.CF_CLOUDBASE_INIT_SHA256,
+            env.CF_CLOUDBASE_INIT_VERSION,
+            CLOUDBASE_INIT_DEFAULT_VERSION,
+            CLOUDBASE_INIT_DEFAULT_SHA256
+        )
+    )
+    await fetchAsset(
+        env,
+        `${paths.isoStore}/${virtioWinIsoFilename(env)}`,
+        virtioWinIsoUrl(env.CF_VIRTIO_WIN_VERSION),
         'virtio',
-        onLine
+        onLine,
+        pinnedChecksum(
+            env.CF_VIRTIO_WIN_SHA256,
+            env.CF_VIRTIO_WIN_VERSION,
+            VIRTIO_WIN_DEFAULT_VERSION,
+            VIRTIO_WIN_DEFAULT_SHA256
+        )
     )
 }

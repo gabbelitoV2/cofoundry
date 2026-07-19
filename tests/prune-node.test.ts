@@ -24,7 +24,9 @@ describe('ephemeralPackerIsoFind', () => {
         const cmd = ephemeralPackerIsoFind(ISO_STORE, { preserveVirtio: true })
         // The `! -name` exclusion must precede the match group so find ANDs it
         // against the pattern group rather than swallowing it into the OR.
-        expect(cmd).toContain("! -name 'packer-virtio-win.iso'")
+        // A glob, so every pinned version (packer-virtio-win-<version>.iso)
+        // and the legacy unversioned filename stay preserved.
+        expect(cmd).toContain("! -name 'packer-virtio-win*.iso'")
         expect(cmd.indexOf('! -name')).toBeLessThan(cmd.indexOf('\\('))
     })
 

@@ -19,14 +19,16 @@ describe('buildWritableRepoCommand', () => {
     })
 
     test('copies cached Windows media into only the build copy', () => {
+        // The cache filename carries the pinned version; the copy in the build
+        // repo keeps the version-less name the recipes reference.
         const command = buildWritableRepoCommand(
             '/dump/cofoundry-work',
             '/dump/cofoundry-tmp/build-windows/repo',
-            '/dump/cofoundry-cache/CloudbaseInitSetup_x64.msi'
+            '/dump/cofoundry-cache/CloudbaseInitSetup_1_1_8_x64.msi'
         )
 
         expect(command).toContain(
-            "install -m 0644 '/dump/cofoundry-cache/CloudbaseInitSetup_x64.msi' '/dump/cofoundry-tmp/build-windows/repo/recipes/_shared/CloudbaseInitSetup_x64.msi'"
+            "install -m 0644 '/dump/cofoundry-cache/CloudbaseInitSetup_1_1_8_x64.msi' '/dump/cofoundry-tmp/build-windows/repo/recipes/_shared/CloudbaseInitSetup_x64.msi'"
         )
         expect(command).not.toContain(
             "'/dump/cofoundry-work/recipes/_shared/CloudbaseInitSetup_x64.msi'"

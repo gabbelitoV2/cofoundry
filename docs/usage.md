@@ -137,7 +137,7 @@ Removes:
 - VMs and scratch explicitly owned by expired run leases, plus legacy
   non-template `packer-*` VMs older than the cutoff;
 - old, unreferenced Packer ISO files and download-cache entries (the persistent
-  `packer-virtio-win.iso` cache is preserved and attached media is never pruned);
+  `packer-virtio-win*.iso` cache is preserved and attached media is never pruned);
 - vzdump archives and working data older than the selected cutoff;
 - orphaned per-build scratch in `cofoundry-tmp` (`build-*`, `repo-*.tar.gz`,
   `sync-*`) and half-swapped `cofoundry-work.new.*` links older than the cutoff;

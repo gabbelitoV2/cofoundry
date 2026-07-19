@@ -26,6 +26,8 @@ const env: Env = {
     CF_STORAGE: 'local-lvm',
     CF_ISO_STORAGE: 'local',
     CF_BUILD_DNS: '1.1.1.1',
+    CF_CLOUDBASE_INIT_VERSION: '1.1.8',
+    CF_VIRTIO_WIN_VERSION: '0.1.285-1',
     CF_DOWNLOAD_CONCURRENCY: 8,
     CF_KEEP_VM: false,
 }
@@ -123,7 +125,7 @@ describe('buildPackerVars', () => {
     test('never places Proxmox credentials in Packer arguments', () => {
         const args = buildPackerVars(
             env,
-            {} as RecipeInfo,
+            { name: 'debian-13' } as RecipeInfo,
             'vmbr1',
             null,
             400100
@@ -134,6 +136,30 @@ describe('buildPackerVars', () => {
         expect(commandLine).not.toContain(env.PVE_TOKEN_SECRET)
         expect(commandLine).not.toContain('proxmox_username')
         expect(commandLine).not.toContain('proxmox_token')
+    })
+
+    test('passes the pinned virtio ISO filename only to Windows recipes', () => {
+        const windowsArgs = buildPackerVars(
+            env,
+            { name: 'windows-server-2025' } as RecipeInfo,
+            'vmbr1',
+            null,
+            200200
+        )
+        expect(windowsArgs.join(' ')).toContain(
+            'virtio_win_iso=packer-virtio-win-0.1.285-1.iso'
+        )
+
+        // Non-Windows recipes do not declare the variable; passing it would
+        // fail `packer build` with an undefined -var error.
+        const linuxArgs = buildPackerVars(
+            env,
+            { name: 'debian-13' } as RecipeInfo,
+            'vmbr1',
+            null,
+            400100
+        )
+        expect(linuxArgs.join(' ')).not.toContain('virtio_win_iso')
     })
 })
 

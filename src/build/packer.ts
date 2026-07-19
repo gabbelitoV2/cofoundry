@@ -1,6 +1,7 @@
 import type { Env } from '@/env.ts'
 import type { RecipeInfo } from '@/config.ts'
 import { shellQuote } from '@/util.ts'
+import { virtioWinIsoFilename } from '@/build/prefetch.ts'
 
 export const PACKER_TMP_ROOT = '/var/tmp/cofoundry-packer'
 
@@ -59,7 +60,7 @@ export type BuildNet = {
 
 export const buildPackerVars = (
     env: Env,
-    _recipe: RecipeInfo,
+    recipe: RecipeInfo,
     buildBridge: string,
     net: BuildNet | null,
     buildVmid?: number
@@ -77,6 +78,11 @@ export const buildPackerVars = (
         '-var',
         `proxmox_bridge=${buildBridge}`,
     ]
+    // Only Windows recipes declare the virtio_win_iso variable; passing it to
+    // any other recipe would fail `packer build` with an undefined -var error.
+    if (recipe.name.startsWith('windows-')) {
+        vars.push('-var', `virtio_win_iso=${virtioWinIsoFilename(env)}`)
+    }
     if (net) {
         vars.push(
             '-var',

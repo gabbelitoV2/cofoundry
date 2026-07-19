@@ -58,6 +58,14 @@ variable "build_vmid" {
   default = 2002
 }
 
+# Filename of the pinned virtio-win driver ISO in the Proxmox ISO store. cf
+# derives it from CF_VIRTIO_WIN_VERSION; the default tracks
+# VIRTIO_WIN_DEFAULT_VERSION in src/env.ts for manual packer runs.
+variable "virtio_win_iso" {
+  type    = string
+  default = "packer-virtio-win-0.1.285-1.iso"
+}
+
 locals {
   build_vmid     = var.build_vmid
   recipe_name    = "windows-server-2025"
@@ -145,7 +153,7 @@ source "proxmox-iso" "windows-server-2025" {
   # VirtIO drivers ISO (provides virtio-win-guest-tools.exe for Install.ps1)
   additional_iso_files {
     type         = "ide"
-    iso_file     = "${var.proxmox_iso_storage_pool}:iso/packer-virtio-win.iso"
+    iso_file     = "${var.proxmox_iso_storage_pool}:iso/${var.virtio_win_iso}"
     iso_checksum = "none"
     unmount      = true
   }

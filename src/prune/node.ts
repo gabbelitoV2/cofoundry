@@ -22,8 +22,10 @@ const LEGACY_ISO_CACHE = '/var/lib/cofoundry/iso-cache'
 // Persistent cache prefetch re-uses across Windows builds. It lives in the ISO
 // store under a `packer-` prefix, so the ephemeral-ISO sweep matches it by
 // accident; routine prunes must skip it to avoid forcing a ~700MB re-download
-// every cycle. See src/build/prefetch.ts.
-const VIRTIO_WIN_ISO = 'packer-virtio-win.iso'
+// every cycle. A glob, because the filename carries the pinned version
+// (packer-virtio-win-<version>.iso) — it also spares the legacy unversioned
+// name. See src/build/prefetch.ts.
+const VIRTIO_WIN_ISO_GLOB = 'packer-virtio-win*.iso'
 
 export interface PruneOptions {
     days: number
@@ -97,7 +99,7 @@ export const ephemeralPackerIsoFind = (
     }
 ): string =>
     `find ${isoStore} -maxdepth 1 ` +
-    (preserveVirtio ? `! -name ${shellQuote(VIRTIO_WIN_ISO)} ` : '') +
+    (preserveVirtio ? `! -name ${shellQuote(VIRTIO_WIN_ISO_GLOB)} ` : '') +
     `\\( -name 'packer*.iso' -o -name 'packer*.iso.tmp' -o -name 'packer*.iso.tmp.*' ` +
     `-o -regextype posix-extended -regex '.*\/[0-9a-f]{40}\\.iso(\\.tmp(\\.[^/]+)?)?' \\) ` +
     (olderThanDays === undefined ? '' : `-mtime +${olderThanDays} `) +

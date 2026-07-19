@@ -12,6 +12,14 @@ const stripEmpty = (input: NodeJS.ProcessEnv): Record<string, unknown> => {
     return out
 }
 
+// Default versions for the pinned Windows build assets fetched by
+// src/build/prefetch.ts. The version is part of the cache filename on the
+// node, so bumping a pin refetches the new release instead of trusting a
+// stale cache forever. The matching default SHA256 pins live next to the
+// fetch logic in src/build/prefetch.ts.
+export const CLOUDBASE_INIT_DEFAULT_VERSION = '1.1.8'
+export const VIRTIO_WIN_DEFAULT_VERSION = '0.1.285-1'
+
 const EnvSchema = z.object({
     PVE_HOST: z.string().min(1),
     PVE_PORT: z.coerce.number().int().default(8006),
@@ -38,6 +46,19 @@ const EnvSchema = z.object({
     // allocated per-build from the configured NAT bridge (see src/build/netslot.ts),
     // so they no longer need static config.
     CF_BUILD_DNS: z.string().default('1.1.1.1'),
+
+    // Pinned Windows build assets (cloudbase-init MSI + virtio-win ISO). The
+    // version selects both the versioned download URL and the node-side cache
+    // filename. When overriding a version, also set the matching CF_*_SHA256:
+    // the built-in checksum pins only cover the default versions, so an
+    // overridden version without one downgrades validation to a non-empty
+    // check.
+    CF_CLOUDBASE_INIT_VERSION: z
+        .string()
+        .default(CLOUDBASE_INIT_DEFAULT_VERSION),
+    CF_CLOUDBASE_INIT_SHA256: z.string().optional(),
+    CF_VIRTIO_WIN_VERSION: z.string().default(VIRTIO_WIN_DEFAULT_VERSION),
+    CF_VIRTIO_WIN_SHA256: z.string().optional(),
 
     // Parallel SFTP connections for syncing artifacts back down (default 8).
     CF_DOWNLOAD_CONCURRENCY: z.coerce.number().int().min(1).default(8),

@@ -21,8 +21,8 @@ import {
     buildRemoteOutDir,
     buildRemoteTmpDir,
     buildRemoteWorkDir,
-    remotePaths,
 } from '@/build/paths.ts'
+import { cloudbaseInitMsiCachePath } from '@/build/prefetch.ts'
 import { allocateBuildSlot, type BuildSlot } from '@/build/netslot.ts'
 import { buildVmWatchdog } from '@/build/watchdog.ts'
 import { bridgeForRecipe, inspectRecipeLayout } from '@/build/recipe.ts'
@@ -156,7 +156,7 @@ export const buildPhase = async (
                     remoteWorkDir,
                     remoteBuildWorkDir,
                     layout.isWindows
-                        ? `${remotePaths(env).assetCache}/CloudbaseInitSetup_x64.msi`
+                        ? cloudbaseInitMsiCachePath(env)
                         : undefined
                 )}`
         )

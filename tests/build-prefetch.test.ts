@@ -37,9 +37,17 @@ describe('assetFetchCommand', () => {
         // No EXIT trap, or a failed attempt would delete the partial it must
         // leave behind for the next attempt to resume.
         expect(command).not.toContain('trap')
-        expect(command).toContain('--tries=3')
+        expect(command).toContain('--tries=5')
         expect(command).toContain('--retry-connrefused')
         expect(command).toContain('--waitretry=5')
+        // A stalled read must be detected and retried, not left to hang until
+        // the whole attempt is lost near the end of a multi-GB transfer.
+        expect(command).toContain('--read-timeout=60')
+        expect(command).toContain('--timeout=30')
+        // -nv (not -q) keeps wget's error/retry lines in the CI log so a failed
+        // fetch is diagnosable; --show-progress still forces the transfer bar.
+        expect(command).toContain('wget -nv --show-progress')
+        expect(command).not.toContain('wget -q')
     })
 })
 

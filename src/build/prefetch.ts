@@ -51,8 +51,20 @@ export const assetFetchCommand = (
         // consumes the temp file; a completed-but-corrupt download (checksum
         // mismatch) is removed so the next attempt restarts clean rather than
         // resuming garbage that wget would consider already complete.
+        //
+        // -nv (not -q): keep wget's error/retry diagnostics — "Connection
+        // closed at byte N. Retrying.", read-timeouts, range-response codes —
+        // so a failed fetch is diagnosable from the CI log. --show-progress
+        // still forces the transfer bar that -nv would otherwise suppress.
+        // --read-timeout caps a stalled read so a mirror that goes silent near
+        // the end (as releases.ubuntu.com does under load) is detected and
+        // retried in seconds instead of hanging until the whole attempt is lost;
+        // --timeout covers DNS/connect. The mirror honors HTTP Range (verified:
+        // 206 + Content-Range), so each retry resumes the .tmp rather than
+        // re-pulling multiple GB. A few extra --tries ride out transient drops
+        // within one invocation before the outer pRetry layer takes over.
         `tmp=${shellQuote(`${destination}.tmp`)}; ` +
-        `wget -q --show-progress --progress=bar:force:noscroll -c --tries=3 --retry-connrefused --waitretry=5 -O "$tmp" ${shellQuote(url)}; ` +
+        `wget -nv --show-progress --progress=bar:force:noscroll -c --tries=5 --timeout=30 --read-timeout=60 --retry-connrefused --waitretry=5 -O "$tmp" ${shellQuote(url)}; ` +
         `if ${downloadedValid}; then mv -f "$tmp" ${shellQuote(destination)}; else rm -f "$tmp"; exit 1; fi`
     )
 }

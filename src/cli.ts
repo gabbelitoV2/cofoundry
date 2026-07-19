@@ -5,6 +5,7 @@ import { installRemoteSignalHandlers } from '@/build/remote.ts'
 import { applyConfigToEnv, type ResolvedValue } from '@/config-file.ts'
 import { registerBuildCommand } from '@/commands/build.ts'
 import { registerConfigCommands } from '@/commands/config.ts'
+import { registerDoctorCommand } from '@/commands/doctor.ts'
 import { registerMaintenanceCommands } from '@/commands/maintenance.ts'
 import { registerPublishCommands } from '@/commands/publish.ts'
 import { registerRecipeCommands } from '@/commands/recipes.ts'
@@ -30,6 +31,7 @@ const main = async (): Promise<void> => {
         .version(pkg.version)
     const configResolution = resolveStartupConfig()
     registerConfigCommands(program, configResolution)
+    registerDoctorCommand(program)
     registerRecipeCommands(program)
     registerBuildCommand(program)
     registerMaintenanceCommands(program)

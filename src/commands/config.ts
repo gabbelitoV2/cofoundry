@@ -1,6 +1,6 @@
 import type { Command } from 'commander'
 import pc from 'picocolors'
-import { runDoctor, runInit } from '@/config-init.ts'
+import { runInit } from '@/config-init.ts'
 import type { ResolvedValue } from '@/config-file.ts'
 import { log } from '@/log.ts'
 import { redactSensitive } from '@/util.ts'
@@ -91,9 +91,4 @@ export const registerConfigCommands = (
         )
         .option('--force', 'Overwrite an existing cofoundry.toml')
         .action((opts: { fromEnv?: boolean; force?: boolean }) => runInit(opts))
-
-    program
-        .command('doctor')
-        .description('Preflight connectivity checks (SSH, PVE API, R2)')
-        .action(runDoctor)
 }

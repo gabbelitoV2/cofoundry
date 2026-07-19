@@ -107,6 +107,39 @@ export const remoteStreaming = (
 ): Promise<void> => streaming('ssh', [...SSH_OPTS, target, cmd], onLine)
 
 /**
+ * Capture stdout of a remote Bash script delivered over SSH stdin (`bash -s`),
+ * so a script containing credentials never appears in sshd's process command
+ * line. Capture-variant of remoteStreamingScript; used by `cf doctor` for the
+ * bundled node sweep and the token-authenticated API probe. stderr is captured
+ * separately so it cannot pollute the parsed stdout — on failure execa folds it
+ * into the thrown (redacted) error message.
+ */
+export const captureRemoteScript = async (
+    target: string,
+    script: string
+): Promise<string> => {
+    try {
+        const { stdout } = await execa(
+            'ssh',
+            [...SSH_OPTS, target, 'bash -s'],
+            {
+                input: script,
+                stderr: 'pipe',
+            }
+        )
+        return stdout
+    } catch (err) {
+        if (err instanceof ExecaError && err.code === 'ENOENT') {
+            throw new Error(
+                `"ssh" not found — is it installed and on your PATH?`
+            )
+        }
+        if (err instanceof Error) throw new Error(redactSensitive(err.message))
+        throw err
+    }
+}
+
+/**
  * Run a remote Bash script without putting its contents in sshd's process
  * command line. This is the required path for scripts containing credentials:
  * SSH carries the script over stdin and the remote argv is only `bash -s`.

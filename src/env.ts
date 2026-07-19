@@ -77,16 +77,38 @@ const EnvSchema = z.object({
 
 export type Env = z.infer<typeof EnvSchema>
 
-export const loadEnv = (): Env => {
-    const env = EnvSchema.parse(stripEmpty(process.env))
+/** Parse a specific environment map. Kept separate from loadEnv so `cf doctor`
+ *  and tests can validate an arbitrary env without touching process.env. */
+export const parseEnv = (input: NodeJS.ProcessEnv): Env => {
+    const env = EnvSchema.parse(stripEmpty(input))
     addSensitiveValues(
         env.PVE_TOKEN_ID,
         env.PVE_TOKEN_SECRET,
-        process.env.AWS_ACCESS_KEY_ID,
-        process.env.AWS_SECRET_ACCESS_KEY,
-        process.env.AWS_SESSION_TOKEN
+        input.AWS_ACCESS_KEY_ID,
+        input.AWS_SECRET_ACCESS_KEY,
+        input.AWS_SESSION_TOKEN
     )
     return env
+}
+
+export const loadEnv = (): Env => parseEnv(process.env)
+
+/**
+ * Names of env keys that fail schema validation — required vars that are unset
+ * (or empty: stripEmpty removes those first) plus vars with invalid values.
+ * Used by `cf doctor` to report exactly which variables need fixing instead of
+ * surfacing a raw Zod error.
+ */
+export const missingRequiredEnv = (input: NodeJS.ProcessEnv): string[] => {
+    const parsed = EnvSchema.safeParse(stripEmpty(input))
+    if (parsed.success) return []
+    return [
+        ...new Set(
+            parsed.error.issues.map(issue => String(issue.path[0] ?? ''))
+        ),
+    ]
+        .filter(Boolean)
+        .sort()
 }
 
 // Relaxed loader for `cf bootstrap` — only SSH_TARGET is needed (and even that

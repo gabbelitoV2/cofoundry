@@ -36,6 +36,7 @@ const dependencies = (
             lost: new Promise<never>(() => undefined),
             release: async () => {},
         }),
+        shrinkPreflight: async () => run('shrinkPreflight'),
     }
 }
 
@@ -48,7 +49,13 @@ describe('runPipeline', () => {
             { syncBack: true, ci: true },
             dependencies(events)
         )
-        expect(events).toEqual(['syncRepo', 'prefetch', 'build', 'sync'])
+        expect(events).toEqual([
+            'shrinkPreflight',
+            'syncRepo',
+            'prefetch',
+            'build',
+            'sync',
+        ])
         expect(result).toEqual({ passed: ['debian-12'], failed: [] })
     })
 
@@ -60,7 +67,7 @@ describe('runPipeline', () => {
             { syncBack: true, ci: true, skipRepoSync: true },
             dependencies(events, 'build')
         )
-        expect(events).toEqual(['prefetch', 'build'])
+        expect(events).toEqual(['shrinkPreflight', 'prefetch', 'build'])
         expect(result.passed).toEqual([])
         expect(result.failed).toEqual([
             { name: 'debian-12', error: 'build failed' },
@@ -88,7 +95,7 @@ describe('runPipeline', () => {
             deps
         )
 
-        expect(events).toEqual(['prefetch', 'build'])
+        expect(events).toEqual(['shrinkPreflight', 'prefetch', 'build'])
     })
 
     test('pins builds to the snapshot returned by repository sync', async () => {
@@ -117,11 +124,28 @@ describe('runPipeline', () => {
         await runPipeline(env, [recipe], { syncBack: false, ci: true }, deps)
         expect(events).toEqual([
             'lock',
+            'shrinkPreflight',
             'syncRepo',
             'prefetch',
             'build',
             'unlock',
         ])
+    })
+
+    test('fails fast when the shrink preflight rejects the storage', async () => {
+        const events: string[] = []
+        const deps = dependencies(events)
+        deps.shrinkPreflight = async () => {
+            events.push('shrinkPreflight')
+            throw new Error(
+                'final_disk_size requires file-backed qcow2 disks, but storage "local-zfs" has type "zfspool"'
+            )
+        }
+        await expect(
+            runPipeline(env, [recipe], { syncBack: true, ci: true }, deps)
+        ).rejects.toThrow('"zfspool"')
+        // No sync/prefetch/build phase may start once the preflight refuses.
+        expect(events).toEqual(['shrinkPreflight'])
     })
 
     test('requires resource budgets when parallel builds are enabled', async () => {

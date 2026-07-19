@@ -18,6 +18,7 @@ import {
     type TaskHandle,
 } from '@cofoundry/ui'
 import { acquireRemoteMaintenanceLock } from '@/build/maintenance.ts'
+import { assertShrinkStorageSupported } from '@/build/storage.ts'
 
 export type PipelineOptions = {
     syncBack: boolean
@@ -45,6 +46,7 @@ export type PipelineDependencies = {
     build: typeof buildPhase
     sync: typeof syncPhase
     acquireMaintenance: typeof acquireRemoteMaintenanceLock
+    shrinkPreflight: typeof assertShrinkStorageSupported
 }
 
 const DEFAULT_DEPENDENCIES: PipelineDependencies = {
@@ -53,6 +55,7 @@ const DEFAULT_DEPENDENCIES: PipelineDependencies = {
     build: buildPhase,
     sync: syncPhase,
     acquireMaintenance: acquireRemoteMaintenanceLock,
+    shrinkPreflight: assertShrinkStorageSupported,
 }
 
 // Submit work to a p-queue and keep `handle`'s phase label accurate while it
@@ -125,6 +128,10 @@ const runPipelineLocked = async (
     dependencies: PipelineDependencies
 ): Promise<PipelineResult> => {
     const buildOptions = validateBuildOptions(recipes, opts)
+    // Fail before any phase starts: a final_disk_size shrink on non-file
+    // storage would otherwise only surface in the vzdump post-processor,
+    // hours into the build.
+    await dependencies.shrinkPreflight(env, recipes)
     const prefetchQ = new PQueue({ concurrency: opts.prefetchConcurrency ?? 3 })
     const buildQ = new BuildScheduler(buildOptions)
     const syncQ = new PQueue({ concurrency: 1 })

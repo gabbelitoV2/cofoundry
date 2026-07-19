@@ -209,7 +209,7 @@ describe('cf-cluster-templates', () => {
         expect(await readFile(fx.artifact, 'utf8')).toBe(ARTIFACT_CONTENT)
     })
 
-    test('keeps the copied artifact on the node when the restore fails', async () => {
+    test('keeps the copied artifact and reports the state when the restore fails', async () => {
         const fx = await setup()
         const result = await execa('bash', [...fx.args, SHA256], {
             env: { ...fx.env, QMRESTORE_FAIL: '1' },
@@ -223,9 +223,33 @@ describe('cf-cluster-templates', () => {
         // the copy, so a manual retry does not need a re-transfer.
         expect(await readdir(fx.dump)).toEqual(['debian-13-amd64.vma.zst'])
         expect(await readFile(fx.artifact, 'utf8')).toBe(ARTIFACT_CONTENT)
+        // No prior template existed here, so the message must not claim one was
+        // destroyed — only that none was created and the copy is retained.
+        expect(result.all).toContain('no template was created at 14001')
+        expect(result.all).toContain('kept at')
     })
 
-    test('warns but distributes without a sha256 for backward compatibility', async () => {
+    test('warns the node is left without a template when the restore fails after destroy', async () => {
+        const fx = await setup()
+        const result = await execa('bash', [...fx.args, SHA256], {
+            env: { ...fx.env, QMRESTORE_FAIL: '1', QM_HAS_VM: '1' },
+            all: true,
+            reject: false,
+        })
+
+        expect(result.exitCode).toBe(1)
+        // The previous template was destroyed before the failed restore, so the
+        // operator is told this node now has no template at that id.
+        expect(result.all).toContain(
+            'previous template at 14001 was already destroyed'
+        )
+        expect(result.all).toContain('now has NO template at 14001')
+        expect(result.all).toContain('for a manual retry')
+        // The verified copy is still retained for that retry.
+        expect(await readdir(fx.dump)).toEqual(['debian-13-amd64.vma.zst'])
+    })
+
+    test('verifies by default without a sha256, deriving it from the local artifact', async () => {
         const fx = await setup()
         const result = await execa('bash', fx.args, {
             env: fx.env,
@@ -234,10 +258,32 @@ describe('cf-cluster-templates', () => {
         })
 
         expect(result.exitCode).toBe(0)
+        // Verification is on by default: it announces the self-computed hash
+        // rather than warning that transfers go unchecked.
         expect(result.all).toContain('no sha256 given')
+        expect(result.all).toContain("local artifact's own hash")
         expect(
             (await calls(fx)).filter(c => c.startsWith('qmrestore'))
         ).toHaveLength(2)
+    })
+
+    test('catches a corrupt transfer even when no sha256 is passed', async () => {
+        const fx = await setup()
+        const result = await execa('bash', fx.args, {
+            env: { ...fx.env, SCP_CORRUPT: '1', QM_HAS_VM: '1' },
+            all: true,
+            reject: false,
+        })
+
+        expect(result.exitCode).toBe(1)
+        expect(result.all).toContain('checksum mismatch')
+        expect(result.all).toContain('0/2 node(s) ok, 2 failed, 1 offline')
+        const log = await calls(fx)
+        // No sha256 given, yet the corrupt copy is still caught before any
+        // destructive step.
+        expect(log.some(c => c.includes('qm destroy'))).toBe(false)
+        expect(log.some(c => c.startsWith('qmrestore'))).toBe(false)
+        expect(await readFile(fx.artifact, 'utf8')).toBe(ARTIFACT_CONTENT)
     })
 
     test('rejects a malformed sha256 argument', async () => {

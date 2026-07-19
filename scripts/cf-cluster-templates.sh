@@ -55,12 +55,23 @@ if [ "$BASE_VMID" -ge "$OFFSET" ]; then
   exit 1
 fi
 
-if [ -n "$EXPECTED_SHA256" ] && ! [[ "$EXPECTED_SHA256" =~ ^[0-9a-fA-F]{64}$ ]]; then
-  echo "cf-cluster-templates: expected sha256 '$EXPECTED_SHA256' is not a 64-char hex digest" >&2
-  exit 1
-fi
-if [ -z "$EXPECTED_SHA256" ]; then
-  echo "cf-cluster-templates: [warn] no sha256 given — transfers will not be verified before replacing templates (append {{sha256}} to CF_UPLOAD_CMD)" >&2
+if [ -n "$EXPECTED_SHA256" ]; then
+  if ! [[ "$EXPECTED_SHA256" =~ ^[0-9a-fA-F]{64}$ ]]; then
+    echo "cf-cluster-templates: expected sha256 '$EXPECTED_SHA256' is not a 64-char hex digest" >&2
+    exit 1
+  fi
+else
+  # No sha256 supplied (e.g. a CF_UPLOAD_CMD without {{sha256}}): verification is
+  # still the default. Derive the expected hash from the local source artifact so
+  # every node's copy is checked before its existing template is replaced.
+  # Passing {{sha256}} (cf's recorded hash) additionally guards against a source
+  # artifact that was already corrupt before this ran.
+  EXPECTED_SHA256="$(sha256sum "$ARTIFACT" 2>/dev/null | awk '{print $1}')"
+  if ! [[ "$EXPECTED_SHA256" =~ ^[0-9a-fA-F]{64}$ ]]; then
+    echo "cf-cluster-templates: [fail] cannot read local artifact '$ARTIFACT' to compute a verification hash" >&2
+    exit 1
+  fi
+  echo "cf-cluster-templates: [info] no sha256 given — verifying transfers against the local artifact's own hash (pass {{sha256}} to verify against cf's recorded hash instead)" >&2
 fi
 
 BN="$(basename "$ARTIFACT")"
@@ -143,9 +154,10 @@ for line in "${NODES[@]}"; do
   fi
 
   # Verify the transfer BEFORE touching the node's existing template: a
-  # corrupt copy must never destroy a working template. One re-copy on
+  # corrupt copy must never destroy a working template. Verification is always
+  # on (EXPECTED_SHA256 is either supplied or derived above). One re-copy on
   # mismatch, then give up on the node.
-  if [ -n "$EXPECTED_SHA256" ] && ! checksum_matches "$IP"; then
+  if ! checksum_matches "$IP"; then
     echo "    [warn] checksum mismatch on $IP — retrying copy"
     if ! copy_to_node "$IP" || ! checksum_matches "$IP"; then
       echo "    [fail] checksum mismatch on $IP after retry — existing template left untouched"
@@ -162,10 +174,21 @@ for line in "${NODES[@]}"; do
 set -e
 SOURCE="$DUMP_DIR/$BN"
 VZ="$DUMP_DIR/vzdump-qemu-$VMID-$STAMP.vma.zst"
+DESTROYED=0
 cleanup() {
-  # Failure path: keep the verified copy for a manual retry — only undo the
-  # vzdump-style rename. The success path removes it explicitly below.
-  if [ -e "\$VZ" ]; then mv -f "\$VZ" "\$SOURCE"; fi
+  # Failure path: qmrestore did not finish. Keep the verified copy for a manual
+  # retry — undo only the vzdump-style rename — and tell the operator the state
+  # of this node so a half-finished replacement is never silent. If we already
+  # destroyed the node's previous template, this node now has no template at
+  # \$VMID until the retry lands. The success path removes the copy below.
+  if [ -e "\$VZ" ]; then
+    mv -f "\$VZ" "\$SOURCE"
+    if [ "\$DESTROYED" = 1 ]; then
+      echo "    [fail] qmrestore did not complete on \$(hostname) — the previous template at $VMID was already destroyed, so this node now has NO template at $VMID; the verified artifact is kept at \$SOURCE for a manual retry (qmrestore it, or re-run the build)" >&2
+    else
+      echo "    [fail] qmrestore did not complete on \$(hostname) — no template was created at $VMID; the verified artifact is kept at \$SOURCE for a manual retry (qmrestore it, or re-run the build)" >&2
+    fi
+  fi
 }
 trap cleanup EXIT
 # Pick this node's storage, in order: the preferred one, then the standard
@@ -198,6 +221,7 @@ if qm status $VMID >/dev/null 2>&1; then
   fi
   qm stop $VMID --skiplock 1 >/dev/null 2>&1 || true
   qm destroy $VMID --purge 1 --destroy-unreferenced-disks 1 >/dev/null 2>&1 || true
+  DESTROYED=1
 fi
 # qmrestore only accepts vzdump-style filenames, so rename before restoring
 mv "\$SOURCE" "\$VZ"

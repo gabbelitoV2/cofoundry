@@ -265,8 +265,8 @@ By default they push these with the built-in `GITHUB_TOKEN`, so **you can skip
 this section entirely** unless `main` is protected by a branch ruleset — a
 ruleset the default `GITHUB_TOKEN` cannot bypass. In that case, create a
 dedicated GitHub App and add it to the ruleset bypass list; the workflows use
-the App token when `REGISTRY_APP_ID` / `REGISTRY_APP_PRIVATE_KEY` are set and
-fall back to `GITHUB_TOKEN` when they are not.
+the App token when `REGISTRY_APP_CLIENT_ID` / `REGISTRY_APP_PRIVATE_KEY` are set
+and fall back to `GITHUB_TOKEN` when they are not.
 
 **Create the app** (GitHub account/org → **Settings → Developer settings → GitHub Apps → New GitHub App**):
 
@@ -275,11 +275,12 @@ fall back to `GITHUB_TOKEN` when they are not.
 - Repository permissions: **Contents: Read and write**
 - Install it on this repository only
 
-After creating the app, copy its app ID and generate a private key. Generating
+After creating the app, copy its client ID and generate a private key. Generating
 the key downloads a `.pem` file to your machine (GitHub shows it only once — if
 you lose it, generate a new one). Add both as repo secrets in the next step:
 
-- `REGISTRY_APP_ID` — the numeric app ID shown on the app's settings page.
+- `REGISTRY_APP_CLIENT_ID` — the client ID (e.g. `Iv23li...`) shown on the app's
+  settings page. Note this is **not** the numeric app ID.
 - `REGISTRY_APP_PRIVATE_KEY` — the **entire contents** of the downloaded
   `.pem` file, including the `-----BEGIN RSA PRIVATE KEY-----` and
   `-----END RSA PRIVATE KEY-----` lines and every newline between them. Paste
@@ -324,7 +325,7 @@ Then go to **Settings → Secrets and variables → Actions**.
 | `TS_OAUTH_SECRET`          | Tailscale OAuth secret (only if using Tailscale)                     |
 | `R2_ACCESS_KEY_ID`         | R2 API token access key                                              |
 | `R2_SECRET_ACCESS_KEY`     | R2 API token secret                                                  |
-| `REGISTRY_APP_ID`          | App ID for the `cofoundry-registry-writer` GitHub App. Only if `main` is ruleset-protected (see §3); omit to push with `GITHUB_TOKEN`.                |
+| `REGISTRY_APP_CLIENT_ID`   | Client ID for the `cofoundry-registry-writer` GitHub App. Only if `main` is ruleset-protected (see §3); omit to push with `GITHUB_TOKEN`.             |
 | `REGISTRY_APP_PRIVATE_KEY` | Private key for the `cofoundry-registry-writer` GitHub App. Only if `main` is ruleset-protected (see §3); omit to push with `GITHUB_TOKEN`. |
 
 **Coordinates referenced by `${VAR}` in `cofoundry.toml`.** Set each as a repo

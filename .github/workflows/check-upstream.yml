@@ -108,13 +108,13 @@ jobs:
       # 'true' only when a registry-writer GitHub App is configured. When empty
       # (no ruleset on main), fall back to the default GITHUB_TOKEN for the
       # upstream-checksums push. See docs/setup.md#3.
-      HAS_REGISTRY_APP: ${{ secrets.REGISTRY_APP_ID != '' && secrets.REGISTRY_APP_PRIVATE_KEY != '' }}
+      HAS_REGISTRY_APP: ${{ secrets.REGISTRY_APP_CLIENT_ID != '' && secrets.REGISTRY_APP_PRIVATE_KEY != '' }}
     steps:
       - uses: actions/create-github-app-token@v3
         id: registry-app-token
         if: env.HAS_REGISTRY_APP == 'true'
         with:
-          app-id: ${{ secrets.REGISTRY_APP_ID }}
+          client-id: ${{ secrets.REGISTRY_APP_CLIENT_ID }}
           private-key: ${{ secrets.REGISTRY_APP_PRIVATE_KEY }}
 
       # Checkout persists whichever token it's given, so the push below uses it:

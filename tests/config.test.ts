@@ -1,7 +1,8 @@
 import { describe, expect, test } from 'bun:test'
+import { fileURLToPath } from 'node:url'
 import { listRecipes, loadRecipe } from '../src/config.ts'
 
-const FIXTURES = new URL('./fixtures/recipes/', import.meta.url).pathname
+const FIXTURES = fileURLToPath(new URL('./fixtures/recipes/', import.meta.url))
 
 describe('loadRecipe', () => {
     test('parses display and build_vmid from header comments', async () => {

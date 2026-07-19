@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { mkdtemp, copyFile, readFile, readdir, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import {
     buildManifest,
     selectNewestSidecars,
@@ -28,7 +29,7 @@ const sc = (
     } as R2Sidecar['sidecar'],
 })
 
-const FIXTURES = new URL('./fixtures/sidecars/', import.meta.url).pathname
+const FIXTURES = fileURLToPath(new URL('./fixtures/sidecars/', import.meta.url))
 
 const stageFixtures = async (): Promise<string> => {
     const dir = await mkdtemp(join(tmpdir(), 'cf-manifest-'))

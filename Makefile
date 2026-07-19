@@ -10,6 +10,8 @@ version:
 
 # Cut a release: bump coport/package.json to $(TO), commit, and tag v$(TO).
 # Usage: make release TO=1.4.0
+# The version bump writes through a temp file because GNU and BSD sed disagree
+# on `sed -i` syntax.
 release:
 	@test -n "$(TO)" || { echo "usage: make release TO=X.Y.Z"; exit 1; }
 	@echo "$(TO)" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$$' || { echo "invalid version '$(TO)' (expected X.Y.Z, with no leading 'v')"; exit 1; }
@@ -29,7 +31,8 @@ release:
 		case "$$ans" in [yY]|[yY][eE][sS]) ;; *) echo "aborted"; exit 1;; esac; \
 	fi
 	@if [ "$(TO)" != "$(VERSION)" ]; then \
-		sed -i '' 's/^\(  "version": \)"[^"]*"/\1"$(TO)"/' coport/package.json; \
+		sed 's/^\(  "version": \)"[^"]*"/\1"$(TO)"/' coport/package.json >coport/package.json.tmp; \
+		mv coport/package.json.tmp coport/package.json; \
 		bun install >/dev/null; \
 		git add coport/package.json bun.lock; \
 		git commit -m "chore: release v$(TO)"; \

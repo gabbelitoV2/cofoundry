@@ -227,7 +227,7 @@ globally unique, so each node gets its own copy under its own VMID.
 Wire it in as the build node's upload hook in `.env`:
 
 ```sh
-CF_UPLOAD_CMD=bash $PVE_DUMP_DIR/cofoundry-work/scripts/cf-cluster-templates.sh {{file}}
+CF_UPLOAD_CMD=bash $PVE_DUMP_DIR/cofoundry-work/scripts/cf-cluster-templates.sh {{file}} {{sha256}}
 ```
 
 For every online node listed in `/etc/pve/.members`, the script:
@@ -240,12 +240,16 @@ For every online node listed in `/etc/pve/.members`, the script:
    would collide;
 2. copies the artifact into the node's dump dir over `scp` (a plain `cp` when
    the target is the build node itself);
-3. picks that node's disk storage, in order: `CF_TEMPLATE_STORAGE` (default
+3. verifies the copied artifact's SHA-256 against `{{sha256}}` (or, when the
+   hook omits it, against the local artifact's own hash), retrying the copy
+   once on a mismatch; a copy that still fails to match is skipped with its
+   existing template left untouched;
+4. picks that node's disk storage, in order: `CF_TEMPLATE_STORAGE` (default
    `local-lvm`) if active, then `local-lvm`, then `local-zfs`, and as a last
    resort the best active images-capable storage — local over shared,
    VM-native types (lvmthin/zfspool/btrfs/rbd/lvm) over directory storage,
    most free space first;
-4. restores with `qmrestore --unique 1` and marks the result as a template.
+5. restores with `qmrestore --unique 1` and marks the result as a template.
 
 A VMID holding a real (non-template) VM is never touched — that node is
 skipped with a log line. An existing template at the VMID is stopped,
@@ -257,7 +261,7 @@ The two knobs are read from the post-processor's environment on the node;
 inside the command itself:
 
 ```sh
-CF_UPLOAD_CMD=CF_TEMPLATE_STORAGE=local-zfs bash $PVE_DUMP_DIR/cofoundry-work/scripts/cf-cluster-templates.sh {{file}}
+CF_UPLOAD_CMD=CF_TEMPLATE_STORAGE=local-zfs bash $PVE_DUMP_DIR/cofoundry-work/scripts/cf-cluster-templates.sh {{file}} {{sha256}}
 ```
 
 This flow pushes templates to the nodes of your own cluster at build time.

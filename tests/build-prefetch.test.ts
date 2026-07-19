@@ -9,7 +9,7 @@ import {
     virtioWinIsoFilename,
     virtioWinIsoUrl,
 } from '@/build/prefetch.ts'
-import { isPermanentWgetExit, WGET_EXIT } from '@/build/remote.ts'
+import { describeExit, isPermanentWgetExit, WGET_EXIT } from '@/build/remote.ts'
 import {
     CLOUDBASE_INIT_DEFAULT_VERSION,
     VIRTIO_WIN_DEFAULT_VERSION,
@@ -303,5 +303,32 @@ describe('WGET_EXIT', () => {
         expect(WGET_EXIT[9]).toBe(
             'downloaded file failed checksum verification — expected hash did not match'
         )
+    })
+})
+
+describe('describeExit', () => {
+    test('uses the wget table for wget/our own codes (1-9)', () => {
+        expect(describeExit(8)).toBe(WGET_EXIT[8])
+        expect(describeExit(9)).toBe(WGET_EXIT[9])
+    })
+
+    test('decodes non-wget shell and ssh codes instead of calling them wget errors', () => {
+        expect(describeExit(255)).toBe(
+            'ssh connection or authentication failed'
+        )
+        expect(describeExit(127)).toBe(
+            'command not found (is wget installed on the remote node?)'
+        )
+        expect(describeExit(126)).toBe('command found but not executable')
+    })
+
+    test('decodes a signal death (128+N) as the signal number', () => {
+        expect(describeExit(130)).toBe('process killed by signal 2') // Ctrl-C
+        expect(describeExit(137)).toBe('process killed by signal 9') // SIGKILL/OOM
+        expect(describeExit(143)).toBe('process killed by signal 15') // SIGTERM
+    })
+
+    test('still surfaces the raw number for anything unmapped', () => {
+        expect(describeExit(42)).toBe('unmapped exit code 42')
     })
 })

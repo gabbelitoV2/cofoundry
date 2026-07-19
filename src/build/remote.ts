@@ -141,6 +141,25 @@ export const WGET_EXIT: Record<number, string> = {
     9: 'downloaded file failed checksum verification — expected hash did not match',
 }
 
+// Turns a non-zero exit code from the fetch pipeline into a human meaning. The
+// command runs as a bash script over `ssh -t -t`, so the code can come from
+// wget (1-8), our own checksum step (9), the shell, a signal, or ssh — not
+// just wget. Decode the common non-wget cases so a dropped ssh connection or
+// an OOM-kill reads as what it is instead of being mislabelled a wget error,
+// and always surface the raw number for anything still unmapped.
+export const describeExit = (code: number): string => {
+    const known = WGET_EXIT[code]
+    if (known) return known
+    if (code === 255) return 'ssh connection or authentication failed'
+    if (code === 127)
+        return 'command not found (is wget installed on the remote node?)'
+    if (code === 126) return 'command found but not executable'
+    // Bash reports a process killed by signal N as 128+N (130=SIGINT/Ctrl-C,
+    // 137=SIGKILL/OOM, 143=SIGTERM).
+    if (code > 128) return `process killed by signal ${code - 128}`
+    return `unmapped exit code ${code}`
+}
+
 // A wget failure that carries its exit code, so callers can distinguish a
 // transient fault (retry) from a permanent one (a stale URL / 404 — exit 8 —
 // or a bad-invocation exit 2, where retrying only wastes backoff).
@@ -204,11 +223,13 @@ export const remoteWgetCapture = async (
             )
         if (err instanceof ExecaError && typeof err.exitCode === 'number') {
             const code = err.exitCode
-            const meaning = WGET_EXIT[code] ?? 'unknown wget error'
+            const meaning = describeExit(code)
             const what = context?.what ?? 'download'
             const url = context?.url ? ` ${context.url}` : ''
+            // "exit N", not "wget exit N": the code can come from the shell,
+            // ssh, or a signal, so don't attribute every failure to wget.
             throw new WgetError(
-                `${what} failed: wget exit ${code} — ${meaning}${url ? ` (${url.trim()})` : ''}`,
+                `${what} failed: exit ${code} — ${meaning}${url ? ` (${url.trim()})` : ''}`,
                 code
             )
         }

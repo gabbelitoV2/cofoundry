@@ -12,6 +12,11 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { execa } from 'execa'
 
+// The script's _pve helper re-parses its argument with `bash -c "$*"`, which
+// strips backslashes from Windows-style paths. Forward slashes are valid on
+// both platforms, so normalize paths handed to the script (no-op on POSIX).
+const bashPath = (p: string) => p.replaceAll('\\', '/')
+
 const roots: string[] = []
 
 afterEach(async () => {
@@ -60,8 +65,8 @@ printf log > "\${artifact%.vma.zst}.log"
                 env: {
                     PATH: `${bin}:${process.env.PATH}`,
                     SSH_TARGET: 'local',
-                    PVE_DUMP_DIR: dump,
-                    CF_OUT_DIR: out,
+                    PVE_DUMP_DIR: bashPath(dump),
+                    CF_OUT_DIR: bashPath(out),
                     CF_RECIPE_NAME: 'debian-13',
                     CF_RECIPE_DISPLAY: 'Debian 13',
                     CF_BUILT_VMID: '400200',

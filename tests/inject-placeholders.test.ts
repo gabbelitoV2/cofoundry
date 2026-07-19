@@ -92,8 +92,14 @@ describe('inject-placeholders.sh', () => {
             runnerTemp,
             'packer-vars-windows-test.pkrvars.hcl'
         )
-        expect(statSync(varsFile).mode & 0o777).toBe(0o600)
-        expect(statSync(answerFile).mode & 0o777).toBe(0o600)
+        // POSIX permission bits do not exist on Windows: libuv synthesizes
+        // stat.mode as 0666/0444 from the read-only attribute, so chmod 600
+        // inside the script is not observable here. The mode contract only
+        // applies on the POSIX CI runners where this script actually runs.
+        if (process.platform !== 'win32') {
+            expect(statSync(varsFile).mode & 0o777).toBe(0o600)
+            expect(statSync(answerFile).mode & 0o777).toBe(0o600)
+        }
         expect(readFileSync(varsFile, 'utf8')).toContain('winrm_password = ')
         expect(readFileSync(answerFile, 'utf8')).not.toContain(
             '__PACKER_ADMIN_PASSWORD__'

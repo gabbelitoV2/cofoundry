@@ -7,10 +7,18 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
       - uses: oven-sh/setup-bun@v2
       - run: bun install --frozen-lockfile
       - run: bun test
+      # Scoped to the TS sources kept prettier-clean; docs, JSON metadata, and
+      # packages/ui predate the check and are not formatted yet.
+      - run: bunx prettier --check src tests coport/src
       - run: bun run typecheck
+      - run: bun run --cwd coport typecheck

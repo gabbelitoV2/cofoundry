@@ -2,7 +2,11 @@ import { randomUUID } from 'node:crypto'
 import { spawnSync } from 'node:child_process'
 import type { Env } from '@/env.ts'
 import type { RecipeInfo } from '@/config.ts'
-import { captureRemote, registerCleanup } from '@/build/remote.ts'
+import {
+    captureRemote,
+    registerCleanup,
+    remoteExitCode,
+} from '@/build/remote.ts'
 import { PACKER_TMP_ROOT } from '@/build/packer.ts'
 import { shellQuote } from '@/util.ts'
 
@@ -14,8 +18,24 @@ export const RUN_LEASE_STALE_SECS = 10 * 60
 const HEARTBEAT_MS = 60_000
 const RETRY_MS = 10_000
 
+// Distinct heartbeat exit status for "the lease file is gone", so it cannot be
+// confused with an SSH transport failure (255) or a failed touch.
+export const HEARTBEAT_GONE_EXIT = 44
+
+// Consecutive heartbeat failures after which the lease must be presumed lost:
+// by then its mtime is at least RUN_LEASE_STALE_SECS old, so any admission
+// sweep that ran meanwhile has reaped it and destroyed the run's resources.
+export const HEARTBEAT_LOST_AFTER_FAILURES = Math.ceil(
+    (RUN_LEASE_STALE_SECS * 1000) / HEARTBEAT_MS
+)
+
 export type RunLease = {
     id: string
+    /** Rejects once the lease is confirmed reaped, or the node has been
+     *  unreachable past the stale window. Race leased work against it via
+     *  `raceLeasedWork` (executor.ts), which also aborts and terminates the
+     *  losing work instead of leaving it running. */
+    lost: Promise<never>
     setVmid: (vmid: number) => Promise<void>
     release: () => Promise<void>
 }
@@ -160,6 +180,55 @@ trap - EXIT
 `
 }
 
+/**
+ * Refresh the lease's mtime, or report through a distinct exit status that the
+ * file is gone (a stale-lease sweep reaped it). The former
+ * `test ! -f … || touch …` form exited 0 on a missing file, so a reaped lease
+ * looked exactly like a healthy heartbeat.
+ */
+export const runLeaseHeartbeatCommand = (file: string): string =>
+    `if [ -f ${shellQuote(file)} ]; then touch ${shellQuote(file)}; else exit ${HEARTBEAT_GONE_EXIT}; fi`
+
+/**
+ * Kill every remote process whose command line names this run's temp
+ * directory — the same reap `sweepRunLeasesScript` applies to a stale run. A
+ * local lease-lost abort sends this over a fresh SSH connection because
+ * killing the local ssh client is not enough: the packer session runs without
+ * a PTY, so the remote command survives a dead client.
+ *
+ * The first literal character is wrapped in a bracket expression (the classic
+ * `pgrep [f]oo` trick): `pkill -f` matches whole command lines, and the shell
+ * sshd spawns to run this command embeds the pattern in its own argv — an
+ * unescaped pattern would SIGKILL that shell mid-flight. The sweep needs no
+ * such guard only because its pattern rides in an unexpanded `"$tmpdir"`.
+ * `pkill` exits non-zero when nothing matched (the sweep may already have
+ * killed everything), hence the trailing `|| true`.
+ */
+export const killLeasedRunProcessesCommand = (remoteTmpDir: string): string => {
+    const pattern = remoteTmpDir.replace(/[A-Za-z0-9]/, '[$&]')
+    return `pkill -9 -f -- ${shellQuote(pattern)} >/dev/null 2>&1 || true`
+}
+
+export type HeartbeatState = { failures: number }
+
+/**
+ * Per-tick lost-detection: a confirmed-missing file is immediately `gone`,
+ * while transport/touch failures only escalate to `lost` once enough
+ * consecutive attempts failed that the lease is stale on the node.
+ */
+export const evaluateHeartbeat = (
+    state: HeartbeatState,
+    exitCode: number
+): 'alive' | 'gone' | 'lost' | 'failing' => {
+    if (exitCode === 0) {
+        state.failures = 0
+        return 'alive'
+    }
+    if (exitCode === HEARTBEAT_GONE_EXIT) return 'gone'
+    state.failures += 1
+    return state.failures >= HEARTBEAT_LOST_AFTER_FAILURES ? 'lost' : 'failing'
+}
+
 const wait = (ms: number): Promise<void> =>
     new Promise(resolve => setTimeout(resolve, ms))
 
@@ -240,16 +309,52 @@ export const acquireRunLease = async (
             stdio: 'ignore',
         })
     })
+    let rejectLost: (error: Error) => void = () => undefined
+    const lost = new Promise<never>((_resolve, reject) => {
+        rejectLost = reject
+    })
+    // Callers race their leased work against `lost`. Keep a handler attached
+    // for the hand-off window and for callers that never wire the race.
+    void lost.catch(() => undefined)
+    const leaseLost = (detail: string): void => {
+        if (released) return
+        clearInterval(heartbeat)
+        rejectLost(
+            new Error(
+                `${request.kind} run lease for ${recipe.name} was lost: ${detail}. ` +
+                    `Any admission on ${env.SSH_TARGET} sweeps leases idle for over ${RUN_LEASE_STALE_SECS}s ` +
+                    `and destroys the VM and temp directories they name, so this run's resources must be presumed gone — aborting.`
+            )
+        )
+    }
+    const heartbeatCommand = runLeaseHeartbeatCommand(file)
+    const heartbeatState: HeartbeatState = { failures: 0 }
+    let heartbeatInFlight = false
     const heartbeat = setInterval(() => {
-        void captureRemote(
-            env.SSH_TARGET,
-            `test ! -f ${shellQuote(file)} || touch ${shellQuote(file)}`
-        ).catch(() => {})
+        // Skip ticks while an attempt is still in flight so one hung SSH
+        // connection is not double-counted as several failures.
+        if (heartbeatInFlight || released) return
+        heartbeatInFlight = true
+        void remoteExitCode(env.SSH_TARGET, heartbeatCommand).then(code => {
+            heartbeatInFlight = false
+            if (released) return
+            const verdict = evaluateHeartbeat(heartbeatState, code)
+            if (verdict === 'gone') {
+                leaseLost(
+                    'its file disappeared from the node, so a stale-lease sweep reaped it'
+                )
+            } else if (verdict === 'lost') {
+                leaseLost(
+                    `${heartbeatState.failures} consecutive heartbeats failed, so it has not been refreshed within the stale window`
+                )
+            }
+        })
     }, HEARTBEAT_MS)
     heartbeat.unref()
 
     return {
         id: request.id,
+        lost,
         setVmid: async vmid => {
             await captureRemote(
                 env.SSH_TARGET,

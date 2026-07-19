@@ -79,6 +79,29 @@ export const captureRemote = async (
 }
 
 /**
+ * Run a remote command and resolve with its exit status instead of throwing.
+ * ssh(1) reserves 255 for transport failures (unreachable host, dropped
+ * connection), so remote commands can signal through any other code; a failed
+ * local spawn also resolves as 255. stderr is discarded — this is for pollers
+ * whose expected failures must not spam the terminal.
+ */
+export const remoteExitCode = async (
+    target: string,
+    cmd: string
+): Promise<number> => {
+    try {
+        const { exitCode } = await execa('ssh', [...SSH_OPTS, target, cmd], {
+            stdin: 'ignore',
+            stderr: 'ignore',
+            reject: false,
+        })
+        return exitCode ?? 255
+    } catch {
+        return 255
+    }
+}
+
+/**
  * Stream a gzip tarball of a remote directory back as a Buffer. Uses `spawn`
  * with manual chunk collection rather than execa's `encoding: 'buffer'`, which
  * Bun's child_process shim rejects. Binary-safe, unlike captureRemote (utf8). A
@@ -103,8 +126,16 @@ export const remoteTarball = (
 export const remoteStreaming = (
     target: string,
     cmd: string,
-    onLine?: (line: string) => void
-): Promise<void> => streaming('ssh', [...SSH_OPTS, target, cmd], onLine)
+    onLine?: (line: string) => void,
+    cancelSignal?: AbortSignal
+): Promise<void> =>
+    streaming(
+        'ssh',
+        [...SSH_OPTS, target, cmd],
+        onLine,
+        undefined,
+        cancelSignal
+    )
 
 /**
  * Capture stdout of a remote Bash script delivered over SSH stdin (`bash -s`),
@@ -147,9 +178,16 @@ export const captureRemoteScript = async (
 export const remoteStreamingScript = (
     target: string,
     script: string,
-    onLine?: (line: string) => void
+    onLine?: (line: string) => void,
+    cancelSignal?: AbortSignal
 ): Promise<void> =>
-    streaming('ssh', [...SSH_OPTS, target, 'bash -s'], onLine, script)
+    streaming(
+        'ssh',
+        [...SSH_OPTS, target, 'bash -s'],
+        onLine,
+        script,
+        cancelSignal
+    )
 
 // Allocates a PTY so remote programs (e.g. wget) detect a terminal and show
 // their native progress bar rather than falling back to dot-style output.
@@ -277,7 +315,8 @@ export const streaming = async (
     cmd: string,
     args: string[],
     onLine?: (line: string) => void,
-    input?: string
+    input?: string,
+    cancelSignal?: AbortSignal
 ): Promise<void> => {
     try {
         const proc = execa(cmd, args, {
@@ -288,6 +327,12 @@ export const streaming = async (
                 input === undefined ? (onLine ? 'ignore' : 'inherit') : 'pipe',
             stdout: onLine ? 'pipe' : 'inherit',
             stderr: onLine ? 'pipe' : 'inherit',
+            // Kills the LOCAL child (SIGTERM, then SIGKILL) when the signal
+            // fires. Killing a dead client's session is not something sshd
+            // guarantees without a PTY, so the remote command can survive —
+            // callers that must stop it too have to send an explicit remote
+            // kill (see killLeasedRunProcessesCommand in lease.ts).
+            cancelSignal,
         })
         if (input !== undefined) proc.stdin?.end(input)
         activeProcs.add(proc as unknown as KillableProc)

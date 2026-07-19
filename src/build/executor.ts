@@ -37,7 +37,10 @@ import {
     sweepStaleDiagnosticsCommand,
 } from '@/build/diagnostics.ts'
 import { log } from '@/log.ts'
-import { acquireRunLease } from '@/build/lease.ts'
+import {
+    acquireRunLease,
+    killLeasedRunProcessesCommand,
+} from '@/build/lease.ts'
 
 export type BuildPhaseOptions = {
     keepVm?: boolean
@@ -68,6 +71,89 @@ export const buildWritableRepoCommand = (
         )
     }
     return commands.join(' && ')
+}
+
+/** How long an aborted build may take to settle before cleanup proceeds
+ *  anyway — generous enough for a killed SSH child to exit, bounded so a
+ *  wedged connection cannot hang the process forever. */
+export const ABORT_SETTLE_MS = 60_000
+
+/** Resolve `true` once `work` settles, `false` if `ms` elapses first. */
+const settledWithin = async (
+    work: Promise<unknown>,
+    ms: number
+): Promise<boolean> => {
+    let timer: ReturnType<typeof setTimeout> | undefined
+    try {
+        return await Promise.race([
+            work.then(
+                () => true,
+                () => true
+            ),
+            // No unref(): Bun does not reliably fire unref'd timers, and the
+            // finally below always clears it once the work settles.
+            new Promise<boolean>(resolve => {
+                timer = setTimeout(() => resolve(false), ms)
+            }),
+        ])
+    } finally {
+        if (timer !== undefined) clearTimeout(timer)
+    }
+}
+
+export type LeasedWork = {
+    /** The leased work. Its `cancelSignal` aborts — with the explanatory
+     *  lease-lost error as the reason — the moment the lease is lost. */
+    run: (cancelSignal: AbortSignal) => Promise<void>
+    /** Rejects once the run lease is confirmed reaped (see `RunLease.lost`). */
+    lost: Promise<never>
+    /** Explicitly terminate the run's remote processes. Killing the local ssh
+     *  client is not enough — no PTY is allocated, so the remote packer would
+     *  otherwise keep running until its own communicator timeout. Must never
+     *  reject. */
+    terminateRemote: () => Promise<void>
+    /** Overrides ABORT_SETTLE_MS (tests). */
+    settleMs?: number
+    /** Called when aborted work fails to settle within the window. */
+    onStalled?: () => void
+}
+
+/**
+ * Race leased work against the lease's `lost` promise, cancelling the work
+ * for real when the lease goes: fire the abort signal (which the SSH layer
+ * turns into a killed child), terminate the remote processes the same way the
+ * stale-lease sweep would, and only return — letting the caller's cleanup
+ * `finally` run — once the work has settled or a bounded settle window
+ * elapsed. Without a lost lease the work's outcome passes through untouched.
+ */
+export const raceLeasedWork = async (leased: LeasedWork): Promise<void> => {
+    const abort = new AbortController()
+    // The signal's reason is the explanatory lease-lost error, so aborted
+    // layers (runWithRetries) rethrow it rather than a generic cancellation.
+    void leased.lost.catch((err: Error) => abort.abort(err))
+    const work = leased.run(abort.signal)
+    // The race can abandon `work`; keep a handler attached so its late
+    // rejection can never become an unhandled rejection.
+    void work.catch(() => undefined)
+    try {
+        await Promise.race([work, leased.lost])
+    } catch (err) {
+        if (abort.signal.aborted) {
+            // Lease lost: the sweep has already destroyed this run's VM and
+            // temp directories. Kill the surviving remote processes exactly
+            // like the sweep does, then wait for the work to settle so
+            // cleanup never runs underneath a still-live build. Both waits
+            // share one bounded window: against an unreachable node the
+            // remote kill itself can hang.
+            const remoteKill = leased.terminateRemote()
+            const settled = await settledWithin(
+                Promise.allSettled([work, remoteKill]),
+                leased.settleMs ?? ABORT_SETTLE_MS
+            )
+            if (!settled) leased.onStalled?.()
+        }
+        throw err
+    }
 }
 
 export const buildPhase = async (
@@ -105,7 +191,7 @@ export const buildPhase = async (
     let startedAt = 0
     let effectiveBuildVmid: number | undefined
 
-    try {
+    const runLeased = async (cancelSignal: AbortSignal): Promise<void> => {
         if (layout.needsBuildNetwork) {
             slot = await allocateBuildSlot(env)
             log.info(
@@ -183,7 +269,8 @@ export const buildPhase = async (
         await remoteStreaming(
             env.SSH_TARGET,
             `flock -x /var/lib/cofoundry/packer-init.lock packer init ${shellQuote(recipeHcl)}`,
-            onLine
+            onLine,
+            cancelSignal
         )
 
         const packerArgs = [
@@ -285,15 +372,20 @@ export const buildPhase = async (
                     await remoteStreamingScript(
                         env.SSH_TARGET,
                         `${watchdog}${recorder}${packerCommand}`,
-                        onLine
+                        onLine,
+                        cancelSignal
                     )
                 },
-                onLine
+                onLine,
+                cancelSignal
             )
         } catch (err) {
             // Collect BEFORE the outer finally wipes the vars file (the source of
             // the ephemeral secret used to scrub logs) and the tmpfs recorder dir.
-            if (diagEnabled) {
+            // Skip on a lost lease: the sweep already destroyed the recorder
+            // directory and VM, and a doomed collection would only eat into
+            // the bounded settle window that gates cleanup.
+            if (diagEnabled && !cancelSignal.aborted) {
                 await collectDiagnostics({
                     env,
                     recipe,
@@ -310,6 +402,33 @@ export const buildPhase = async (
         } finally {
             unregisterVmCleanup?.()
         }
+    }
+
+    try {
+        // `lease.lost` rejects once the heartbeat confirms the lease was
+        // reaped (or the node stayed unreachable past the stale window) — at
+        // that point another admission has destroyed this run's VM and temp
+        // directories, so the run is cancelled for real instead of waiting
+        // out packer's communicator timeout: the abort signal kills the local
+        // SSH child, an explicit remote kill (the sweep's own pkill pattern)
+        // terminates the remote packer, and the cleanup below only starts
+        // once the work has settled or the bounded window elapsed.
+        await raceLeasedWork({
+            run: runLeased,
+            lost: lease.lost,
+            terminateRemote: () =>
+                captureRemote(
+                    env.SSH_TARGET,
+                    killLeasedRunProcessesCommand(remoteBuildTmpDir)
+                ).then(
+                    () => undefined,
+                    () => undefined
+                ),
+            onStalled: () =>
+                log.warn(
+                    `${recipe.name}: aborted build did not settle within ${ABORT_SETTLE_MS / 1000}s — cleaning up anyway`
+                ),
+        })
     } finally {
         // The injector modifies only this build's writable snapshot copy. The
         // private temp tree also contains vars files, private keys, and
@@ -322,7 +441,8 @@ export const buildPhase = async (
             ).catch(() => {})
         }
         await captureRemote(env.SSH_TARGET, secretCleanupCmd).catch(() => {})
-        await slot?.release()
+        // Widened: assigned inside runLeased, which flow analysis cannot see.
+        await (slot as BuildSlot | null)?.release()
         await lease.release()
     }
 

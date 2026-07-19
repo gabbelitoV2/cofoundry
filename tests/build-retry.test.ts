@@ -34,4 +34,58 @@ describe('build retry policy', () => {
             })
         ).rejects.toThrow('failure 2')
     })
+
+    test('an abort mid-attempt stops retries and surfaces the abort reason', async () => {
+        const abort = new AbortController()
+        const reason = new Error('build run lease for debian-12 was lost')
+        let calls = 0
+        const promise = runWithRetries(
+            3,
+            async () => {
+                calls++
+                // Simulate the SSH child dying because the signal fired: the
+                // attempt's own error must NOT win over the abort reason, and
+                // no further attempts may start.
+                abort.abort(reason)
+                throw new Error('ssh child killed')
+            },
+            undefined,
+            abort.signal
+        )
+        await expect(promise).rejects.toBe(reason)
+        expect(calls).toBe(1)
+    })
+
+    test('an already-aborted signal prevents any attempt from starting', async () => {
+        const abort = new AbortController()
+        const reason = new Error('lease lost before the packer run started')
+        abort.abort(reason)
+        let calls = 0
+        await expect(
+            runWithRetries(
+                2,
+                async () => {
+                    calls++
+                },
+                undefined,
+                abort.signal
+            )
+        ).rejects.toBe(reason)
+        expect(calls).toBe(0)
+    })
+
+    test('a signal that never aborts leaves the retry flow unchanged', async () => {
+        const abort = new AbortController()
+        let calls = 0
+        await runWithRetries(
+            2,
+            async () => {
+                calls++
+                if (calls < 2) throw new Error('transient')
+            },
+            undefined,
+            abort.signal
+        )
+        expect(calls).toBe(2)
+    })
 })

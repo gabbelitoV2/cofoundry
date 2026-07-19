@@ -125,8 +125,11 @@ export const remoteStreamingPty = (
     cmd: string
 ): Promise<void> => streaming('ssh', [...SSH_OPTS, '-t', '-t', target, cmd])
 
-// Wget exit codes worth surfacing. See man wget(1) EXIT STATUS.
-const WGET_EXIT: Record<number, string> = {
+// Wget exit codes worth surfacing. See man wget(1) EXIT STATUS. Code 9 is
+// ours, not wget's (wget stops at 8): assetFetchCommand's validation step
+// exits 9 when a completed download does not match the published checksum, so
+// the failure reads as what it is instead of a generic wget error.
+export const WGET_EXIT: Record<number, string> = {
     1: 'generic error',
     2: 'parse error (bad command line)',
     3: 'file I/O error (cannot write to destination)',
@@ -135,6 +138,7 @@ const WGET_EXIT: Record<number, string> = {
     6: 'authentication failure',
     7: 'protocol error',
     8: 'server returned an error response (e.g. 404 — URL may be stale)',
+    9: 'downloaded file failed checksum verification — expected hash did not match',
 }
 
 // A wget failure that carries its exit code, so callers can distinguish a
@@ -151,7 +155,10 @@ export class WgetError extends Error {
 }
 
 // wget exit codes that will never succeed on retry: a stale/absent URL and a
-// malformed command line. Everything else is treated as potentially transient.
+// malformed command line. Everything else is treated as potentially transient
+// — including checksum failure (9): genuine transport corruption heals on
+// retry, and a deterministic mismatch (wrong published hash selected) is now
+// diagnosable from the logged expected/actual hashes on every attempt.
 export const isPermanentWgetExit = (code: number): boolean =>
     code === 8 || code === 2
 

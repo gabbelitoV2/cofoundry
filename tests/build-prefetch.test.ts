@@ -2,13 +2,14 @@ import { describe, expect, test } from 'bun:test'
 import { spawnSync } from 'node:child_process'
 import {
     assetFetchCommand,
+    CHECKSUM_EXTRACT_PY,
     cloudbaseInitMsiCachePath,
     cloudbaseInitMsiUrl,
     pinnedChecksum,
     virtioWinIsoFilename,
     virtioWinIsoUrl,
 } from '@/build/prefetch.ts'
-import { isPermanentWgetExit } from '@/build/remote.ts'
+import { isPermanentWgetExit, WGET_EXIT } from '@/build/remote.ts'
 import {
     CLOUDBASE_INIT_DEFAULT_VERSION,
     VIRTIO_WIN_DEFAULT_VERSION,
@@ -59,6 +60,127 @@ describe('assetFetchCommand', () => {
         // fetch is diagnosable; --show-progress still forces the transfer bar.
         expect(command).toContain('wget -nv --show-progress')
         expect(command).not.toContain('wget -q')
+    })
+
+    test('threads the URL basename through to the checksum extraction', () => {
+        const command = assetFetchCommand(
+            '/var/lib/vz/template/iso/packer-ubuntu-24.04.iso',
+            'https://releases.ubuntu.com/24.04/ubuntu-24.04.4-live-server-amd64.iso?query=1',
+            {
+                url: 'https://releases.ubuntu.com/24.04/SHA256SUMS',
+                filenamePattern:
+                    'ubuntu-24\\.04(\\.\\d+)?-live-server-amd64\\.iso',
+            }
+        )
+        // Pattern first, then the exact URL basename (query string stripped) as
+        // argv[2] of the extraction one-liner.
+        expect(command).toContain(
+            "'ubuntu-24\\.04(\\.\\d+)?-live-server-amd64\\.iso' 'ubuntu-24.04.4-live-server-amd64.iso'"
+        )
+        const result = spawnSync('bash', ['-n'], {
+            input: command,
+            encoding: 'utf8',
+        })
+        expect(result.status, result.stderr).toBe(0)
+    })
+
+    test('reports a checksum mismatch with exit 9 and the hashes involved', () => {
+        const command = assetFetchCommand(
+            '/var/lib/vz/template/iso/packer-ubuntu-24.04.iso',
+            'https://releases.ubuntu.com/24.04/ubuntu-24.04.4-live-server-amd64.iso',
+            {
+                url: 'https://releases.ubuntu.com/24.04/SHA256SUMS',
+                filenamePattern:
+                    'ubuntu-24\\.04(\\.\\d+)?-live-server-amd64\\.iso',
+            }
+        )
+        // Deleted (never resumed as garbage), diagnosed, and surfaced under an
+        // exit code outside wget's 0–8 range instead of the misleading
+        // "wget exit 1 — generic error".
+        expect(command).toContain('rm -f "$tmp"; exit 9')
+        expect(command).toContain('failed checksum verification')
+        expect(command).toContain('expected=${expected:-none}')
+        expect(command).toContain('actual=${actual:-none}')
+        expect(command).toContain('entry=${matched:-none}')
+        expect(command).toContain(
+            "'https://releases.ubuntu.com/24.04/SHA256SUMS'"
+        )
+    })
+
+    test('keeps exit 1 for a failed size check when no checksum is configured', () => {
+        const command = assetFetchCommand(
+            '/var/lib/vz/template/iso/packer-debian.iso',
+            'https://example.com/debian.iso'
+        )
+        expect(command).toContain('rm -f "$tmp"; exit 1')
+        expect(command).not.toContain('exit 9')
+    })
+})
+
+// The one-liner needs a local python; the host may only ship `python` or the
+// Windows `py` launcher (or none at all). Skip rather than fail when no
+// interpreter is available — the code under test always runs on the Proxmox
+// node, which has python3.
+const pythonBin = ['python3', 'python', 'py'].find(bin => {
+    const r = spawnSync(bin, ['--version'], { encoding: 'utf8' })
+    return r.status === 0 && `${r.stdout}${r.stderr}`.includes('Python')
+})
+const pyTest = pythonBin ? test : test.skip
+
+describe('CHECKSUM_EXTRACT_PY', () => {
+    const extract = (sums: string, pattern: string, base: string): string => {
+        const r = spawnSync(
+            pythonBin!,
+            ['-c', CHECKSUM_EXTRACT_PY, pattern, base],
+            {
+                input: sums,
+                encoding: 'utf8',
+            }
+        )
+        expect(r.status, r.stderr).toBe(0)
+        return r.stdout.trim()
+    }
+
+    // Reproduces https://releases.ubuntu.com/24.04/SHA256SUMS while 24.04.3
+    // and 24.04.4 were both listed: the recipe's iso_filename_re matches BOTH
+    // lines, so first-match extraction returned 24.04.3's hash while iso_url
+    // downloaded 24.04.4 — a deterministic mismatch on every attempt.
+    const OLD_HASH = 'c3514bf0' + 'ab'.repeat(28)
+    const NEW_HASH = 'e907d92e' + 'cd'.repeat(28)
+    const SUMS =
+        `${OLD_HASH} *ubuntu-24.04.3-live-server-amd64.iso\n` +
+        `${NEW_HASH} *ubuntu-24.04.4-live-server-amd64.iso\n`
+    const PATTERN = 'ubuntu-24\\.04(\\.\\d+)?-live-server-amd64\\.iso'
+
+    pyTest(
+        'prefers the exact URL-basename line over the first regex match',
+        () => {
+            expect(
+                extract(SUMS, PATTERN, 'ubuntu-24.04.4-live-server-amd64.iso')
+            ).toBe(`${NEW_HASH} ubuntu-24.04.4-live-server-amd64.iso`)
+        }
+    )
+
+    pyTest('falls back to the first regex match without an exact hit', () => {
+        // iso_filename_re exists for mirrors whose sums-file names differ from
+        // the URL basename — that semantic must survive.
+        expect(
+            extract(SUMS, PATTERN, 'ubuntu-24.04.9-live-server-amd64.iso')
+        ).toBe(`${OLD_HASH} ubuntu-24.04.3-live-server-amd64.iso`)
+    })
+
+    pyTest(
+        'matches the "<hash>  <name>" format without the binary marker',
+        () => {
+            const sums = `${NEW_HASH.toUpperCase()}  plain.iso\n`
+            expect(extract(sums, 'no-regex-match', 'plain.iso')).toBe(
+                `${NEW_HASH} plain.iso`
+            )
+        }
+    )
+
+    pyTest('prints nothing when neither basename nor pattern matches', () => {
+        expect(extract(SUMS, 'nope\\.iso', 'nope.iso')).toBe('')
     })
 })
 
@@ -167,5 +289,19 @@ describe('isPermanentWgetExit', () => {
     test('treats network/generic faults as retryable', () => {
         for (const code of [1, 3, 4, 5, 7])
             expect(isPermanentWgetExit(code)).toBe(false)
+    })
+
+    test('treats a checksum mismatch (9) as retryable, not permanent', () => {
+        // Genuine transport corruption heals on retry; a deterministic
+        // mismatch is now visible in the log on every attempt instead.
+        expect(isPermanentWgetExit(9)).toBe(false)
+    })
+})
+
+describe('WGET_EXIT', () => {
+    test('maps our checksum-failure exit 9 to a self-explanatory message', () => {
+        expect(WGET_EXIT[9]).toBe(
+            'downloaded file failed checksum verification — expected hash did not match'
+        )
     })
 })

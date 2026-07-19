@@ -162,7 +162,14 @@ echo local-lvm
 const calls = async (fx: Fixture) =>
     (await readFile(fx.callsLog, 'utf8')).split('\n').filter(Boolean)
 
-describe('cf-cluster-templates', () => {
+// cf-cluster-templates.sh is Proxmox-node orchestration: it drives ssh, scp,
+// qmrestore, and `mapfile < <(...)` process substitution that hang under Git
+// Bash on Windows. The script only ever runs on a Linux node, so gate the suite
+// to POSIX rather than exercise it under an environment it never targets — the
+// same rationale as the python-dependent prefetch tests.
+const suite = process.platform === 'win32' ? describe.skip : describe
+
+suite('cf-cluster-templates', () => {
     test('verifies the copy and restores a template on every online node', async () => {
         const fx = await setup()
         const result = await execa('bash', [...fx.args, SHA256], {

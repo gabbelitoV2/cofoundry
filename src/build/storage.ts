@@ -4,18 +4,23 @@ import { captureRemote } from '@/build/remote.ts'
 import { shellQuote } from '@/util.ts'
 
 /**
- * Proxmox storage types whose volumes are regular files on a mounted path.
- * Only these can hold the file-backed qcow2 that the disk-shrink post-processor
+ * Proxmox storage types whose volumes are regular files on a mounted path,
+ * i.e. `pvesm path <volid>` yields a local file `test -f` accepts. Only these
+ * can hold the file-backed qcow2 that the disk-shrink post-processor
  * (recipes/_shared/post/shrink-disk.sh) resizes with `qemu-img resize --shrink`.
  * Block/dataset backends (zfspool, lvmthin, rbd, ...) make that script refuse —
  * hours into the build, inside vzdump-and-cleanup.sh's `set -e` — so they must
  * be rejected before Packer ever starts.
+ *
+ * `glusterfs` is deliberately absent: although the volume is qcow2 on a FUSE
+ * mount, GlusterfsPlugin::path() returns a `gluster://server/volume/...` URI
+ * for VM images, so the shrink script's `test -f "$path"` guard would still
+ * refuse it at post-processor time.
  */
 export const FILE_BACKED_STORAGE_TYPES: ReadonlySet<string> = new Set([
     'dir',
     'nfs',
     'cifs',
-    'glusterfs',
     'btrfs',
 ])
 

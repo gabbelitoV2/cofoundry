@@ -90,6 +90,20 @@ describe('assertShrinkStorageSupported', () => {
         expect(err?.message).toContain('remove final_disk_size')
     })
 
+    test('rejects glusterfs — pvesm path yields gluster:// URIs, not files', async () => {
+        const err = await assertShrinkStorageSupported(
+            env,
+            [recipe('windows-server-2025', '32G')],
+            execReturning('glusterfs\n')
+        ).then(
+            () => undefined,
+            (e: unknown) => e as Error
+        )
+        expect(err).toBeInstanceOf(Error)
+        expect(err?.message).toContain('"glusterfs"')
+        expect(err?.message).toContain('dir-backed storage')
+    })
+
     test('rejects when the storage is not reported by pvesm status', async () => {
         await expect(
             assertShrinkStorageSupported(

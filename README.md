@@ -6,14 +6,15 @@ installations, then exports `.vma.zst` artifacts ready to be served by
 
 ## Documentation
 
-| Document                             | Description                                                        |
-| ------------------------------------ | ------------------------------------------------------------------ |
-| [Setup](docs/setup.md)               | First-time setup — local dependencies, Proxmox node config, `.env` |
-| [Usage](docs/usage.md)               | Building templates, checking for updates, publishing, cleanup      |
-| [Recipes](docs/recipes.md)           | Supported templates and how to add new ones                        |
-| [Windows recipes](docs/windows.md)   | Windows configuration and troubleshooting                          |
-| [Architecture](docs/architecture.md) | Source layout and implementation boundaries                        |
-| [Diagnostics](docs/diagnostics.md)   | How build-failure evidence is recorded and collected              |
+| Document                             | Description                                                           |
+| ------------------------------------ | --------------------------------------------------------------------- |
+| [Setup](docs/setup.md)               | First-time setup — local dependencies, Proxmox node config, `.env`    |
+| [Usage](docs/usage.md)               | Building templates, checking for updates, publishing, cleanup         |
+| [Recipes](docs/recipes.md)           | Supported templates and how to add new ones                           |
+| [Windows recipes](docs/windows.md)   | Windows configuration and troubleshooting                             |
+| [Architecture](docs/architecture.md) | Source layout and implementation boundaries                           |
+| [Diagnostics](docs/diagnostics.md)   | How build-failure evidence is recorded and collected                  |
+| [Coport](docs/coport.md)             | Node-side installer that restores published templates via `qmrestore` |
 
 ## Supported recipes
 

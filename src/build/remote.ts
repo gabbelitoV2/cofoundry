@@ -126,8 +126,16 @@ export const remoteTarball = (
 export const remoteStreaming = (
     target: string,
     cmd: string,
-    onLine?: (line: string) => void
-): Promise<void> => streaming('ssh', [...SSH_OPTS, target, cmd], onLine)
+    onLine?: (line: string) => void,
+    cancelSignal?: AbortSignal
+): Promise<void> =>
+    streaming(
+        'ssh',
+        [...SSH_OPTS, target, cmd],
+        onLine,
+        undefined,
+        cancelSignal
+    )
 
 /**
  * Run a remote Bash script without putting its contents in sshd's process
@@ -137,9 +145,16 @@ export const remoteStreaming = (
 export const remoteStreamingScript = (
     target: string,
     script: string,
-    onLine?: (line: string) => void
+    onLine?: (line: string) => void,
+    cancelSignal?: AbortSignal
 ): Promise<void> =>
-    streaming('ssh', [...SSH_OPTS, target, 'bash -s'], onLine, script)
+    streaming(
+        'ssh',
+        [...SSH_OPTS, target, 'bash -s'],
+        onLine,
+        script,
+        cancelSignal
+    )
 
 // Allocates a PTY so remote programs (e.g. wget) detect a terminal and show
 // their native progress bar rather than falling back to dot-style output.
@@ -239,7 +254,8 @@ export const streaming = async (
     cmd: string,
     args: string[],
     onLine?: (line: string) => void,
-    input?: string
+    input?: string,
+    cancelSignal?: AbortSignal
 ): Promise<void> => {
     try {
         const proc = execa(cmd, args, {
@@ -250,6 +266,12 @@ export const streaming = async (
                 input === undefined ? (onLine ? 'ignore' : 'inherit') : 'pipe',
             stdout: onLine ? 'pipe' : 'inherit',
             stderr: onLine ? 'pipe' : 'inherit',
+            // Kills the LOCAL child (SIGTERM, then SIGKILL) when the signal
+            // fires. Killing a dead client's session is not something sshd
+            // guarantees without a PTY, so the remote command can survive —
+            // callers that must stop it too have to send an explicit remote
+            // kill (see killLeasedRunProcessesCommand in lease.ts).
+            cancelSignal,
         })
         if (input !== undefined) proc.stdin?.end(input)
         activeProcs.add(proc as unknown as KillableProc)

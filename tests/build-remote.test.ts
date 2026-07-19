@@ -32,4 +32,35 @@ describe('streaming', () => {
 
         expect(lines.sort()).toEqual(['err', 'out'])
     })
+
+    test('cancelSignal kills the local child instead of waiting it out', async () => {
+        const abort = new AbortController()
+        const started = Date.now()
+        // Without cancellation this would block for 30 s and overrun the
+        // test timeout; a fired signal must kill the child promptly and
+        // reject.
+        const pending = streaming(
+            'bash',
+            ['-c', 'sleep 30'],
+            () => undefined,
+            undefined,
+            abort.signal
+        )
+        setTimeout(() => abort.abort(new Error('lease lost')), 50)
+        await expect(pending).rejects.toThrow()
+        expect(Date.now() - started).toBeLessThan(10_000)
+    }, 15_000)
+
+    test('an unfired cancelSignal leaves a successful run untouched', async () => {
+        const abort = new AbortController()
+        const lines: string[] = []
+        await streaming(
+            'bash',
+            ['-c', 'printf "done\\n"'],
+            line => lines.push(line),
+            undefined,
+            abort.signal
+        )
+        expect(lines).toEqual(['done'])
+    })
 })

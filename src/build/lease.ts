@@ -32,8 +32,9 @@ export const HEARTBEAT_LOST_AFTER_FAILURES = Math.ceil(
 export type RunLease = {
     id: string
     /** Rejects once the lease is confirmed reaped, or the node has been
-     *  unreachable past the stale window. Race leased work against it, the
-     *  way pipeline races against the maintenance lock's `lost`. */
+     *  unreachable past the stale window. Race leased work against it via
+     *  `raceLeasedWork` (executor.ts), which also aborts and terminates the
+     *  losing work instead of leaving it running. */
     lost: Promise<never>
     setVmid: (vmid: number) => Promise<void>
     release: () => Promise<void>
@@ -187,6 +188,26 @@ trap - EXIT
  */
 export const runLeaseHeartbeatCommand = (file: string): string =>
     `if [ -f ${shellQuote(file)} ]; then touch ${shellQuote(file)}; else exit ${HEARTBEAT_GONE_EXIT}; fi`
+
+/**
+ * Kill every remote process whose command line names this run's temp
+ * directory — the same reap `sweepRunLeasesScript` applies to a stale run. A
+ * local lease-lost abort sends this over a fresh SSH connection because
+ * killing the local ssh client is not enough: the packer session runs without
+ * a PTY, so the remote command survives a dead client.
+ *
+ * The first literal character is wrapped in a bracket expression (the classic
+ * `pgrep [f]oo` trick): `pkill -f` matches whole command lines, and the shell
+ * sshd spawns to run this command embeds the pattern in its own argv — an
+ * unescaped pattern would SIGKILL that shell mid-flight. The sweep needs no
+ * such guard only because its pattern rides in an unexpanded `"$tmpdir"`.
+ * `pkill` exits non-zero when nothing matched (the sweep may already have
+ * killed everything), hence the trailing `|| true`.
+ */
+export const killLeasedRunProcessesCommand = (remoteTmpDir: string): string => {
+    const pattern = remoteTmpDir.replace(/[A-Za-z0-9]/, '[$&]')
+    return `pkill -9 -f -- ${shellQuote(pattern)} >/dev/null 2>&1 || true`
+}
 
 export type HeartbeatState = { failures: number }
 

@@ -10,6 +10,7 @@ import {
     evaluateHeartbeat,
     HEARTBEAT_GONE_EXIT,
     HEARTBEAT_LOST_AFTER_FAILURES,
+    killLeasedRunProcessesCommand,
     OWNED_VMID_DIR,
     RUN_LEASE_DIR,
     runLeaseHeartbeatCommand,
@@ -149,5 +150,49 @@ describe('run-lease heartbeat lost detection', () => {
         }
         expect(evaluateHeartbeat(state, 255)).toBe('lost')
         expect(state.failures).toBe(HEARTBEAT_LOST_AFTER_FAILURES)
+    })
+})
+
+describe('killLeasedRunProcessesCommand', () => {
+    const tmpDir = '/dump/cofoundry-tmp/build-debian-12-abc'
+
+    test('mirrors the sweep: kill by the run temp directory, force -9', () => {
+        const cmd = killLeasedRunProcessesCommand(tmpDir)
+        expect(cmd).toContain(
+            "pkill -9 -f -- '/[d]ump/cofoundry-tmp/build-debian-12-abc'"
+        )
+        // The stale-lease sweep must keep using the same reap pattern, so a
+        // local abort leaves the node exactly as a sweep would.
+        expect(sweepRunLeasesScript()).toContain('pkill -9 -f -- "$tmpdir"')
+        const syntax = spawnSync('bash', ['-n'], {
+            input: cmd,
+            encoding: 'utf8',
+        })
+        expect(syntax.status, syntax.stderr).toBe(0)
+    })
+
+    test('the pattern matches the run but never its own command line', () => {
+        const cmd = killLeasedRunProcessesCommand(tmpDir)
+        const quoted = /'([^']+)'/.exec(cmd)
+        expect(quoted).not.toBeNull()
+        const pattern = new RegExp(quoted![1]!)
+        // Matches a real packer/tail argv that names the run directory...
+        expect(
+            pattern.test(`packer build -var-file ${tmpDir}/repo/v.json`)
+        ).toBe(true)
+        // ...but not the shell that carries the kill command itself, which
+        // pkill -9 would otherwise terminate mid-flight.
+        expect(pattern.test(`bash -c ${cmd}`)).toBe(false)
+    })
+
+    test('exits 0 when nothing matched (the sweep already killed the run)', () => {
+        // pkill returns non-zero on no match — and may be missing entirely on
+        // dev machines — so the command must still succeed either way.
+        const result = spawnSync(
+            'bash',
+            ['-c', killLeasedRunProcessesCommand('/nonexistent/cf-tmp-none')],
+            { encoding: 'utf8' }
+        )
+        expect(result.status, result.stderr).toBe(0)
     })
 })

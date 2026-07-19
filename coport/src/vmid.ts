@@ -1,28 +1,98 @@
-import { access } from 'node:fs/promises'
+import { readFile, readdir } from 'node:fs/promises'
 import type { Template } from '@/registry/schema.ts'
 
-export const vmidTaken = async (vmid: number): Promise<boolean> => {
-    const paths = [
-        `/etc/pve/qemu-server/${vmid}.conf`,
-        `/etc/pve/lxc/${vmid}.conf`,
-    ]
-    for (const p of paths) {
-        try {
-            await access(p)
-            return true
-        } catch {
-            // not found — continue
-        }
+// VMIDs are cluster-global, but /etc/pve/qemu-server and /etc/pve/lxc are
+// symlinks to the LOCAL node's directory only. Detection must cover every
+// node, or we hand out a "free" VMID that qmrestore later rejects — after
+// the multi-GB artifact has already been downloaded.
+const PVE_DIR = '/etc/pve'
+
+/**
+ * Parse the pmxcfs-generated `.vmlist`: a JSON registry of every guest in
+ * the cluster, shaped `{"version": N, "ids": {"<vmid>": {...}, ...}}`. The
+ * `ids` key is omitted entirely when the cluster has no guests. Returns null
+ * when the file is missing or malformed so callers can fall back to scanning
+ * per-node config directories.
+ */
+export const readVmlist = async (
+    pveDir = PVE_DIR
+): Promise<Set<number> | null> => {
+    let raw: string
+    try {
+        raw = await readFile(`${pveDir}/.vmlist`, 'utf8')
+    } catch {
+        return null
     }
-    return false
+    let parsed: unknown
+    try {
+        parsed = JSON.parse(raw)
+    } catch {
+        return null
+    }
+    if (parsed === null || typeof parsed !== 'object') return null
+    const ids = (parsed as { ids?: unknown }).ids ?? {}
+    if (ids === null || typeof ids !== 'object' || Array.isArray(ids)) {
+        return null
+    }
+    const taken = new Set<number>()
+    for (const key of Object.keys(ids)) {
+        const vmid = Number(key)
+        if (Number.isInteger(vmid) && vmid > 0) taken.add(vmid)
+    }
+    return taken
 }
 
-export const findFreeVmid = async (
+/**
+ * Fallback when `.vmlist` is unavailable: enumerate `<vmid>.conf` files under
+ * every node's qemu-server/ and lxc/ directories, plus the local-node
+ * symlinks so degraded setups keep at least the old local-only detection.
+ */
+export const scanGuestConfigs = async (
+    pveDir = PVE_DIR
+): Promise<Set<number>> => {
+    const dirs = [`${pveDir}/qemu-server`, `${pveDir}/lxc`]
+    try {
+        for (const node of await readdir(`${pveDir}/nodes`)) {
+            dirs.push(
+                `${pveDir}/nodes/${node}/qemu-server`,
+                `${pveDir}/nodes/${node}/lxc`
+            )
+        }
+    } catch {
+        // nodes/ missing or unreadable — the local symlinks are still scanned
+    }
+    const taken = new Set<number>()
+    for (const dir of dirs) {
+        let entries: string[]
+        try {
+            entries = await readdir(dir)
+        } catch {
+            continue
+        }
+        for (const entry of entries) {
+            const m = /^(\d+)\.conf$/.exec(entry)
+            if (m) taken.add(Number(m[1]))
+        }
+    }
+    return taken
+}
+
+/** Every VMID currently in use anywhere in the cluster. */
+export const takenVmids = async (pveDir = PVE_DIR): Promise<Set<number>> =>
+    (await readVmlist(pveDir)) ?? scanGuestConfigs(pveDir)
+
+export const vmidTaken = async (
+    vmid: number,
+    pveDir = PVE_DIR
+): Promise<boolean> => (await takenVmids(pveDir)).has(vmid)
+
+export const findFreeVmid = (
     start: number,
-    reserved: Set<number>
-): Promise<number> => {
+    reserved: Set<number>,
+    taken: Set<number>
+): number => {
     let id = start
-    while (reserved.has(id) || (await vmidTaken(id))) {
+    while (reserved.has(id) || taken.has(id)) {
         id++
     }
     return id
@@ -40,8 +110,12 @@ export const resolveVmids = async (
     vmidStart: number,
     overwriteTaken = false,
     /** Preferred VMID per template name (e.g. from the install cache). */
-    preferred?: Map<string, number>
+    preferred?: Map<string, number>,
+    pveDir = PVE_DIR
 ): Promise<VmidAssignment[]> => {
+    // Snapshot cluster-wide usage once; VMIDs assigned within this batch are
+    // tracked separately in `reserved`.
+    const taken = await takenVmids(pveDir)
     const reserved = new Set<number>()
     const assignments: VmidAssignment[] = []
 
@@ -49,7 +123,7 @@ export const resolveVmids = async (
         // A cached VMID the user previously installed into wins over the
         // registry's suggestion, so `--upgrade` lands in the same slot.
         const desired = preferred?.get(t.name) ?? t.suggested_vmid
-        const desiredTaken = desired ? await vmidTaken(desired) : false
+        const desiredTaken = desired ? taken.has(desired) : false
         if (
             desired &&
             !reserved.has(desired) &&
@@ -63,7 +137,7 @@ export const resolveVmids = async (
                 overwrite: desiredTaken,
             })
         } else {
-            const free = await findFreeVmid(vmidStart, reserved)
+            const free = findFreeVmid(vmidStart, reserved, taken)
             reserved.add(free)
             assignments.push({
                 template: t,

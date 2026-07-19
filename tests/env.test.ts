@@ -14,7 +14,7 @@ const VARS_TO_RESET = [
     'PVE_PORT',
     'PVE_DUMP_DIR',
     'CF_OUT_DIR',
-    'CF_SKIP_SYNC_BACK',
+    'CF_SKIP_ARTIFACT_SYNC',
     'CF_BRIDGE',
     'CF_BUILD_BRIDGE',
     'CF_STORAGE',
@@ -55,7 +55,7 @@ describe('loadEnv', () => {
         expect(env.CF_STORAGE).toBe('local')
         expect(env.CF_ISO_STORAGE).toBe('local')
         expect(env.CF_BUILD_DNS).toBe('1.1.1.1')
-        expect(env.CF_SKIP_SYNC_BACK).toBe(false)
+        expect(env.CF_SKIP_ARTIFACT_SYNC).toBe(false)
     })
 
     test('throws when a required var is missing', () => {
@@ -74,8 +74,8 @@ describe('loadEnv', () => {
         ['0', false],
         ['false', false],
         ['anything else', false],
-    ])('CF_SKIP_SYNC_BACK=%p → %p', (input, expected) => {
-        process.env.CF_SKIP_SYNC_BACK = input
-        expect(loadEnv().CF_SKIP_SYNC_BACK).toBe(expected)
+    ])('CF_SKIP_ARTIFACT_SYNC=%p → %p', (input, expected) => {
+        process.env.CF_SKIP_ARTIFACT_SYNC = input
+        expect(loadEnv().CF_SKIP_ARTIFACT_SYNC).toBe(expected)
     })
 })

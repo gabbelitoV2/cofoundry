@@ -1,0 +1,4 @@
+# Force LF in working trees regardless of core.autocrlf so that CI checkouts
+# on Windows runners (system-wide autocrlf=true) stay prettier-clean and the
+# repo's bash scripts never pick up CRLF endings.
+* text=auto eol=lf

@@ -15,11 +15,32 @@ In production, GitHub Actions runs the pipeline automatically — you only need 
 bun run cf bootstrap
 ```
 
-Answer the prompts (target host, what kinds of recipes you'll build, tmpfs
-size if asked). The command probes the node, shows you a checklist of what
-it will change, asks for confirmation, then applies. The new API token
-secret is shown at the end with an offer to append it to `.env`. Safe to
-re-run — already-done steps are detected and skipped.
+Answer the prompts for the target host and API token. The command probes the
+node, shows you a checklist of what it will change, asks for confirmation, then
+applies. The new API token secret is shown at the end with an offer to append it
+to `.env`. Safe to re-run — already-done steps are detected and skipped.
+
+Bootstrap adopts the configured build bridge's existing IPv4 `/24` (for example,
+`vmbr1` on `10.10.10.0/24`). For a new bridge it defaults to `10.0.0.0/24`.
+It verifies that the subnet, dnsmasq configuration, and DNS/DHCP listeners do
+not conflict with existing node services. It stops with an actionable error
+instead of overwriting an unrecognized configuration. The dnsmasq change is
+validated before restart and rolled back if restart fails.
+
+No subnet environment variable is required. Set `network.build_bridge` (or
+`CF_BUILD_BRIDGE`) only when the bridge is not `vmbr1`; Cofoundry reads its live
+gateway and `/24`. Bootstrap prints the selected 50-address slot block, and each
+build prints its exact reserved IP and gateway.
+
+New Proxmox API token credentials are displayed and optionally written to
+`.env` immediately after creation, before package or network setup continues.
+The token secret cannot be retrieved from Proxmox later.
+
+Bootstrap does not alter the node's `/tmp`. Build scratch data lives under
+`PVE_DUMP_DIR/cofoundry-tmp`. An older Cofoundry bootstrap may have added a
+`tmpfs /tmp tmpfs defaults,size=...` entry to `/etc/fstab`; remove that manually
+if it was created only for Cofoundry. It is not removed automatically because
+the bootstrapper cannot safely determine who owns an existing `/tmp` mount.
 
 Prerequisites: passwordless SSH into the node as root (`ssh-copy-id
 root@<pve-host>`).
@@ -59,7 +80,8 @@ apt-get update && apt-get install -y packer
 
 > Skip if you're not uploading artifacts to R2 / S3.
 
-The vzdump post-processor runs `CF_UPLOAD_CMD` on the node, so the `aws` binary must exist there:
+The vzdump post-processor runs the upload command derived from `[upload]` on
+the node, so the `aws` binary must exist there:
 
 ```sh
 apt-get install -y awscli
@@ -73,9 +95,18 @@ Recipes download their boot ISO into `/var/lib/vz/template/iso` (Proxmox's stand
 
 ### 5. NAT bridge for ISO-installer builds
 
-> Skip if you only plan to build cloud-image recipes (`ubuntu-cloud-*`, etc.). Every ISO-installer recipe — Debian/Ubuntu live/Alma/Rocky/Windows — needs this.
+All current recipes are ISO installers and need this bridge. It can be skipped
+only for a custom recipe that boots an already-installed image and does not need
+the build-network allocator.
 
-ISO installers can't rely on the qemu-guest-agent for IP discovery and Windows has no agent during install at all. Cofoundry runs them on a dedicated NAT bridge (`vmbr1`, `10.0.0.0/24`) and allocates a per-build static DHCP reservation at build time (see `src/build/netslot.ts`). Up to 50 builds can run in parallel on a single node.
+ISO installers can't rely on the qemu-guest-agent for IP discovery and Windows
+has no agent during install at all. Cofoundry runs them on a dedicated NAT bridge
+(`vmbr1` by default) and allocates a per-build static DHCP reservation from the
+bridge's live IPv4 `/24` at build time (see `src/build/netslot.ts`). Existing
+bridges and non-overlapping dnsmasq pools are adopted. The allocator selects a
+free contiguous 50-address block outside existing DHCP ranges and static hosts.
+The manual configuration below shows the default for a new bridge. Up to 50
+builds can run in parallel on a single node.
 
 **Add to `/etc/network/interfaces`:**
 
@@ -106,20 +137,25 @@ apt-get install -y dnsmasq
 **Create `/etc/dnsmasq.d/vmbr1-nat.conf`:**
 
 ```
+# Managed by Cofoundry.
 interface=vmbr1
 bind-interfaces
 dhcp-range=10.0.0.200,10.0.0.250,12h
 dhcp-option=3,10.0.0.1
-dhcp-option=6,8.8.8.8
+dhcp-option=6,1.1.1.1
 dhcp-option=option:router,10.0.0.1
+dhcp-hostsfile=/etc/dnsmasq.d/cofoundry-hosts.d
 ```
 
 ```sh
+mkdir -p /etc/dnsmasq.d/cofoundry-hosts.d /var/lib/cofoundry
+dnsmasq --test
 systemctl restart dnsmasq
-mkdir -p /var/lib/cofoundry
 ```
 
-Per-build reservations get written to `/etc/dnsmasq.d/cofoundry-slot-NN.conf` during the build and cleaned up afterward — no manual entries needed.
+Per-build reservations get written under
+`/etc/dnsmasq.d/cofoundry-hosts.d/` during the build and cleaned up afterward —
+no manual entries needed.
 
 ### 6. Weekly cleanup cron
 
@@ -132,8 +168,9 @@ cron is just one line. From a workstation that can reach the node:
 ```
 
 Or on the node itself if you have the repo checked out there. CI also runs
-`cf prune --days 7` after every build, so the cron is only needed if you
-build locally.
+`cf prune --days 7` once after each build workflow. Prune honors active run
+leases, VM media references, and age cutoffs, so it can safely overlap a build
+from another workflow. The cron is only needed if you build locally.
 
 Run `cf prune --dry-run` first to see what would be removed.
 
@@ -195,15 +232,15 @@ Generate**):
 
 **c. Set repo secrets** (Settings → Secrets → Actions):
 
-| Secret | Value |
-|---|---|
-| `TS_OAUTH_CLIENT_ID` | OAuth client ID |
-| `TS_OAUTH_SECRET` | OAuth client secret |
+| Secret               | Value               |
+| -------------------- | ------------------- |
+| `TS_OAUTH_CLIENT_ID` | OAuth client ID     |
+| `TS_OAUTH_SECRET`    | OAuth client secret |
 
 If your tag isn't `tag:ci`, also set a repo **variable** (Settings → Variables → Actions):
 
-| Variable | Value |
-|---|---|
+| Variable | Value                                                                                |
+| -------- | ------------------------------------------------------------------------------------ |
 | `TS_TAG` | Tag the OAuth client is scoped to, e.g. `tag:cofoundry`. Default if unset: `tag:ci`. |
 
 The tag here must match (a) the tag in your `tagOwners` ACL block, (b) the tag your OAuth client is scoped to, and (c) the `src` of the SSH rule. A 403 "calling actor does not have enough permissions" from the `Connect to Tailscale` step means these are out of sync.
@@ -213,100 +250,152 @@ name (`root@pve.tail-scale.ts.net`) or the 100.x IP. With Tailscale SSH
 enabled on the node, you can also omit `SSH_PRIVATE_KEY` entirely; the
 workflow skips the key-setup step and auth is brokered by the tailnet.
 
-> **Gotcha — Tailscale MagicDNS on the node breaks DNS in cloned VMs.**
-> When MagicDNS is accepted, Tailscale overwrites the node's
-> `/etc/resolv.conf` to point at `100.100.100.100` (the tailnet-only
-> resolver). Proxmox uses the node's resolver as the *default* DNS for any
-> cloud-init VM that doesn't set its own nameserver — so a clone that isn't
-> on the tailnet inherits `100.100.100.100`, can't reach it, and fails to
-> resolve anything. (On Ubuntu the clone's `/etc/resolv.conf` shows
-> `127.0.0.53`, the systemd-resolved stub — that part is normal and not the
-> problem; check `resolvectl status` for the real upstream.) The templates
-> themselves ship DNS-agnostic — nothing is baked in — so this is purely a
-> node/deploy-environment issue. Avoid it either by **deploying clones with
-> an explicit, reachable nameserver** (the fallback never triggers), or by
-> keeping the node off MagicDNS: `tailscale set --accept-dns=false` and set
-> a public node resolver (Datacenter → DNS, e.g. `1.1.1.1`).
+Tailscale MagicDNS on the Proxmox node does not affect Cofoundry builds, but it
+can affect VMs later cloned from the templates. See
+[Cloning a template](usage.md#cloning-a-template).
 
-### 3. Set repo secrets and variables
+### 3. Create a registry-writer GitHub App (optional)
 
-Go to **Settings → Secrets and variables → Actions**. Secrets hide values
-(use for credentials); Variables show values in the UI (use for resource
-names). The workflow reads each non-credential field from `vars.X` and
-falls back to `secrets.X`, so anything listed under **Variables** below
-can also be set as a Secret if you'd rather keep it hidden (e.g.
-`SSH_TARGET`, `PVE_HOST`) — set it in one place, not both.
+The workflows update two generated files on `main`:
+
+- `registry.json` after a successful template build
+- `upstream-checksums.json` after the scheduled upstream check
+
+By default they push these with the built-in `GITHUB_TOKEN`, so **you can skip
+this section entirely** unless `main` is protected by a branch ruleset — a
+ruleset the default `GITHUB_TOKEN` cannot bypass. In that case, create a
+dedicated GitHub App and add it to the ruleset bypass list; the workflows use
+the App token when `REGISTRY_APP_ID` / `REGISTRY_APP_PRIVATE_KEY` are set and
+fall back to `GITHUB_TOKEN` when they are not.
+
+**Create the app** (GitHub account/org → **Settings → Developer settings → GitHub Apps → New GitHub App**):
+
+- Name: `cofoundry-registry-writer`
+- Webhook: disabled
+- Repository permissions: **Contents: Read and write**
+- Install it on this repository only
+
+After creating the app, copy its app ID and generate a private key. Generating
+the key downloads a `.pem` file to your machine (GitHub shows it only once — if
+you lose it, generate a new one). Add both as repo secrets in the next step:
+
+- `REGISTRY_APP_ID` — the numeric app ID shown on the app's settings page.
+- `REGISTRY_APP_PRIVATE_KEY` — the **entire contents** of the downloaded
+  `.pem` file, including the `-----BEGIN RSA PRIVATE KEY-----` and
+  `-----END RSA PRIVATE KEY-----` lines and every newline between them. Paste
+  it verbatim; do not strip the header/footer or collapse it to one line. On
+  the command line you can pipe it straight in:
+
+  ```sh
+  gh secret set REGISTRY_APP_PRIVATE_KEY < ~/Downloads/cofoundry-registry-writer.*.private-key.pem
+  ```
+
+**Allow it through the branch ruleset** (repo → **Settings → Rules → Rulesets**):
+
+- Open the branch ruleset that protects `main`
+- Add a bypass entry for the `cofoundry-registry-writer` integration
+- Save the ruleset
+
+GitHub rulesets cannot allow bypass for only specific paths, so this app can
+bypass the branch ruleset for the whole branch. The workflows still stage only
+`registry.json` or `upstream-checksums.json` before pushing.
+
+### 4. Commit `cofoundry.toml`, then set repo secrets
+
+Non-secret deployment config (ports, storage, bridges, upload layout) lives in
+the committed **`cofoundry.toml`** — CI checks it out and reads it directly, so
+it is **not** duplicated into repo Variables. Sensitive coordinates in that file
+use `${VAR}` and are supplied from the environment below.
+
+Commit a `cofoundry.toml` (see [Part 3](#part-3--local-development-optional) or
+run `cf init`). Its `[upload]` block controls the R2 layout — `layout = "grouped"`
+produces `templates/{{group}}/{{recipe}}-{{arch}}/{{sha256}}.vma.zst`; see
+[Usage → CDN upload](usage.md#cdn-upload).
+
+Then go to **Settings → Secrets and variables → Actions**.
 
 **Secrets** (Secrets tab):
 
-| Secret | Value |
-|---|---|
-| `PVE_TOKEN_SECRET` | Token secret from Part 1 step 1 |
-| `SSH_PRIVATE_KEY` | Contents of `~/.ssh/cofoundry_ci`. Omit if using Tailscale SSH. |
-| `TS_OAUTH_SECRET` | Tailscale OAuth secret (only if using Tailscale) |
-| `R2_ACCESS_KEY_ID` | R2 API token access key |
-| `R2_SECRET_ACCESS_KEY` | R2 API token secret |
+| Secret                     | Value                                                                |
+| -------------------------- | -------------------------------------------------------------------- |
+| `PVE_TOKEN_SECRET`         | Token secret from Part 1 step 1                                      |
+| `SSH_PRIVATE_KEY`          | Contents of `~/.ssh/cofoundry_ci`. Omit if using Tailscale SSH.      |
+| `TS_OAUTH_CLIENT_ID`       | Tailscale OAuth client ID (only if using Tailscale)                  |
+| `TS_OAUTH_SECRET`          | Tailscale OAuth secret (only if using Tailscale)                     |
+| `R2_ACCESS_KEY_ID`         | R2 API token access key                                              |
+| `R2_SECRET_ACCESS_KEY`     | R2 API token secret                                                  |
+| `REGISTRY_APP_ID`          | App ID for the `cofoundry-registry-writer` GitHub App. Only if `main` is ruleset-protected (see §3); omit to push with `GITHUB_TOKEN`.                |
+| `REGISTRY_APP_PRIVATE_KEY` | Private key for the `cofoundry-registry-writer` GitHub App. Only if `main` is ruleset-protected (see §3); omit to push with `GITHUB_TOKEN`. |
 
-**Variables** (Variables tab):
+**Coordinates referenced by `${VAR}` in `cofoundry.toml`.** Set each as a repo
+**Variable** (visible/reviewable) or a **Secret** if you'd rather hide it — the
+workflow reads `vars.X || secrets.X`, so set it in one place, not both:
 
-| Variable | Value |
-|---|---|
-| `PVE_HOST` | Proxmox hostname or IP (or tailnet IP) |
-| `PVE_NODE` | Proxmox node name (shown in the web UI sidebar) |
-| `PVE_TOKEN_ID` | `root@pam!cofoundry` |
-| `SSH_TARGET` | e.g. `root@pve.example.com` or `root@<tailnet-IP>` |
-| `PVE_PORT` | Proxmox API port. Default: `8006`. |
-| `PVE_DUMP_DIR` | Path on the node where vzdump writes archives. Default: `/var/lib/vz/dump`. |
-| `CF_STORAGE` | Proxmox storage pool for VM disks (run `pvesm status` to list). Default: `local`. |
-| `CF_ISO_STORAGE` | Proxmox storage pool for ISOs. Default: `local`. |
-| `CF_BRIDGE` | Bridge for cloud-image builds (e.g. `vmbr0`). ISO-installer builds use the NAT bridge from Part 1 step 5 regardless. |
-| `TS_OAUTH_CLIENT_ID` | Tailscale OAuth client ID (only if using Tailscale) |
-| `TS_TAG` | Tailscale tag the OAuth client is scoped to. Default: `tag:ci`. |
-| `R2_ENDPOINT` | `https://<R2_ACCOUNT_ID>.r2.cloudflarestorage.com` |
-| `R2_BUCKET` | R2 bucket name, e.g. `cofoundry-templates` |
-| `CF_PUBLIC_URL_TMPL` | Full public URL template, e.g. `https://templates.example.com/templates/{{name}}-{{arch}}/{{sha256}}.vma.zst` |
+| Name           | Value                                              |
+| -------------- | -------------------------------------------------- |
+| `PVE_HOST`     | Proxmox hostname or IP (or tailnet IP)             |
+| `SSH_TARGET`   | e.g. `root@pve.example.com` or `root@<tailnet-IP>` |
+| `PVE_NODE`     | Proxmox node name (shown in the web UI sidebar)    |
+| `PVE_TOKEN_ID` | `root@pam!cofoundry`                               |
+| `R2_ENDPOINT`  | `https://<R2_ACCOUNT_ID>.r2.cloudflarestorage.com` |
+| `R2_BUCKET`    | R2 bucket name, e.g. `cofoundry-templates`         |
 
-> **Default upload layout (CI).** The workflow auto-builds the upload commands from the R2 secrets above, producing:
->
-> ```
-> s3://<R2_BUCKET>/templates/<recipe>-<arch>/<sha256>.vma.zst   (artifact)
-> s3://<R2_BUCKET>/templates/<recipe>-<arch>/<sha256>.json      (sidecar)
-> ```
->
-> The public URL is fully user-defined — set `CF_PUBLIC_URL_TMPL` as a repo
-> variable (required; no default). For the default layout that's
-> `<your-cdn>/templates/{{name}}-{{arch}}/{{sha256}}.vma.zst`.
->
-> **Custom layout.** Override the upload commands by setting matching repo
-> **variables** (Settings → Variables → Actions, *not* Secrets):
->
-> | Variable | Purpose |
-> |---|---|
-> | `CF_UPLOAD_CMD` | Shell command that uploads the artifact. |
-> | `CF_SIDECAR_UPLOAD_CMD` | Shell command that uploads the sidecar JSON. |
-> | `CF_PUBLIC_URL_TMPL` | Public URL recorded in the sidecar + registry. |
->
-> Placeholders (substituted into all three strings):
->
-> | Placeholder | Meaning |
-> |---|---|
-> | `{{file}}` | Local path on the PVE node to the artifact (`.vma.zst`) or sidecar (`.json`) being uploaded. |
-> | `{{name}}` | Bare recipe name, e.g. `almalinux-10`. |
-> | `{{arch}}` | Build architecture, e.g. `amd64`. |
-> | `{{sha256}}` | SHA-256 of the `.vma.zst` (also used for content-addressing). |
-> | `{{group}}` | OS group declared in the recipe, e.g. `almalinux`, `debian`, `windows`. |
-> | `{{filename}}` | Content-addressed upload basename, e.g. `almalinux-10-amd64-<sha256>.vma.zst` (or `.json` for the sidecar). |
->
-> Path-layout note: `cf prune --r2` recognizes either `templates/{{name}}-{{arch}}/{{sha256}}.…` (flat — CI default) or `templates/{{group}}/{{name}}-{{arch}}/{{sha256}}.…` (OS-grouped). A flat `templates/{{filename}}` layout uploads fine but **won't prune correctly**.
->
-> **The three variables are independent.** The post-processor substitutes
-> placeholders into each one separately — it does *not* derive the public URL
-> from the upload command (or vice versa). If you change the path layout in
-> `CF_UPLOAD_CMD`, you must update `CF_SIDECAR_UPLOAD_CMD` and
-> `CF_PUBLIC_URL_TMPL` to match; otherwise the sidecar's `url` field will
-> point at a 404 and `cf publish --r2` (which walks `templates/` in the
-> bucket) won't find anything to publish. Local runs read these from `.env`
-> (see `docs/usage.md`).
+> These are only the fields your `cofoundry.toml` writes as `${VAR}`. If you
+> inline any of them as a literal in `cofoundry.toml` instead, drop it here.
+
+**Parallel builds (optional).** GitHub Actions and the Proxmox node have
+separate controls:
+
+- `CF_CI_MAX_PARALLEL` limits how many recipe jobs GitHub starts at once.
+- The memory and CPU budgets limit how many of those jobs the Proxmox node
+  admits at once. They are total node-wide budgets, not per-VM allocations.
+
+Set these in the repo **Variables** tab:
+
+| Name                        | Value                                                                  |
+| --------------------------- | ---------------------------------------------------------------------- |
+| `CF_CI_MAX_PARALLEL`        | Maximum GitHub matrix fan-out; defaults to `4`                         |
+| `CF_BUILD_MEMORY_BUDGET_MB` | Node-wide build/verify RAM budget; defaults to 80% of RAM              |
+| `CF_BUILD_CPU_BUDGET`       | Total concurrent VM vCPUs; defaults to the host's logical CPU count    |
+
+For example, a matrix cap of `4`, a memory budget of `16384`, and a CPU budget
+of `8` allow GitHub to start four recipe jobs while the node admits only the
+combination whose declared recipe resources fit within 16 GiB and 8 virtual
+CPUs. If the budgets are unset, Cofoundry uses 80% of physical RAM and all host
+CPUs. The node-side lease manager remains the authoritative admission control;
+duplicate recipes are serialized separately, and registry/checksum writers
+share one global publication queue.
+
+For a local `cf build` containing multiple recipes, configure parallelism in
+`cofoundry.toml` instead:
+
+```toml
+[build]
+concurrency = 4
+memory_budget_mb = 16384
+cpu_budget = 8
+```
+
+Both budgets are required when local `concurrency` is greater than `1`. The
+equivalent one-off command is:
+
+```sh
+cf build --build-concurrency 4 --build-memory-budget 16G --build-cpu-budget 8
+```
+
+`build.concurrency` does not control the GitHub matrix; use
+`CF_CI_MAX_PARALLEL` for that. See [Usage → Build everything](usage.md#build-everything)
+for the complete runtime behavior.
+
+**Tailscale** (only if using Tailscale — Variables tab):
+
+| Variable | Value                                                          |
+| -------- | -------------------------------------------------------------- |
+| `TS_TAG` | Tag the OAuth client is scoped to. Default if unset: `tag:ci`. |
+
+Everything else — `PVE_PORT`, `PVE_DUMP_DIR`, `CF_STORAGE`, `CF_ISO_STORAGE`,
+`CF_BRIDGE`, and the entire upload layout — now comes from `cofoundry.toml`. Run
+`cf config` locally to see exactly what resolves and from where.
 
 ---
 
@@ -318,10 +407,12 @@ In the Cloudflare dashboard: **R2 → Create bucket**, name it (e.g. `cofoundry-
 
 ### 2. Bind a custom domain
 
-**R2 → Bucket → Settings → Custom Domains → Connect Domain.** Use a subdomain you control, e.g. `templates.example.com`. Plug that host into your `CF_PUBLIC_URL_TMPL` repo variable. Final artifact URLs look like:
+**R2 → Bucket → Settings → Custom Domains → Connect Domain.** Use a subdomain
+you control, e.g. `templates.example.com`, and set it as `[upload].public_url`
+in `cofoundry.toml`. With the grouped layout, final artifact URLs look like:
 
 ```
-https://templates.example.com/templates/<name>-<arch>/<sha256>.vma.zst
+https://templates.example.com/templates/<group>/<recipe>-<arch>/<sha256>.vma.zst
 https://templates.example.com/registry.json
 ```
 
@@ -347,7 +438,23 @@ Only needed if you want to run `cf` commands manually from your machine.
 ### 1. Install dependencies
 
 - [Bun](https://bun.sh) 1.x
-- `rsync` and `ssh` (pre-installed on macOS/Linux)
+- The OpenSSH `ssh` client on your `PATH` (pre-installed on macOS/Linux)
+
+That is the whole list — no local `rsync` or `tar`. Cofoundry intentionally
+avoids both: the repository is archived in-process and uploaded to the node
+over SFTP, so the CLI works the same on every platform. See
+[Architecture → Repository snapshots](architecture.md#repository-snapshots-and-platform-support).
+
+**Windows workstations.** `cf` runs natively on Windows via Bun — no WSL or
+Cygwin required. Any `ssh.exe` on `PATH` works: the one bundled with
+[Git for Windows](https://gitforwindows.org/) or Windows' built-in OpenSSH
+client. SFTP transfers authenticate through your SSH agent when
+`SSH_AUTH_SOCK` is set and otherwise fall back to the default key files
+(`~/.ssh/id_ed25519`, `~/.ssh/id_rsa`, `~/.ssh/id_ecdsa`), so keep the node
+key at one of those paths or load it into an agent that exports
+`SSH_AUTH_SOCK` (e.g. `ssh-agent` in Git Bash). One caveat: `cf upload`
+without `--remote` runs the upload command through `bash -c`, so it needs a
+`bash` on `PATH` (Git for Windows provides one).
 
 ### 2. Clone and install
 
@@ -364,26 +471,46 @@ ssh-copy-id root@<pve-host>
 ssh root@<pve-host> hostname   # verify: no password prompt
 ```
 
-### 4. Configure `.env`
+On Windows, run `ssh-copy-id` from Git Bash, or append the key manually:
 
 ```sh
-cp .env.example .env
+cat ~/.ssh/id_ed25519.pub | ssh root@<pve-host> "cat >> ~/.ssh/authorized_keys"
 ```
 
-Fill in at minimum:
+### 4. Configure
 
-| Variable | Value |
-|---|---|
-| `PVE_HOST` | Proxmox hostname or IP |
-| `PVE_NODE` | Proxmox node name |
-| `PVE_TOKEN_ID` | `root@pam!cofoundry` |
-| `PVE_TOKEN_SECRET` | Token secret from Part 1 step 1 |
-| `SSH_TARGET` | e.g. `root@pve.example.com` |
+Configuration splits into two files:
+
+- **`cofoundry.toml`** (committed) — non-secret deployment facts: node
+  coordinates, storage pools, bridges, upload layout. This is the single source
+  of truth shared by your laptop and CI.
+- **`.env`** (gitignored) — secrets (`PVE_TOKEN_SECRET`, R2 keys) plus any
+  coordinate the committed `cofoundry.toml` sources via `${VAR}`.
+
+If the repo already ships a `cofoundry.toml`, just supply the secrets:
+
+```sh
+cp .env.example .env      # then fill in PVE_TOKEN_SECRET etc.
+```
+
+Starting fresh? Scaffold the config file:
+
+```sh
+cf init            # writes a commented cofoundry.toml template
+cf init --from-env # or fill it from an existing .env
+```
+
+Non-secret per-machine overrides go in **`cofoundry.local.toml`** (gitignored),
+which layers on top of `cofoundry.toml`. Resolution order (highest wins):
+
+```
+CLI flag  >  env / .env  >  ${VAR}  >  cofoundry.local.toml  >  cofoundry.toml  >  default
+```
 
 ### 5. Verify
 
 ```sh
-cf list
+cf config    # show every resolved value and where it came from
+cf doctor    # preflight: SSH, PVE API auth, R2 credentials
+cf list      # should print all available recipes
 ```
-
-You should see all available recipes.

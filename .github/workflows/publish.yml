@@ -1,0 +1,74 @@
+name: Publish registry
+
+on:
+  workflow_call:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    concurrency:
+      group: cofoundry-publish
+      cancel-in-progress: false
+    permissions:
+      contents: write
+    env:
+      R2_ENDPOINT: ${{ vars.R2_ENDPOINT || secrets.R2_ENDPOINT }}
+      R2_BUCKET: ${{ vars.R2_BUCKET || secrets.R2_BUCKET }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: auto
+      HAS_REGISTRY_APP: ${{ secrets.REGISTRY_APP_ID != '' && secrets.REGISTRY_APP_PRIVATE_KEY != '' }}
+    steps:
+      - uses: actions/create-github-app-token@v3
+        id: registry-app-token
+        if: env.HAS_REGISTRY_APP == 'true'
+        with:
+          app-id: ${{ secrets.REGISTRY_APP_ID }}
+          private-key: ${{ secrets.REGISTRY_APP_PRIVATE_KEY }}
+
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+          token: ${{ steps.registry-app-token.outputs.token || github.token }}
+
+      - uses: oven-sh/setup-bun@v2
+
+      - run: bun install --frozen-lockfile
+
+      - name: Publish and commit registry
+        run: |
+          git config user.name "cofoundry-registry-writer[bot]"
+          git config user.email "cofoundry-registry-writer[bot]@users.noreply.github.com"
+          for attempt in 1 2 3; do
+            git fetch origin main
+            git reset --hard origin/main
+            bun run cf publish --r2
+            git add registry.json
+            if git diff --cached --quiet; then
+              break
+            fi
+            git commit -m "chore: publish template registry"
+            if git push origin HEAD:main; then
+              break
+            fi
+            if [ "$attempt" = 3 ]; then
+              echo "registry push failed after 3 attempts" >&2
+              exit 1
+            fi
+          done
+
+      - name: Mirror committed registry to R2
+        run: |
+          aws --endpoint-url "$R2_ENDPOINT" s3 cp \
+            registry.json "s3://$R2_BUCKET/registry.json" \
+            --cache-control "public, max-age=60" \
+            --content-type "application/json"
+
+      - name: Prune old R2 templates
+        run: bun run cf prune --r2 --keep 5
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: registry
+          path: registry.json
+          retention-days: 30

@@ -1,5 +1,6 @@
 import { readFile, writeFile } from 'node:fs/promises'
-import type { RecipeInfo } from './config.ts'
+import type { RecipeInfo } from '@/config.ts'
+import { fetchWithRetry } from '@/util.ts'
 
 export interface IsoUpdate {
     filename: string
@@ -17,7 +18,7 @@ const resolveDebianArchiveUrl = async (
     major: number,
     suffix: string
 ): Promise<string> => {
-    const indexRes = await fetch(base)
+    const indexRes = await fetchWithRetry(base)
     if (!indexRes.ok)
         throw new Error(`Debian archive index → HTTP ${indexRes.status}`)
     const html = await indexRes.text()
@@ -49,7 +50,7 @@ const fetchChecksumFile = async (
         url = await resolveDebianArchiveUrl(base!, parseInt(majorStr!), suffix!)
     }
 
-    const res = await fetch(url)
+    const res = await fetchWithRetry(url)
     if (!res.ok) throw new Error(`GET ${url} → HTTP ${res.status}`)
     const content = await res.text()
     const baseUrl = res.url.slice(0, res.url.lastIndexOf('/') + 1)

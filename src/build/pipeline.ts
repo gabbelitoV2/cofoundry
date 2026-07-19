@@ -1,13 +1,14 @@
 import PQueue from 'p-queue'
-import type { Env } from '../env.ts'
-import type { RecipeInfo } from '../config.ts'
+import type { Env } from '@/env.ts'
+import type { RecipeInfo } from '@/config.ts'
 import {
     syncRepoToRemote,
     prefetchPhase,
     buildPhase,
     syncPhase,
-} from '../build.ts'
-import { redactSensitive } from '../util.ts'
+} from '@/build.ts'
+import { redactSensitive } from '@/util.ts'
+import { BuildScheduler, type BuildResources } from '@/build/scheduler.ts'
 import {
     formatTransferStatus,
     parseWgetLine,
@@ -16,14 +17,19 @@ import {
     type Renderer,
     type TaskHandle,
 } from '@cofoundry/ui'
+import { acquireRemoteMaintenanceLock } from '@/build/maintenance.ts'
+import { assertShrinkStorageSupported } from '@/build/storage.ts'
 
 export type PipelineOptions = {
     syncBack: boolean
+    skipUpload?: boolean
     skipRepoSync?: boolean
     keepVm?: boolean
-    uploadConcurrency?: number
     downloadConcurrency?: number
     prefetchConcurrency?: number
+    buildConcurrency?: number
+    buildMemoryBudgetMb?: number
+    buildCpuBudget?: number
     ci?: boolean
     verbose?: boolean
     outputLines?: number
@@ -32,6 +38,24 @@ export type PipelineOptions = {
 export type PipelineResult = {
     passed: string[]
     failed: { name: string; error: string }[]
+}
+
+export type PipelineDependencies = {
+    syncRepo: typeof syncRepoToRemote
+    prefetch: typeof prefetchPhase
+    build: typeof buildPhase
+    sync: typeof syncPhase
+    acquireMaintenance: typeof acquireRemoteMaintenanceLock
+    shrinkPreflight: typeof assertShrinkStorageSupported
+}
+
+const DEFAULT_DEPENDENCIES: PipelineDependencies = {
+    syncRepo: syncRepoToRemote,
+    prefetch: prefetchPhase,
+    build: buildPhase,
+    sync: syncPhase,
+    acquireMaintenance: acquireRemoteMaintenanceLock,
+    shrinkPreflight: assertShrinkStorageSupported,
 }
 
 // Submit work to a p-queue and keep `handle`'s phase label accurate while it
@@ -79,10 +103,37 @@ const runQueued = async <T>(
 export const runPipeline = async (
     env: Env,
     recipes: RecipeInfo[],
-    opts: PipelineOptions
+    opts: PipelineOptions,
+    dependencies: PipelineDependencies = DEFAULT_DEPENDENCIES
 ): Promise<PipelineResult> => {
+    validateBuildOptions(recipes, opts)
+    const maintenance = await dependencies.acquireMaintenance(
+        env.SSH_TARGET,
+        'shared'
+    )
+    try {
+        return await Promise.race([
+            runPipelineLocked(env, recipes, opts, dependencies),
+            maintenance.lost,
+        ])
+    } finally {
+        await maintenance.release()
+    }
+}
+
+const runPipelineLocked = async (
+    env: Env,
+    recipes: RecipeInfo[],
+    opts: PipelineOptions,
+    dependencies: PipelineDependencies
+): Promise<PipelineResult> => {
+    const buildOptions = validateBuildOptions(recipes, opts)
+    // Fail before any phase starts: a final_disk_size shrink on non-file
+    // storage would otherwise only surface in the vzdump post-processor,
+    // hours into the build.
+    await dependencies.shrinkPreflight(env, recipes)
     const prefetchQ = new PQueue({ concurrency: opts.prefetchConcurrency ?? 3 })
-    const buildQ = new PQueue({ concurrency: 1 })
+    const buildQ = new BuildScheduler(buildOptions)
     const syncQ = new PQueue({ concurrency: 1 })
 
     const passed: string[] = []
@@ -95,19 +146,27 @@ export const runPipeline = async (
     })
 
     try {
-        if (!opts.skipRepoSync) {
-            await runRepoSync(env, opts, renderer)
-        }
+        const snapshotDir = opts.skipRepoSync
+            ? undefined
+            : await runRepoSync(env, opts, renderer, dependencies)
 
         await Promise.allSettled(
             recipes.map(recipe =>
-                runRecipe(env, recipe, opts, renderer, {
-                    prefetchQ,
-                    buildQ,
-                    syncQ,
-                    passed,
-                    failed,
-                })
+                runRecipe(
+                    env,
+                    recipe,
+                    opts,
+                    snapshotDir,
+                    renderer,
+                    {
+                        prefetchQ,
+                        buildQ,
+                        syncQ,
+                        passed,
+                        failed,
+                    },
+                    dependencies
+                )
             )
         )
     } finally {
@@ -117,15 +176,96 @@ export const runPipeline = async (
     return { passed, failed }
 }
 
+const validateBuildOptions = (
+    recipes: RecipeInfo[],
+    opts: PipelineOptions
+): {
+    concurrency: number
+    memoryBudgetMb?: number
+    cpuBudget?: number
+} => {
+    const concurrency = opts.buildConcurrency ?? 1
+    if (!Number.isInteger(concurrency) || concurrency < 1) {
+        throw new Error('build concurrency must be a positive integer')
+    }
+    for (const [label, value] of [
+        ['build memory budget', opts.buildMemoryBudgetMb],
+        ['build CPU budget', opts.buildCpuBudget],
+    ] as const) {
+        if (value !== undefined && (!Number.isInteger(value) || value < 1)) {
+            throw new Error(`${label} must be a positive integer`)
+        }
+    }
+    if (
+        concurrency > 1 &&
+        (opts.buildMemoryBudgetMb === undefined ||
+            opts.buildCpuBudget === undefined)
+    ) {
+        throw new Error(
+            'parallel builds require both a memory budget and a CPU budget'
+        )
+    }
+    if (concurrency > 1) {
+        const seen = new Set<string>()
+        for (const recipe of recipes) {
+            if (seen.has(recipe.name)) {
+                throw new Error(
+                    `parallel builds cannot include ${recipe.name} more than once`
+                )
+            }
+            seen.add(recipe.name)
+        }
+    }
+
+    const resourcesRequired =
+        concurrency > 1 ||
+        opts.buildMemoryBudgetMb !== undefined ||
+        opts.buildCpuBudget !== undefined
+    if (resourcesRequired) {
+        for (const recipe of recipes) {
+            if (
+                recipe.buildMemoryMb === undefined ||
+                recipe.buildCores === undefined
+            ) {
+                throw new Error(
+                    `${recipe.name} must declare static memory and cores in its Packer source`
+                )
+            }
+            if (
+                opts.buildMemoryBudgetMb !== undefined &&
+                recipe.buildMemoryMb > opts.buildMemoryBudgetMb
+            ) {
+                throw new Error(
+                    `${recipe.name} requires ${recipe.buildMemoryMb} MiB, exceeding the ${opts.buildMemoryBudgetMb} MiB build memory budget`
+                )
+            }
+            if (
+                opts.buildCpuBudget !== undefined &&
+                recipe.buildCores > opts.buildCpuBudget
+            ) {
+                throw new Error(
+                    `${recipe.name} requires ${recipe.buildCores} cores, exceeding the ${opts.buildCpuBudget}-core build CPU budget`
+                )
+            }
+        }
+    }
+
+    return {
+        concurrency,
+        memoryBudgetMb: opts.buildMemoryBudgetMb,
+        cpuBudget: opts.buildCpuBudget,
+    }
+}
+
 const runRepoSync = async (
     env: Env,
     opts: PipelineOptions,
-    renderer: Renderer
-): Promise<void> => {
+    renderer: Renderer,
+    dependencies: PipelineDependencies
+): Promise<string> => {
     const handle = renderer.task('sync repo to remote')
     try {
-        await syncRepoToRemote(env, {
-            concurrency: opts.uploadConcurrency,
+        const snapshotDir = await dependencies.syncRepo(env, {
             onPhase: phase => handle.setPhase(phase),
             onProgress: ev => {
                 handle.setProgress(
@@ -142,6 +282,7 @@ const runRepoSync = async (
             },
         })
         handle.succeed()
+        return snapshotDir
     } catch (err) {
         const msg = redactSensitive(
             err instanceof Error ? err.message : String(err)
@@ -153,10 +294,20 @@ const runRepoSync = async (
 
 type RecipeContext = {
     prefetchQ: PQueue
-    buildQ: PQueue
+    buildQ: BuildScheduler
     syncQ: PQueue
     passed: string[]
     failed: { name: string; error: string }[]
+}
+
+const runBuildQueued = async <T>(
+    queue: BuildScheduler,
+    resources: BuildResources,
+    handle: TaskHandle,
+    work: () => Promise<T>
+): Promise<T> => {
+    handle.setPhase('build · queued')
+    return await queue.add(resources, work, () => handle.setPhase('build'))
 }
 
 const recordFailure = (
@@ -179,15 +330,17 @@ const runRecipe = async (
     env: Env,
     recipe: RecipeInfo,
     opts: PipelineOptions,
+    snapshotDir: string | undefined,
     renderer: Renderer,
-    ctx: RecipeContext
+    ctx: RecipeContext,
+    dependencies: PipelineDependencies
 ): Promise<void> => {
     const handle = renderer.task(recipe.name)
 
     // ── prefetch ──
     try {
         await runQueued(ctx.prefetchQ, 'prefetch', handle, async () => {
-            await prefetchPhase(env, recipe, (slot, line) => {
+            await dependencies.prefetch(env, recipe, (slot, line) => {
                 const p = parseWgetLine(line)
                 if (p) handle.setProgress(formatWgetStatus(slot, p))
             })
@@ -198,22 +351,53 @@ const runRecipe = async (
 
     // ── build ──
     let buildStartedAt: number | undefined
+    // Packer's `A template was created: <id>` banner is the meaningful result
+    // line, but later benign teardown chatter (e.g. a `-force` cleanup printing
+    // "Configuration file '…/<vmid>.conf' does not exist") can be the actual
+    // last stream line and evict the banner from the renderer's 1-slot log ring.
+    // Stash the banner and re-log it after a successful build so the summary
+    // row always shows the created template rather than trailing noise.
+    let templateSummary: string | undefined
     try {
-        await runQueued(ctx.buildQ, 'build', handle, async () => {
-            const result = await buildPhase(
-                env,
-                recipe,
-                { keepVm: opts.keepVm },
-                line => {
-                    const trimmed = line.trim()
-                    if (!trimmed) return
-                    handle.log(opts.verbose ? trimmed : trimmed.slice(0, 200))
-                }
-            )
-            buildStartedAt = result.startedAt
-        })
+        await runBuildQueued(
+            ctx.buildQ,
+            {
+                memoryMb: recipe.buildMemoryMb ?? 0,
+                cores: recipe.buildCores ?? 0,
+            },
+            handle,
+            async () => {
+                const result = await dependencies.build(
+                    env,
+                    recipe,
+                    {
+                        keepVm: opts.keepVm,
+                        skipUpload: opts.skipUpload,
+                        ciMode: opts.ci,
+                        snapshotDir,
+                    },
+                    line => {
+                        const trimmed = line.trim()
+                        if (!trimmed) return
+                        if (trimmed.includes('A template was created:')) {
+                            templateSummary = trimmed
+                        }
+                        handle.log(
+                            opts.verbose ? trimmed : trimmed.slice(0, 200)
+                        )
+                    }
+                )
+                buildStartedAt = result.startedAt
+            }
+        )
     } catch (err) {
         throw recordFailure(ctx, recipe, err, handle)
+    }
+
+    if (templateSummary) {
+        handle.log(
+            opts.verbose ? templateSummary : templateSummary.slice(0, 200)
+        )
     }
 
     if (!opts.syncBack) {
@@ -225,7 +409,7 @@ const runRecipe = async (
     // ── sync ──
     try {
         await runQueued(ctx.syncQ, 'sync', handle, async () => {
-            await syncPhase(env, recipe, {
+            await dependencies.sync(env, recipe, {
                 concurrency: opts.downloadConcurrency,
                 since: buildStartedAt,
                 onProgress: ev => {

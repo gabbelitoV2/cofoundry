@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import { log } from '../src/log.ts'
 
 describe('log', () => {
-    test('exposes info/step/ok/warn/err/raw as callable functions', () => {
+    test('exposes every log method as a callable function', () => {
         for (const level of [
             'info',
             'step',
@@ -10,6 +10,7 @@ describe('log', () => {
             'warn',
             'err',
             'raw',
+            'reveal',
         ] as const) {
             expect(typeof log[level]).toBe('function')
             expect(() => log[level]('smoke')).not.toThrow()

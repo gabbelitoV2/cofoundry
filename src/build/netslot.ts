@@ -1,22 +1,18 @@
-import { captureRemote, registerCleanup } from './remote.ts'
+import { captureRemote, registerCleanup } from '@/build/remote.ts'
 import { spawnSync } from 'node:child_process'
-import type { Env } from '../env.ts'
-import { shellQuote } from '../util.ts'
-import {
-    BUILD_NET_GATEWAY,
-    BUILD_NET_PREFIX,
-    BUILD_SLOT_BASE,
-    BUILD_SLOT_COUNT,
-} from './buildnet.ts'
+import { randomUUID } from 'node:crypto'
+import type { Env } from '@/env.ts'
+import { shellQuote } from '@/util.ts'
+import { BUILD_SLOT_BASE, BUILD_SLOT_COUNT } from '@/build/buildnet.ts'
 
-// Per-build network slot allocated on the node's NAT bridge (vmbr1, 10.0.0.0/24).
+// Per-build network slot allocated on the node's configured NAT build bridge.
 // Each slot owns one IP + a deterministic MAC, registered with dnsmasq as a
 // static DHCP reservation so Packer can address the build VM up-front (no IP
 // discovery, no race with the qemu-guest-agent). Multiple slots are independent,
 // so builds can run in parallel on a single node.
 //
 // Layout:
-//   IP  = 10.0.0.<100 + slotIndex>     for slotIndex in [0, BUILD_SLOT_COUNT)
+//   IP  = <live bridge /24>.<100 + slotIndex> for slotIndex in [0, BUILD_SLOT_COUNT)
 //   MAC = 02:50:4B:00:00:<slot byte>
 //   Reservation file: /etc/dnsmasq.d/cofoundry-hosts.d/slot-<NN>
 //
@@ -43,6 +39,7 @@ const LOCK_FILE = `${LOCK_DIR}/netslot.lock`
 const SNIPPET_DIR = '/etc/dnsmasq.d/cofoundry-hosts.d'
 const SNIPPET_PREFIX = 'slot-'
 const LEASES_FILE = '/var/lib/misc/dnsmasq.leases'
+const OWNER_DIR = `${LOCK_DIR}/netslots`
 
 // A snippet with no active lease is only reclaimed once it's older than this —
 // comfortably longer than the worst-case gap between allocating a slot and the
@@ -57,29 +54,82 @@ export type BuildSlot = {
     release: () => Promise<void>
 }
 
-const slotIp = (slotIndex: number): string =>
-    `${BUILD_NET_PREFIX}.${BUILD_SLOT_BASE + slotIndex}`
+// Reload the system dnsmasq service atomically so it re-reads the hostsfile
+// directory without disturbing in-flight leases. Bootstrap rejects unmanaged
+// or multiple dnsmasq instances, so builds must target this specific service
+// rather than signalling every process named dnsmasq on the node.
+const reloadDnsmasqCmd = `(systemctl reload dnsmasq 2>/dev/null || systemctl restart dnsmasq) && sleep 0.2`
 
-const slotMac = (slotIndex: number): string => {
-    const byte = (BUILD_SLOT_BASE + slotIndex).toString(16).padStart(2, '0')
-    return `02:50:4B:00:00:${byte}`
-}
+const releaseSlotOwnerScript = (owner: string): string =>
+    `exec 9>${shellQuote(LOCK_FILE)}; flock 9; changed=0; ` +
+    `for owner_file in ${shellQuote(OWNER_DIR)}/${SNIPPET_PREFIX}*; do ` +
+    `[ -f "$owner_file" ] || continue; ` +
+    `if [ "$(cat "$owner_file" 2>/dev/null || true)" = ${shellQuote(owner)} ]; then ` +
+    `slot=\${owner_file##*/}; rm -f ${shellQuote(SNIPPET_DIR)}/"$slot" "$owner_file"; changed=1; fi; done; ` +
+    `[ "$changed" -eq 0 ] || ${reloadDnsmasqCmd}`
 
-const snippetPath = (slotIndex: number): string =>
-    `${SNIPPET_DIR}/${SNIPPET_PREFIX}${String(slotIndex).padStart(2, '0')}`
-
-// Reload dnsmasq atomically — SIGHUP makes it re-read /etc/dnsmasq.d/* and
-// honour new static reservations without disturbing in-flight leases held by
-// other concurrent builds. We fall back to `systemctl reload` if pkill fails
-// (e.g. dnsmasq supervised differently).
-const reloadDnsmasqCmd = `(pkill -HUP -x dnsmasq 2>/dev/null || systemctl reload dnsmasq 2>/dev/null || systemctl restart dnsmasq) && sleep 0.2`
-
-export const allocateBuildSlot = async (env: Env): Promise<BuildSlot> => {
-    // One atomic shell pass: take the lock, scan existing snippets, pick the
-    // first free index, write the new snippet, reload dnsmasq, print the index.
-    const script = `
+export const buildSlotAllocationScript = (
+    env: Pick<Env, 'CF_BUILD_BRIDGE'>,
+    owner = 'test-owner'
+): string => `
 set -e
-mkdir -p ${shellQuote(LOCK_DIR)} ${shellQuote(SNIPPET_DIR)}
+bridge=${shellQuote(env.CF_BUILD_BRIDGE)}
+bridge_cidr=$(ip -4 -o addr show dev "$bridge" | awk '$3=="inet" {print $4; exit}')
+case "$bridge_cidr" in
+    */24) ;;
+    *) echo "build bridge $bridge must have one IPv4 /24 address (found: \${bridge_cidr:-none})" >&2; exit 1 ;;
+esac
+gateway=\${bridge_cidr%/24}
+prefix=\${gateway%.*}
+
+# Pick a stable 50-address block outside every existing dnsmasq dynamic range
+# and direct static reservation. Prefer the historical .100-.149 block, then
+# scan upward from .2. Cofoundry's own hostsfile directory is intentionally not
+# part of this scan, so concurrent slots don't make the chosen block move.
+occupied=" \${gateway##*.} "
+while IFS= read -r spec; do
+    spec=\${spec//[[:space:]]/}
+    first=""; second=""
+    IFS=',' read -ra parts <<< "$spec"
+    for part in "\${parts[@]}"; do
+        [[ "$part" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || continue
+        [ "\${part%.*}" = "$prefix" ] || continue
+        if [ -z "$first" ]; then first=\${part##*.}; elif [ -z "$second" ]; then second=\${part##*.}; break; fi
+    done
+    [ -n "$first" ] && [ -n "$second" ] || continue
+    n=$first
+    while [ "$n" -le "$second" ]; do occupied="$occupied$n "; n=$((n + 1)); done
+done < <(grep -hE '^[[:space:]]*dhcp-range=' /etc/dnsmasq.conf /etc/dnsmasq.d/*.conf 2>/dev/null | sed -E 's/^[[:space:]]*dhcp-range=//')
+while IFS= read -r host_ip; do
+    [ "\${host_ip%.*}" = "$prefix" ] || continue
+    occupied="$occupied\${host_ip##*.} "
+done < <(grep -hE '^[[:space:]]*dhcp-host=' /etc/dnsmasq.conf /etc/dnsmasq.d/*.conf 2>/dev/null | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' || true)
+fits_block() {
+    candidate=$1
+    n=$candidate
+    end=$((candidate + ${BUILD_SLOT_COUNT} - 1))
+    [ "$end" -le 254 ] || return 1
+    while [ "$n" -le "$end" ]; do
+        case "$occupied" in *" $n "*) return 1 ;; esac
+        n=$((n + 1))
+    done
+}
+slot_base=""
+if fits_block ${BUILD_SLOT_BASE}; then
+    slot_base=${BUILD_SLOT_BASE}
+else
+    candidate=2
+    while [ "$candidate" -le 205 ]; do
+        if fits_block "$candidate"; then slot_base=$candidate; break; fi
+        candidate=$((candidate + 1))
+    done
+fi
+if [ -z "$slot_base" ]; then
+    echo "no contiguous ${BUILD_SLOT_COUNT}-address build-slot block is free on $bridge ($prefix.0/24)" >&2
+    exit 1
+fi
+
+mkdir -p ${shellQuote(LOCK_DIR)} ${shellQuote(SNIPPET_DIR)} ${shellQuote(OWNER_DIR)}
 exec 9>${shellQuote(LOCK_FILE)}
 flock 9
 now=$(date +%s)
@@ -97,6 +147,7 @@ for f in ${shellQuote(SNIPPET_DIR)}/${SNIPPET_PREFIX}*; do
     if [ "$active" -eq 0 ] && [ "$(( now - mt ))" -gt ${STALE_RECLAIM_SECS} ]; then
         echo "reclaiming stale netslot \${f##*/} ($sip): no lease, age $(( now - mt ))s" >&2
         rm -f "$f"
+        rm -f ${shellQuote(OWNER_DIR)}/"\${f##*/}"
     fi
 done
 used=" "
@@ -121,8 +172,8 @@ if [ -z "$pick" ]; then
     exit 1
 fi
 pad=$(printf '%02d' "$pick")
-ip="${BUILD_NET_PREFIX}.$(( ${BUILD_SLOT_BASE} + pick ))"
-byte=$(printf '%02x' "$(( ${BUILD_SLOT_BASE} + pick ))")
+ip="$prefix.$(( slot_base + pick ))"
+byte=$(printf '%02x' "$(( slot_base + pick ))")
 mac="02:50:4b:00:00:$byte"
 # Evict any VM squatting this slot's MAC. A slot is exclusive, so the only VM
 # that can carry this deterministic MAC is an orphan from a previous build of the
@@ -140,6 +191,7 @@ for cf in /etc/pve/qemu-server/*.conf; do
     qm destroy "$vid" --purge 1 --destroy-unreferenced-disks 1 --skiplock 1 >/dev/null 2>&1 || true
 done
 printf '%s,%s\\n' "$mac" "$ip" > ${shellQuote(SNIPPET_DIR)}/${SNIPPET_PREFIX}"$pad"
+printf '%s\\n' ${shellQuote(owner)} > ${shellQuote(OWNER_DIR)}/${SNIPPET_PREFIX}"$pad"
 # Purge any stale lease holding the reserved IP or matching the reserved MAC,
 # so a previous build's lease can't squat on the slot. dnsmasq re-reads the
 # leases file on SIGHUP.
@@ -147,27 +199,45 @@ if [ -f ${shellQuote(LEASES_FILE)} ]; then
     awk -v ip="$ip" -v mac="$mac" '$2 != mac && $3 != ip' ${shellQuote(LEASES_FILE)} > ${shellQuote(LEASES_FILE)}.tmp && mv ${shellQuote(LEASES_FILE)}.tmp ${shellQuote(LEASES_FILE)}
 fi
 ${reloadDnsmasqCmd}
-echo "$pick"
+echo "$pick,$ip,$gateway,$mac"
 `
-    const out = await captureRemote(
-        env.SSH_TARGET,
-        `bash -s <<'__CF_NETSLOT__'\n${script}\n__CF_NETSLOT__`
-    )
-    const slotIndex = Number.parseInt(out.trim(), 10)
+export const allocateBuildSlot = async (env: Env): Promise<BuildSlot> => {
+    // One atomic shell pass: take the lock, scan existing snippets, pick the
+    // first free index, write the new snippet, reload dnsmasq, print the slot.
+    const owner = randomUUID()
+    const script = buildSlotAllocationScript(env, owner)
+    let out: string
+    try {
+        out = await captureRemote(
+            env.SSH_TARGET,
+            `bash -s <<'__CF_NETSLOT__'\n${script}\n__CF_NETSLOT__`
+        )
+    } catch (error) {
+        await captureRemote(
+            env.SSH_TARGET,
+            releaseSlotOwnerScript(owner)
+        ).catch(() => {})
+        throw error
+    }
+    const [slotRaw, ip = '', gw = '', mac = ''] = out.trim().split(',')
+    const slotIndex = Number.parseInt(slotRaw ?? '', 10)
     if (
         !Number.isFinite(slotIndex) ||
         slotIndex < 0 ||
-        slotIndex >= BUILD_SLOT_COUNT
+        slotIndex >= BUILD_SLOT_COUNT ||
+        !/^\d+\.\d+\.\d+\.\d+$/.test(ip) ||
+        !/^\d+\.\d+\.\d+\.\d+$/.test(gw) ||
+        !/^02:50:4b:00:00:[0-9a-f]{2}$/i.test(mac)
     ) {
+        await captureRemote(
+            env.SSH_TARGET,
+            releaseSlotOwnerScript(owner)
+        ).catch(() => {})
         throw new Error(`netslot allocator returned invalid index: ${out}`)
     }
 
-    const ip = slotIp(slotIndex)
-    const mac = slotMac(slotIndex)
-    const snippet = snippetPath(slotIndex)
-
     let released = false
-    const releaseScript = `rm -f ${shellQuote(snippet)} && ${reloadDnsmasqCmd}`
+    const releaseScript = releaseSlotOwnerScript(owner)
 
     // Synchronous SIGINT cleanup: best-effort delete the snippet over ssh.
     const unregister = registerCleanup(() => {
@@ -185,5 +255,5 @@ echo "$pick"
         await captureRemote(env.SSH_TARGET, releaseScript).catch(() => {})
     }
 
-    return { ip, gw: BUILD_NET_GATEWAY, mac, slotIndex, release }
+    return { ip, gw, mac, slotIndex, release }
 }

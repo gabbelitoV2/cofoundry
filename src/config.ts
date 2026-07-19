@@ -2,7 +2,9 @@ import { readdir, readFile } from 'node:fs/promises'
 import { basename, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-const DEFAULT_BUILDS_DIR = fileURLToPath(new URL('../builds/', import.meta.url))
+const DEFAULT_RECIPES_DIR = fileURLToPath(
+    new URL('../recipes/', import.meta.url)
+)
 
 export interface RecipeInfo {
     name: string
@@ -11,6 +13,10 @@ export interface RecipeInfo {
     display: string
     /** VMID from `# build_vmid: <n>` comment */
     buildVmid?: number
+    /** RAM assigned to the Packer build VM, parsed from `memory = <MiB>`. */
+    buildMemoryMb?: number
+    /** Virtual cores assigned to the Packer build VM. */
+    buildCores?: number
     /** ISO URL parsed from `# iso_url: ...` metadata or the boot ISO block */
     isoUrl?: string
     /** Resolved local path for the boot ISO on the Proxmox node */
@@ -23,6 +29,13 @@ export interface RecipeInfo {
     arch: string
     /** Group id from `# group: ...` comment */
     group?: string
+    /**
+     * Final exported disk size from `# final_disk_size: <size>` (e.g. "32G").
+     * When set, the recipe's HCL `disk_size` is the larger *build-time* disk and
+     * the post-processor shrinks the disk to this size before vzdump. Absent =
+     * no shrink (build disk == final disk), preserving existing behavior.
+     */
+    finalDiskSize?: string
 }
 
 const parseMeta = (raw: string, key: string): string | undefined => {
@@ -35,6 +48,15 @@ const parseMetaInt = (raw: string, key: string): number | undefined => {
     if (!v) return undefined
     const n = parseInt(v, 10)
     return Number.isFinite(n) ? n : undefined
+}
+
+const parseHclInt = (raw: string, key: string): number | undefined => {
+    const match = raw.match(
+        new RegExp(`^\\s*${key}\\s*=\\s*(\\d+)\\s*(?:#.*)?$`, 'm')
+    )
+    if (!match?.[1]) return undefined
+    const value = Number.parseInt(match[1], 10)
+    return Number.isFinite(value) ? value : undefined
 }
 
 const parseIsoUrl = (raw: string): string | undefined => {
@@ -75,33 +97,36 @@ const parseIsoTargetPath = (raw: string): string | undefined => {
 
 export const loadRecipe = async (
     name: string,
-    buildsDir: string = DEFAULT_BUILDS_DIR
+    recipesDir: string = DEFAULT_RECIPES_DIR
 ): Promise<RecipeInfo> => {
-    const path = join(buildsDir, `${name}.pkr.hcl`)
+    const path = join(recipesDir, `${name}.pkr.hcl`)
     const raw = await readFile(path, 'utf8')
     return {
         name,
         path,
         display: parseMeta(raw, 'display') ?? name,
         buildVmid: parseMetaInt(raw, 'build_vmid'),
+        buildMemoryMb: parseHclInt(raw, 'memory'),
+        buildCores: parseHclInt(raw, 'cores'),
         isoUrl: parseIsoUrl(raw),
         isoTargetPath: parseIsoTargetPath(raw),
         isoChecksumUrl: parseMeta(raw, 'iso_checksum_url'),
         isoFilenameRe: parseMeta(raw, 'iso_filename_re'),
         arch: parseMeta(raw, 'arch') ?? 'amd64',
         group: parseMeta(raw, 'group'),
+        finalDiskSize: parseMeta(raw, 'final_disk_size'),
     }
 }
 
 export const listRecipes = async (
-    buildsDir: string = DEFAULT_BUILDS_DIR
+    recipesDir: string = DEFAULT_RECIPES_DIR
 ): Promise<RecipeInfo[]> => {
-    const entries = await readdir(buildsDir)
+    const entries = await readdir(recipesDir)
     const recipes: RecipeInfo[] = []
     for (const entry of entries) {
         if (!entry.endsWith('.pkr.hcl')) continue
         const name = basename(entry, '.pkr.hcl')
-        recipes.push(await loadRecipe(name, buildsDir))
+        recipes.push(await loadRecipe(name, recipesDir))
     }
     return recipes.sort((a, b) => a.name.localeCompare(b.name))
 }

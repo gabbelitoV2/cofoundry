@@ -1,0 +1,93 @@
+schemaVersion: "1"
+kind: mixin
+name: cofoundry-dev
+displayName: Cofoundry dev sandbox
+description: Provision Bun + the cf toolchain inside a Docker Sandbox for working on Cofoundry.
+
+# Appended to the agent's memory at sandbox creation — tells the agent how the
+# toolchain is set up and how to run common tasks. (Bun itself is installed by the
+# commands below; these are the project-state steps and conventions.)
+agentContext: |
+  # Cofoundry dev sandbox
+
+  Cofoundry is a Bun + TypeScript CLI (`cf`) that builds Proxmox VM templates. There
+  is **no local web server, database, or browser** here — the CLI drives Packer
+  *remotely* on a Proxmox node over SSH and the Proxmox API. Bun and the deps are
+  installed for you.
+
+  Run the CLI with `bun run cf <cmd>` (or the `cf` script). Common tasks:
+
+      bun run cf list                   # list available recipes (no node needed)
+      bun run cf check --json           # check upstream images for updates
+      bun run cf build <recipe>         # build a template on the Proxmox node
+      bun run cf bootstrap              # one-time node provisioning
+
+  Before committing (see AGENTS.md):
+
+      bun test                          # test suite
+      bun run typecheck                 # tsc --noEmit
+      bun run prettier --write src/ tests/
+
+  ## Reaching the Proxmox node
+
+  Anything that actually builds or talks to the node (`cf build`, `cf bootstrap`,
+  `cf prune`, `cf check` against real ISOs) needs:
+
+    1. A populated `.env` — `PVE_HOST`, `PVE_NODE`, `PVE_TOKEN_ID`,
+       `PVE_TOKEN_SECRET`, `SSH_TARGET`. It's gitignored and mounted from your host
+       checkout, so it's already here if you filled it in on the host.
+    2. Network + SSH reach to the node. If the node is on a tailnet, compose the
+       `.sbx/tailscale` kit (`--kit .sbx/tailscale --kit .sbx/dev`) and point
+       `SSH_TARGET`/`PVE_HOST` at the node's `100.x` tailnet IP. With Tailscale SSH
+       enabled on the node you don't even need an SSH key in the sandbox — the
+       tailnet brokers auth. Otherwise the sandbox needs a key authorized on the
+       node (`ssh-copy-id`) plus a route to it.
+
+  Read-only commands like `cf list` work with none of the above.
+
+  Note: `node_modules/` is shared with your host repo via the mounted workspace.
+  This sandbox is linux/amd64 while your host may be macOS, so `bun install` here
+  can rewrite platform-specific artifacts — harmless for this pure-TS/JS dep set,
+  but re-run `bun install` on the host if anything looks off after a session.
+
+commands:
+  # Runs ONCE at creation (as root unless a user is set). Slow the first time
+  # (installs Bun + populates the dep cache). Bake it into a template so it isn't
+  # repeated:  sbx template save cofoundry-dev
+  install:
+    # Make sure the tools cf shells out to are present (ssh + rsync for artifact
+    # sync, git, curl for the Bun installer). Needs root; the default here.
+    - command: "command -v ssh >/dev/null 2>&1 && command -v rsync >/dev/null 2>&1 && command -v git >/dev/null 2>&1 && command -v curl >/dev/null 2>&1 || { apt-get update && apt-get install -y openssh-client rsync git curl ca-certificates; }"
+      description: ensure ssh, rsync, git, curl are available
+
+    # Bun, as the agent user so it lands in the home the agent actually uses. The
+    # installer drops it in ~/.bun/bin.
+    - command: "command -v bun >/dev/null 2>&1 || curl -fsSL https://bun.sh/install | bash"
+      user: "1000"
+      description: install Bun
+
+    # Expose ~/.bun/bin on PATH for every future shell. Marker-guarded because
+    # CLAUDE_ENV_FILE is sourced before every command — a plain append would grow
+    # PATH without bound.
+    - command: |
+        cat >> "${CLAUDE_ENV_FILE:-/etc/sandbox-persistent.sh}" <<'SBXEOF'
+        if [ -z "${SBX_BUN_PATH_DONE:-}" ]; then
+          export BUN_INSTALL="${BUN_INSTALL:-$HOME/.bun}"
+          export PATH="$BUN_INSTALL/bin:$PATH"
+          export SBX_BUN_PATH_DONE=1
+        fi
+        SBXEOF
+      description: add ~/.bun/bin to PATH for future shells
+
+    # Warm the dependency cache so later `bun install` runs are near-instant. As the
+    # agent user; non-fatal so a registry hiccup can't block sandbox creation.
+    - command: |
+        cd "${WORKSPACE_DIR:-.}" && "$HOME/.bun/bin/bun" install || echo 'cofoundry-dev: initial bun install skipped; rerun on demand'
+      user: "1000"
+      description: pre-install dependencies (bun install)
+
+  # Runs on EVERY start (as the agent user). Fast once the Bun binary + dep cache
+  # are baked into a template — reconciles node_modules with the committed lockfile.
+  startup:
+    - command: ["bash", "-lc", "cd \"${WORKSPACE_DIR:-.}\" && \"$HOME/.bun/bin/bun\" install"]
+      description: sync dependencies against bun.lock

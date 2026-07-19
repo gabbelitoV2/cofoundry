@@ -13,7 +13,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Validate semver tag
         run: |
@@ -50,7 +50,10 @@ jobs:
       - name: Build Linux binaries
         run: |
           mkdir -p ../release
-          bun build --compile --target=bun-linux-x64 --outfile ../release/coport-linux-x64 src/main.ts
+          # Use the baseline x64 target (no AVX2) so the binary runs on pre-Haswell
+          # Proxmox nodes (e.g. Ivy Bridge Xeon E5 v2) instead of crashing with
+          # "Illegal instruction". coport is I/O-bound, so the baseline ISA costs nothing.
+          bun build --compile --target=bun-linux-x64-baseline --outfile ../release/coport-linux-x64 src/main.ts
           bun build --compile --target=bun-linux-arm64 --outfile ../release/coport-linux-arm64 src/main.ts
         working-directory: coport
 
@@ -61,15 +64,17 @@ jobs:
       - name: Extract release notes
         run: |
           TAG="${GITHUB_REF_NAME#v}"
+          # Headings follow Keep a Changelog: "## [1.2.3] - 2026-06-28".
+          # Stop at the next version heading or the link-reference footer.
           awk -v tag="$TAG" '
-            $0 ~ "^##[[:space:]]+v?" tag "([[:space:]]|$)" { found = 1; next }
-            found && /^##[[:space:]]+/ { exit }
+            $0 ~ "^##[[:space:]]+\\[v?" tag "\\]" { found = 1; next }
+            found && (/^##[[:space:]]/ || /^\[[^]]+\]:[[:space:]]/) { exit }
             found { print }
             END { if (!found) exit 1 }
           ' CHANGELOG.md > release-notes.md
           test -s release-notes.md
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: coport-linux
           path: release/

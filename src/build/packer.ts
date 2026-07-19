@@ -1,15 +1,56 @@
-import type { Env } from '../env.ts'
-import type { RecipeInfo } from '../config.ts'
-import { shellQuote } from '../util.ts'
+import type { Env } from '@/env.ts'
+import type { RecipeInfo } from '@/config.ts'
+import { shellQuote } from '@/util.ts'
+import { virtioWinIsoFilename } from '@/build/prefetch.ts'
 
-export const buildRemoteOutDir = (env: Env): string =>
-    `${env.PVE_DUMP_DIR}/cofoundry-out`
+export const PACKER_TMP_ROOT = '/var/tmp/cofoundry-packer'
 
-export const buildRemoteWorkDir = (env: Env): string =>
-    `${env.PVE_DUMP_DIR}/cofoundry-work`
+// Linux sockaddr_un.sun_path is 108 bytes including its terminating NUL.
+// Packer's SDK creates `$TMPDIR/packer-plugin<decimal uint32>`, so reserve the
+// longest possible Go os.CreateTemp suffix when validating the directory.
+const PACKER_UNIX_SOCKET_MAX_PATH_BYTES = 107
+const PACKER_PLUGIN_SOCKET_MAX_NAME = 'packer-plugin4294967295'
 
-export const buildRemoteTmpDir = (env: Env): string =>
-    `${env.PVE_DUMP_DIR}/cofoundry-tmp`
+export const packerTmpDir = (runId: string): string =>
+    `${PACKER_TMP_ROOT}/${runId}`
+
+export const assertPackerTmpDirSocketSafe = (dir: string): void => {
+    const socketPath = `${dir}/${PACKER_PLUGIN_SOCKET_MAX_NAME}`
+    const bytes = Buffer.byteLength(socketPath)
+    if (bytes > PACKER_UNIX_SOCKET_MAX_PATH_BYTES) {
+        throw new Error(
+            `Packer TMPDIR is too long for its Unix plugin socket (${bytes}/${PACKER_UNIX_SOCKET_MAX_PATH_BYTES} bytes): ${dir}`
+        )
+    }
+}
+
+/**
+ * Wrap a foreground command so its output is written to a durable logfile on
+ * the node and streamed live with `tail -f`, instead of piped straight out of
+ * the process over SSH.
+ *
+ * The logfile — not the live SSH pipe — is the source of truth. A long quiet
+ * stretch (e.g. Windows setup taking 20+ minutes to reach WinRM) or a transient
+ * pipe stall can no longer drop lines: whatever `tail` misses stays in the file
+ * on the node. The shell also merges the command's stdout and stderr into the
+ * file in write order, so the streamed output is correctly interleaved at the
+ * source rather than reassembled from two races on the reader side.
+ *
+ * `tail --pid` exits once the command does, and the trailing `wait` re-raises
+ * the command's own exit status so Packer failures still propagate to retries.
+ */
+export const streamViaConsoleLog = (
+    command: string,
+    logPath: string
+): string => {
+    const log = shellQuote(logPath)
+    return [
+        `${command} > ${log} 2>&1 &`,
+        `__cf_pid=$!`,
+        `tail -n +1 --pid="$__cf_pid" -f ${log} 2>/dev/null`,
+        `wait "$__cf_pid"`,
+    ].join('\n')
+}
 
 export type BuildNet = {
     ip: string
@@ -19,7 +60,7 @@ export type BuildNet = {
 
 export const buildPackerVars = (
     env: Env,
-    _recipe: RecipeInfo,
+    recipe: RecipeInfo,
     buildBridge: string,
     net: BuildNet | null,
     buildVmid?: number
@@ -29,10 +70,6 @@ export const buildPackerVars = (
         '-var',
         `proxmox_api_url=${apiUrl}`,
         '-var',
-        `proxmox_username=${env.PVE_TOKEN_ID}`,
-        '-var',
-        `proxmox_token=${env.PVE_TOKEN_SECRET}`,
-        '-var',
         `proxmox_node=${env.PVE_NODE}`,
         '-var',
         `proxmox_storage_pool=${env.CF_STORAGE}`,
@@ -41,6 +78,11 @@ export const buildPackerVars = (
         '-var',
         `proxmox_bridge=${buildBridge}`,
     ]
+    // Only Windows recipes declare the virtio_win_iso variable; passing it to
+    // any other recipe would fail `packer build` with an undefined -var error.
+    if (recipe.name.startsWith('windows-')) {
+        vars.push('-var', `virtio_win_iso=${virtioWinIsoFilename(env)}`)
+    }
     if (net) {
         vars.push(
             '-var',
@@ -62,9 +104,12 @@ export const buildPackerVars = (
 export const buildRemoteEnv = (
     env: Env,
     remoteOutDir: string,
-    remoteTmpDir: string,
+    remotePackerTmpDir: string,
     arch: string,
-    group: string
+    group: string,
+    finalDiskSize?: string,
+    baseVmid?: number,
+    skipUpload: boolean = false
 ): string => {
     // Packer runs on the PVE node, so SSH_TARGET=local tells the post-processor
     // to run vzdump directly instead of SSHing back to itself.
@@ -74,36 +119,53 @@ export const buildRemoteEnv = (
         CF_OUT_DIR: remoteOutDir,
         CF_ARCH: arch,
         CF_GROUP: group,
-        TMPDIR: remoteTmpDir,
+        TMPDIR: remotePackerTmpDir,
         PACKER_CACHE_DIR: '/var/lib/vz/template/iso',
+        // Packer automatically maps Packer variable names from PKR_VAR_*.
+        // These stay in the remote process environment instead of appearing
+        // in the Packer argv/process listing.
+        PKR_VAR_proxmox_username: env.PVE_TOKEN_ID,
+        PKR_VAR_proxmox_token: env.PVE_TOKEN_SECRET,
     }
-    if (env.CF_UPLOAD_CMD) pairs.CF_UPLOAD_CMD = env.CF_UPLOAD_CMD
-    if (env.CF_PUBLIC_URL_TMPL)
-        pairs.CF_PUBLIC_URL_TMPL = env.CF_PUBLIC_URL_TMPL
-    // Forward S3-compatible creds + endpoint/bucket so a CF_UPLOAD_CMD using
-    // `aws s3 cp ... $R2_ENDPOINT ... s3://$R2_BUCKET/...` can authenticate
-    // and resolve those shell vars on the node.
-    for (const k of [
-        'AWS_ACCESS_KEY_ID',
-        'AWS_SECRET_ACCESS_KEY',
-        'AWS_SESSION_TOKEN',
-        'AWS_DEFAULT_REGION',
-        'R2_ENDPOINT',
-        'R2_BUCKET',
-        'R2_PREFIX',
-        'CF_SIDECAR_UPLOAD_CMD',
-    ]) {
-        const v = process.env[k]
-        if (v) pairs[k] = v
+    // The post-processor's CF_BUILT_VMID is the slot-derived id (base*100+slot)
+    // for parallel builds; export the recipe BASE so downstream consumers
+    // (e.g. cf-cluster-templates.sh) get it directly instead of reverse-
+    // engineering it. Inherited by the shell-local post-processor and any
+    // CF_UPLOAD_CMD it spawns.
+    if (baseVmid !== undefined) pairs.CF_RECIPE_BASE_VMID = String(baseVmid)
+    // Opt-in: when set, the post-processor shrinks the OS disk to this size
+    // before vzdump (see recipes/_shared/post/shrink-disk.sh).
+    if (finalDiskSize) pairs.CF_FINAL_DISK_SIZE = finalDiskSize
+    if (!skipUpload) {
+        if (env.CF_UPLOAD_CMD) pairs.CF_UPLOAD_CMD = env.CF_UPLOAD_CMD
+        if (env.CF_SIDECAR_UPLOAD_CMD)
+            pairs.CF_SIDECAR_UPLOAD_CMD = env.CF_SIDECAR_UPLOAD_CMD
+        if (env.CF_PUBLIC_URL_TMPL)
+            pairs.CF_PUBLIC_URL_TMPL = env.CF_PUBLIC_URL_TMPL
+        if (env.R2_ENDPOINT) pairs.R2_ENDPOINT = env.R2_ENDPOINT
+        if (env.R2_BUCKET) pairs.R2_BUCKET = env.R2_BUCKET
+        if (env.R2_PREFIX) pairs.R2_PREFIX = env.R2_PREFIX
+        // Forward S3-compatible creds + endpoint/bucket so a CF_UPLOAD_CMD
+        // using `aws s3 cp ... $R2_ENDPOINT ... s3://$R2_BUCKET/...` can
+        // authenticate and resolve those shell vars on the node.
+        for (const k of [
+            'AWS_ACCESS_KEY_ID',
+            'AWS_SECRET_ACCESS_KEY',
+            'AWS_SESSION_TOKEN',
+            'AWS_DEFAULT_REGION',
+        ]) {
+            const v = process.env[k]
+            if (v) pairs[k] = v
+        }
+        // R2 rejects the default CRC32 integrity checksum AWS CLI v2.23+ adds
+        // to single-part PutObject ("SignatureDoesNotMatch" on small objects
+        // like sidecar JSONs). Multipart uploads (large .vma.zst) take a
+        // different code path and aren't affected. Caller can override these.
+        pairs.AWS_REQUEST_CHECKSUM_CALCULATION =
+            process.env.AWS_REQUEST_CHECKSUM_CALCULATION ?? 'when_required'
+        pairs.AWS_RESPONSE_CHECKSUM_VALIDATION =
+            process.env.AWS_RESPONSE_CHECKSUM_VALIDATION ?? 'when_required'
     }
-    // R2 rejects the default CRC32 integrity checksum AWS CLI v2.23+ adds to
-    // single-part PutObject ("SignatureDoesNotMatch" on small objects like
-    // sidecar JSONs). Multipart uploads (large .vma.zst) take a different
-    // code path and aren't affected. Caller can override by exporting these.
-    pairs.AWS_REQUEST_CHECKSUM_CALCULATION =
-        process.env.AWS_REQUEST_CHECKSUM_CALCULATION ?? 'when_required'
-    pairs.AWS_RESPONSE_CHECKSUM_VALIDATION =
-        process.env.AWS_RESPONSE_CHECKSUM_VALIDATION ?? 'when_required'
     return Object.entries(pairs)
         .map(([k, v]) => `${k}=${shellQuote(v)}`)
         .join(' ')

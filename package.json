@@ -1,7 +1,7 @@
 {
   "name": "cofoundry",
   "version": "0.0.1",
-  "description": "Automated Proxmox VM template builder. Produces vzdump (.vma.zst) artifacts from upstream cloud images.",
+  "description": "Automated Proxmox VM template builder. Produces vzdump (.vma.zst) artifacts from unattended ISO installations.",
   "type": "module",
   "module": "src/cli.ts",
   "bin": {
@@ -38,6 +38,7 @@
     "smol-toml": "^1.3.1",
     "ssh2": "^1.16.0",
     "ssh2-sftp-client": "^12.1.1",
+    "tar": "^7.5.20",
     "zod": "^3.23.8"
   },
   "devDependencies": {

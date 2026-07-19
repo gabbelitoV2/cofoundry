@@ -1,6 +1,7 @@
 import { readFile, writeFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
-import type { RecipeInfo } from './config.ts'
+import type { RecipeInfo } from '@/config.ts'
+import { fetchWithRetry } from '@/util.ts'
 
 const CHECKSUMS_FILE = fileURLToPath(
     new URL('../upstream-checksums.json', import.meta.url)
@@ -48,7 +49,7 @@ export const saveChecksums = async (store: ChecksumStore): Promise<void> => {
 }
 
 const fetchState = async (url: string): Promise<UpstreamState> => {
-    const res = await fetch(url, { method: 'HEAD' })
+    const res = await fetchWithRetry(url, { method: 'HEAD' })
     if (!res.ok) throw new Error(`HEAD ${url} → HTTP ${res.status}`)
     return {
         lastModified: res.headers.get('last-modified') ?? undefined,

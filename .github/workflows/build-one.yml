@@ -1,0 +1,97 @@
+name: Build one template
+
+on:
+  workflow_call:
+    inputs:
+      recipe:
+        required: true
+        type: string
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    # Duplicate recipes share stable output names. Serialize only that identity;
+    # different recipes are admitted in parallel by the node-wide lease manager.
+    concurrency:
+      group: cofoundry-recipe-${{ inputs.recipe }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    env:
+      CF_RECIPE: ${{ inputs.recipe }}
+      PVE_TOKEN_SECRET: ${{ secrets.PVE_TOKEN_SECRET }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: auto
+      PVE_HOST: ${{ vars.PVE_HOST || secrets.PVE_HOST }}
+      SSH_TARGET: ${{ vars.SSH_TARGET || secrets.SSH_TARGET }}
+      PVE_NODE: ${{ vars.PVE_NODE || secrets.PVE_NODE }}
+      PVE_TOKEN_ID: ${{ vars.PVE_TOKEN_ID || secrets.PVE_TOKEN_ID }}
+      R2_ENDPOINT: ${{ vars.R2_ENDPOINT || secrets.R2_ENDPOINT }}
+      R2_BUCKET: ${{ vars.R2_BUCKET || secrets.R2_BUCKET }}
+      # Optional explicit node-wide limits. When absent, cf uses 80% of physical
+      # RAM and all host CPUs while still accounting across independent jobs.
+      CF_BUILD_MEMORY_BUDGET_MB: ${{ vars.CF_BUILD_MEMORY_BUDGET_MB }}
+      CF_BUILD_CPU_BUDGET: ${{ vars.CF_BUILD_CPU_BUDGET }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: oven-sh/setup-bun@v2
+
+      - run: bun install --frozen-lockfile
+
+      - name: Run tests
+        run: bun test
+
+      - name: Connect to Tailscale
+        uses: tailscale/github-action@v4
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: ${{ vars.TS_TAG || 'tag:ci' }}
+
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "StrictHostKeyChecking=no" >> ~/.ssh/config
+
+      - name: Set up SSH key
+        if: env.SSH_PRIVATE_KEY != ''
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+        run: |
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+
+      - name: Build template
+        run: bun run cf build "$CF_RECIPE" --ci --verbose
+        env:
+          CF_SKIP_ARTIFACT_SYNC: '1'
+
+      - name: Smoke-test artifact
+        run: bun run cf verify "$CF_RECIPE"
+
+      # Runs only after build+verify succeed (steps stop on first failure), so
+      # this marker's existence is the per-recipe success signal that
+      # check-upstream's commit-checksums job uses to advance only the checksums
+      # of recipes that actually built. The recipe name is the marker filename.
+      - name: Mark recipe built
+        run: |
+          mkdir -p built
+          touch "built/$CF_RECIPE"
+
+      - name: Record successful build
+        uses: actions/upload-artifact@v7
+        with:
+          name: built-${{ inputs.recipe }}
+          path: built/
+          retention-days: 1
+
+      - name: Upload failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: diagnostics-${{ inputs.recipe }}
+          path: diagnostics/
+          retention-days: 7
+          if-no-files-found: ignore

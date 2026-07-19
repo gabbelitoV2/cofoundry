@@ -1,7 +1,11 @@
 node_modules/
 dist/
+/diagnostics/
 .env
 .env.local
+cofoundry.local.toml
+.sbx/tailscale.env
 *.log
 .DS_Store
 .idea/
+.claude/

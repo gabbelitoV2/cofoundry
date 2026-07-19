@@ -9,15 +9,17 @@
 # Output: path to the generated .pkrvars.hcl file (printed to stdout)
 
 set -euo pipefail
+umask 077
 
 RECIPE="${1:?usage: inject-placeholders.sh <recipe-name>}"
 RUNNER_TEMP="${RUNNER_TEMP:-/tmp}"
 VARS_FILE="${RUNNER_TEMP}/packer-vars-${RECIPE}.pkrvars.hcl"
 
-# Wipe any vars file from a previous run
+# Recreate rather than truncate so an old permissive mode cannot survive.
+rm -f "$VARS_FILE"
 : >"$VARS_FILE"
 
-RECIPE_DIR="builds/${RECIPE}"
+RECIPE_DIR="recipes/${RECIPE}"
 
 # ── Detect installer files and generate ephemeral SSH keypair ────────────────
 PRESEED="${RECIPE_DIR}/http/preseed.cfg"
@@ -44,6 +46,7 @@ if [ "$NEEDS_KEY" = "1" ]; then
     sed -E \
       "s|__PACKER_SSH_PUBLIC_KEY__|${PUB_KEY}|g; \
        s|ssh-ed25519 AAAA[^ ]+ packer-${RECIPE}-[^ '\"]*|${PUB_KEY}|g; \
+       s|__PACKER_RECIPE_NAME__|${RECIPE}|g; \
        s|__PACKER_BUILD_IP__|${CF_BUILD_IP:-}|g; \
        s|__PACKER_BUILD_GW__|${CF_BUILD_GW:-}|g; \
        s|__PACKER_BUILD_DNS__|${CF_BUILD_DNS:-1.1.1.1}|g" \
@@ -65,6 +68,7 @@ if [ -f "$AUTOUNATTEND" ]; then
   AUTOUNATTEND_WORK="${RUNNER_TEMP}/autounattend-${RECIPE}.xml"
   sed "s|__PACKER_ADMIN_PASSWORD__|${WIN_PASSWORD}|g" "$AUTOUNATTEND" >"$AUTOUNATTEND_WORK"
   cp "$AUTOUNATTEND_WORK" "$AUTOUNATTEND"
+  chmod 600 "$AUTOUNATTEND"
   printf 'winrm_password = "%s"\n' "$WIN_PASSWORD" >>"$VARS_FILE"
 fi
 

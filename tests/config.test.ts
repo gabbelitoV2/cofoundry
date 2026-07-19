@@ -1,7 +1,8 @@
 import { describe, expect, test } from 'bun:test'
+import { fileURLToPath } from 'node:url'
 import { listRecipes, loadRecipe } from '../src/config.ts'
 
-const FIXTURES = new URL('./fixtures/builds/', import.meta.url).pathname
+const FIXTURES = fileURLToPath(new URL('./fixtures/recipes/', import.meta.url))
 
 describe('loadRecipe', () => {
     test('parses display and build_vmid from header comments', async () => {
@@ -9,6 +10,8 @@ describe('loadRecipe', () => {
         expect(r.name).toBe('recipe-minimal')
         expect(r.display).toBe('Minimal Recipe')
         expect(r.buildVmid).toBe(9999)
+        expect(r.buildCores).toBe(2)
+        expect(r.buildMemoryMb).toBe(4096)
         expect(r.isoUrl).toBeUndefined()
         expect(r.isoTargetPath).toBeUndefined()
     })
@@ -26,6 +29,13 @@ describe('loadRecipe', () => {
     test('only captures the first iso_target_path (boot ISO, not additional)', async () => {
         const r = await loadRecipe('recipe-with-iso', FIXTURES)
         expect(r.isoTargetPath).not.toContain('virtio-win')
+    })
+
+    test('parses final_disk_size when present, undefined otherwise', async () => {
+        const withSize = await loadRecipe('recipe-with-iso', FIXTURES)
+        expect(withSize.finalDiskSize).toBe('16G')
+        const minimal = await loadRecipe('recipe-minimal', FIXTURES)
+        expect(minimal.finalDiskSize).toBeUndefined()
     })
 
     test('falls back to name when display header is missing', async () => {

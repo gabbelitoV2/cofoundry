@@ -5,7 +5,8 @@
 ```sh
 cf build debian-12
 cf build windows-server-2025
-cf build debian-12 --skip-sync-back
+cf build debian-12 --skip-artifact-sync
+cf build debian-12 --skip-upload
 ```
 
 The first run for a recipe downloads the ISO to the node's cache automatically. Subsequent builds skip the download. Output lands in `./dist/`:
@@ -21,16 +22,60 @@ dist/debian-12.json          # sidecar (name, sha256, size, url, built_at)
 cf list
 ```
 
+## Cloning a template
+
+Cofoundry templates do not contain a baked-in DNS server. When deploying a
+clone, set an explicit nameserver that the VM can reach.
+
+This is especially important when the Proxmox node accepts Tailscale MagicDNS.
+Tailscale sets the node's resolver to `100.100.100.100`, and Proxmox uses the
+node's resolver as the default for a cloud-init VM without its own nameserver.
+A clone that is not on the tailnet cannot reach that resolver, so DNS fails.
+This affects the deployed clone, not the Cofoundry build or its GitHub Actions
+runner.
+
+On Ubuntu, `/etc/resolv.conf` normally points to the systemd-resolved stub at
+`127.0.0.53`; use `resolvectl status` to see the actual upstream resolver.
+
+Either give the clone an explicit reachable nameserver, or keep the Proxmox
+node from accepting MagicDNS with `tailscale set --accept-dns=false` and set the
+node's resolver in **Datacenter → DNS** (for example, `1.1.1.1`).
+
 ## Build everything
 
-Builds all recipes sequentially. Continues on failure and prints a pass/fail summary at the end.
+Omit recipe names to build everything. Builds are stage-pipelined, continue on
+failure, and print a pass/fail summary at the end.
 
 ```sh
-cf build-all
-cf build-all --skip-sync-back
+cf build
+cf build --skip-artifact-sync
 ```
 
-`--skip-sync-back` overrides the default artifact download for that command invocation. `CF_SKIP_SYNC_BACK=1` still works too.
+Packer builds run one at a time by default. To opt into parallel builds, set a
+maximum concurrency and explicit node-wide RAM and CPU budgets. A recipe starts
+only when all three limits have capacity:
+
+```sh
+cf build --build-concurrency 4 --build-memory-budget 16G --build-cpu-budget 8
+```
+
+The persistent equivalents are `build.concurrency`,
+`build.memory_budget_mb`, and `build.cpu_budget` in `cofoundry.toml`. Recipe
+resource requirements come directly from each `.pkr.hcl` file's `memory` and
+`cores` settings.
+
+The local scheduler coordinates recipes within one command, while heartbeating
+leases on the Proxmox node enforce the same RAM and CPU budgets across independent
+`cf build` and `cf verify` processes. If budgets are omitted, node-wide admission
+uses 80% of physical RAM and all host CPUs. Explicit budgets remain preferable
+when other workloads share the node, and are clamped to those physical safety
+ceilings if configured higher.
+
+`--skip-artifact-sync` overrides the default artifact download for that command invocation (env equivalent: `CF_SKIP_ARTIFACT_SYNC=1`).
+
+`--skip-upload` disables the configured artifact and sidecar uploads for that
+build invocation. It does not disable the default artifact download to
+`CF_OUT_DIR`.
 
 ## Check for upstream ISO changes
 
@@ -46,7 +91,7 @@ Commit `upstream-checksums.json` so CI can track changes across runs.
 
 ## Publish a manifest
 
-Aggregates `./dist/*.json` sidecars into `./registry.json` at the repo root, for consumption by [downloader](https://github.com/ConvoyPanel/downloader). In CI, use `cf publish --r2` to source sidecars from R2 instead (artifacts are never synced back to the runner).
+Aggregates `./dist/*.json` sidecars into `./registry.json` at the repo root, for consumption by [downloader](https://github.com/ConvoyPanel/downloader) or [coport](coport.md), the node-side template installer. In CI, use `cf publish --r2` to source sidecars from R2 instead (artifacts are never synced back to the runner).
 
 ```sh
 cf publish        # local: dist/*.json → registry.json
@@ -62,9 +107,23 @@ cf clean
 ```
 
 Removes from the Proxmox node:
-- `/tmp/cofoundry/` — working directory (lives on tmpfs)
+
+- `$PVE_DUMP_DIR/cofoundry-work`, `cofoundry-snapshots`, `cofoundry-cache`,
+  `cofoundry-tmp`, and `cofoundry-out` (plus orphaned `cofoundry-work.new.*` links)
+- legacy `/tmp/cofoundry/` data, if present
 - Uploaded ISOs from Proxmox ISO storage (`packer*.iso` and hash-named ISOs)
-- Stale vzdump archives and log files
+- Every `vzdump-qemu-*` archive left in the dump dir, regardless of VMID
+- Every `packer-*` build VM and its disks, **including templates** left by
+  successful builds (`clean` is a full teardown; `prune` spares templates)
+- Disks orphaned in the `CF_STORAGE` pool whose owning VM is already gone
+- Interrupted ISO downloads, including PID-suffixed `*.iso.tmp.<pid>` files
+- RRD and vzdump telemetry belonging to deleted Cofoundry build/verify VMIDs
+
+Builds and verification runs share a node maintenance lock. They can still run
+in parallel with each other, while `clean` takes the exclusive side and waits
+for them to finish before tearing down state. A second `clean` also waits, so
+cleanup cannot race ISO prefetch, repository upload, Packer, or another cleanup.
+Deletion is verified before the command reports success.
 
 ### Weekly maintenance
 
@@ -74,27 +133,151 @@ cf prune --days 7  # stricter cache cutoff
 ```
 
 Removes:
-- Build VMs in the 91xx/92xx VMID range left over from interrupted builds
-- ISO cache files older than N days (ISOs are re-downloaded automatically on next build)
 
-A cron job on the node handles this automatically — see [Setup §8](setup.md#8-set-up-the-weekly-cleanup-cron).
+- VMs and scratch explicitly owned by expired run leases, plus legacy
+  non-template `packer-*` VMs older than the cutoff;
+- old, unreferenced Packer ISO files and download-cache entries (the persistent
+  `packer-virtio-win*.iso` cache is preserved and attached media is never pruned);
+- vzdump archives and working data older than the selected cutoff;
+- orphaned per-build scratch in `cofoundry-tmp` (`build-*`, `repo-*.tar.gz`,
+  `sync-*`) and half-swapped `cofoundry-work.new.*` links older than the cutoff;
+- unreferenced repository snapshots older than the selected cutoff.
+
+A cron job on the node handles this automatically — see
+[Setup: weekly cleanup cron](setup.md#6-weekly-cleanup-cron).
 
 ## CDN upload
 
-Set in `.env` and every build will upload the artifact automatically:
+Configure the `[upload]` block in `cofoundry.toml`; every build then uploads the
+artifact and its sidecar automatically:
 
-```sh
-R2_PREFIX=templates/
-CF_UPLOAD_CMD='aws s3 cp {{file}} s3://my-bucket/templates/{{name}}-{{arch}}/{{sha256}}.vma.zst'
-CF_SIDECAR_UPLOAD_CMD='aws s3 cp {{file}} s3://my-bucket/templates/{{name}}-{{arch}}/{{sha256}}.json'
-CF_PUBLIC_URL_TMPL='https://cdn.example.com/templates/{{name}}-{{arch}}/{{sha256}}.vma.zst'
+```toml
+[upload]
+endpoint   = "${R2_ENDPOINT}"   # from env (contains the account id)
+bucket     = "${R2_BUCKET}"
+layout     = "grouped"          # templates/{{group}}/{{recipe}}-{{arch}}/{{sha256}}
+public_url = "https://cdn.example.com"
+prefix     = "templates/"       # what `cf publish --r2` scans
 ```
 
-`{{file}}` is replaced with the local artifact path, `{{name}}` with the recipe name, and `{{arch}}` with the target architecture. `cf publish --r2` scans `R2_PREFIX` by default; use `cf publish --r2 --prefix /` for a bucket-root layout.
+The upload command, sidecar command, and public URL are all **generated from the
+same key**, so they can never drift. Pick a layout:
+
+| `layout`  | object key                                           |
+| --------- | ---------------------------------------------------- |
+| `grouped` | `templates/{{group}}/{{recipe}}-{{arch}}/{{sha256}}` |
+| `flat`    | `templates/{{recipe}}-{{arch}}/{{sha256}}`           |
+
+Both are prune-safe (each template gets its own directory). For a custom path,
+set `key` directly instead of `layout`:
+
+```toml
+key = "{{recipe}}/{{recipe}}-{{arch}}-{{sha256}}"
+```
+
+Placeholders: `{{recipe}}` (recipe name), `{{arch}}`, `{{group}}` (OS family),
+`{{sha256}}`. For a fully hand-written command, set `command` /
+`sidecar_command` under `[upload]` (they accept the same placeholders plus
+`{{file}}`, the local path). `cf publish --r2` scans `prefix`.
+
+### The upload hook (`CF_UPLOAD_CMD`)
+
+The `[upload]` block materializes as three derived values —
+`CF_UPLOAD_CMD`, `CF_SIDECAR_UPLOAD_CMD`, and `CF_PUBLIC_URL_TMPL` — that
+`cf` exports into the build environment (run `cf config` to see them).
+Setting any of them directly in the environment or `.env` overrides the
+derived value; that is the escape hatch used to wire in a fully custom hook
+such as the [cluster distribution script](#cluster-template-distribution).
+
+Packer runs on the Proxmox node, so its shell-local post-processor
+(`recipes/_shared/post/vzdump-and-cleanup.sh`) executes `CF_UPLOAD_CMD` **on
+the node** with `bash -c`, right after the artifact is exported and hashed —
+any binary the command calls (such as `aws`) must exist there. These
+placeholders are substituted first:
+
+| Placeholder               | Value                                                                                        |
+| ------------------------- | -------------------------------------------------------------------------------------------- |
+| `{{file}}`                | path of the file being uploaded (the artifact; the sidecar JSON for `CF_SIDECAR_UPLOAD_CMD`) |
+| `{{recipe}}` / `{{name}}` | recipe name, e.g. `debian-12` (`{{name}}` is a legacy alias)                                 |
+| `{{arch}}`                | architecture, e.g. `amd64`                                                                   |
+| `{{group}}`               | OS family                                                                                    |
+| `{{sha256}}`              | artifact SHA-256                                                                             |
+| `{{filename}}`            | `<recipe>-<arch>-<sha256>.vma.zst` (`.json` for the sidecar command)                         |
+
+`CF_PUBLIC_URL_TMPL` accepts the same placeholders except `{{file}}`; the
+rendered URL is written into the sidecar's `url` field.
+
+The command also inherits useful build environment: `R2_ENDPOINT`,
+`R2_BUCKET`, `R2_PREFIX`, and the `AWS_*` credentials (so the generated
+`aws s3 cp` can authenticate on the node), plus `CF_RECIPE_NAME`, `CF_ARCH`,
+`CF_GROUP`, `CF_BUILT_VMID` (the built VM's id — slot-derived for networked
+installers), and `CF_RECIPE_BASE_VMID` (the recipe's stable base VMID).
+`cf build --skip-upload` withholds all upload variables for that invocation,
+and `cf upload [names...]` re-runs the same commands later for already-built
+artifacts (with `--remote` they execute on the node against its
+`cofoundry-out` directory).
+
+## Cluster template distribution
+
+`scripts/cf-cluster-templates.sh` is a local/cluster convenience — not part of
+the upstream recipes — that turns each freshly built artifact into a clonable
+template on **every online node** of a Proxmox cluster. Cluster VMIDs are
+globally unique, so each node gets its own copy under its own VMID.
+
+Wire it in as the build node's upload hook in `.env`:
+
+```sh
+CF_UPLOAD_CMD=bash $PVE_DUMP_DIR/cofoundry-work/scripts/cf-cluster-templates.sh {{file}} {{sha256}}
+```
+
+For every online node listed in `/etc/pve/.members`, the script:
+
+1. computes the target VMID as `node_id * OFFSET + BASE_VMID`. `OFFSET` is
+   `CF_TEMPLATE_VMID_OFFSET` (default `10000`) and `BASE_VMID` is
+   `CF_RECIPE_BASE_VMID`, falling back to `CF_BUILT_VMID`. With base `4001`:
+   node 1 → `14001`, node 2 → `24001`, node 3 → `34001`. The script refuses
+   to run when the base VMID is not below the offset, since adjacent nodes
+   would collide;
+2. copies the artifact into the node's dump dir over `scp` (a plain `cp` when
+   the target is the build node itself);
+3. verifies the copied artifact's SHA-256 against `{{sha256}}` (or, when the
+   hook omits it, against the local artifact's own hash), retrying the copy
+   once on a mismatch; a copy that still fails to match is skipped with its
+   existing template left untouched;
+4. picks that node's disk storage, in order: `CF_TEMPLATE_STORAGE` (default
+   `local-lvm`) if active, then `local-lvm`, then `local-zfs`, and as a last
+   resort the best active images-capable storage — local over shared,
+   VM-native types (lvmthin/zfspool/btrfs/rbd/lvm) over directory storage,
+   most free space first;
+5. restores with `qmrestore --unique 1` and marks the result as a template.
+
+A VMID holding a real (non-template) VM is never touched — that node is
+skipped with a log line. An existing template at the VMID is stopped,
+destroyed, and replaced. A failure on one node is logged (`[fail] <ip>`) and
+the loop continues with the remaining nodes.
+
+The two knobs are read from the post-processor's environment on the node;
+`cf` does not forward them from your workstation. To change one, set it
+inside the command itself:
+
+```sh
+CF_UPLOAD_CMD=CF_TEMPLATE_STORAGE=local-zfs bash $PVE_DUMP_DIR/cofoundry-work/scripts/cf-cluster-templates.sh {{file}} {{sha256}}
+```
+
+This flow pushes templates to the nodes of your own cluster at build time.
+For installing templates from a published registry onto any Proxmox node, see
+[Coport](coport.md).
 
 ## GitHub Actions
 
-- **`check-upstream.yml`** — runs daily. Checks for upstream ISO changes, commits `upstream-checksums.json`, triggers matrix builds for changed recipes.
-- **`build.yml`** — reusable per-recipe workflow; also supports manual `workflow_dispatch`.
+- **`check-upstream.yml`** — checks weekly, runs changed recipes in a parallel
+  matrix, then publishes once. Publishing and the checksum commit tolerate a
+  partial failure: successful recipes are published and get their checksums
+  advanced, while a failed recipe keeps its old checksum and is retried next run.
+- **`build.yml`** — reusable/manual one-recipe entry point.
+- **`build-one.yml`** — parallel-safe build and smoke-test worker.
+- **`publish.yml`** — globally serialized registry writer and R2 finalizer.
+- **`prune-node.yml`** — lease-aware node maintenance after a workflow finishes.
 
-Required secrets mirror the `.env` variables — set them in your repo's Settings → Secrets.
+CI reads the same committed `cofoundry.toml`; it supplies only the secrets and
+the `${VAR}` coordinates. See [Setup](setup.md).

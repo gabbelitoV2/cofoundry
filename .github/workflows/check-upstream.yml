@@ -20,7 +20,7 @@ jobs:
       matrix: ${{ steps.check.outputs.matrix }}
       any_changed: ${{ steps.check.outputs.any_changed }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: oven-sh/setup-bun@v2
 
@@ -31,7 +31,7 @@ jobs:
           FORCE: ${{ inputs.force }}
         run: |
           if [ "$FORCE" = "true" ]; then
-            CHANGED=$(ls builds/*.pkr.hcl | xargs -n1 basename | sed 's/\.pkr\.hcl$//' | jq -R . | jq -sc .)
+            CHANGED=$(ls recipes/*.pkr.hcl | xargs -n1 basename | sed 's/\.pkr\.hcl$//' | jq -R . | jq -sc .)
           else
             CHANGED=$(bun run cf check --json)
           fi
@@ -42,21 +42,137 @@ jobs:
             echo "any_changed=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Commit updated checksums
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add upstream-checksums.json
-          git diff --staged --quiet || (git commit -m "chore: update upstream checksums" && git push)
+      # The full new-state store for every checked recipe. Do not commit it yet:
+      # commit-checksums overlays only the recipes that actually built onto the
+      # store on main, so a failed recipe keeps its old checksum here and the
+      # next scheduled run detects and retries just that update.
+      - uses: actions/upload-artifact@v7
+        with:
+          name: upstream-checksums
+          path: upstream-checksums.json
+          retention-days: 1
 
   build:
     needs: check
     if: needs.check.outputs.any_changed == 'true'
     strategy:
       fail-fast: false
-      max-parallel: 1
+      # Node-wide leases enforce RAM/CPU limits across these independent jobs.
+      # This cap limits runner fan-out and can be overridden without weakening
+      # node safety.
+      max-parallel: ${{ fromJSON(vars.CF_CI_MAX_PARALLEL || '4') }}
       matrix: ${{ fromJson(needs.check.outputs.matrix) }}
-    uses: ./.github/workflows/build.yml
+    uses: ./.github/workflows/build-one.yml
     with:
       recipe: ${{ matrix.recipe }}
     secrets: inherit
+
+  # Publish whenever the build job ran and produced at least some artifacts,
+  # even if a leg failed. Each successful build already uploaded its image and
+  # sidecar to R2 during build-one, and `cf publish --r2` aggregates whatever
+  # sidecars are in R2 — so a partial failure still publishes the successes,
+  # while a failed recipe simply keeps its previous R2 image. 'failure' means
+  # some legs failed; 'success' means all passed. Skip only when nothing built
+  # (build skipped) or the run was cancelled.
+  publish:
+    needs: build
+    if: always() && (needs.build.result == 'success' || needs.build.result == 'failure')
+    uses: ./.github/workflows/publish.yml
+    secrets: inherit
+
+  prune-node:
+    needs: [check, build]
+    if: always() && needs.check.result == 'success'
+    uses: ./.github/workflows/prune-node.yml
+    secrets: inherit
+
+  # Advance the committed checksums for the recipes that built successfully.
+  # Runs after a partial failure too (build == 'failure'), and the merge step
+  # only carries forward recipes that produced a `built-*` marker, so failed
+  # recipes keep their old checksum and are retried next run. Gated on publish
+  # success: if the registry didn't publish, don't advance any checksums.
+  commit-checksums:
+    needs: [check, build, publish]
+    if: >-
+      always() &&
+      needs.check.result == 'success' &&
+      (needs.build.result == 'success' || needs.build.result == 'failure') &&
+      needs.publish.result == 'success'
+    runs-on: ubuntu-latest
+    # Serialize every generated-file writer. The retry below also tolerates an
+    # unrelated human push landing between fetch and push.
+    concurrency:
+      group: cofoundry-publish
+      cancel-in-progress: false
+    env:
+      # 'true' only when a registry-writer GitHub App is configured. When empty
+      # (no ruleset on main), fall back to the default GITHUB_TOKEN for the
+      # upstream-checksums push. See docs/setup.md#3.
+      HAS_REGISTRY_APP: ${{ secrets.REGISTRY_APP_ID != '' && secrets.REGISTRY_APP_PRIVATE_KEY != '' }}
+    steps:
+      - uses: actions/create-github-app-token@v3
+        id: registry-app-token
+        if: env.HAS_REGISTRY_APP == 'true'
+        with:
+          app-id: ${{ secrets.REGISTRY_APP_ID }}
+          private-key: ${{ secrets.REGISTRY_APP_PRIVATE_KEY }}
+
+      # Checkout persists whichever token it's given, so the push below uses it:
+      # the app token when configured, otherwise the default GITHUB_TOKEN.
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+          token: ${{ steps.registry-app-token.outputs.token || github.token }}
+
+      # The full new-state store computed by the check job.
+      - uses: actions/download-artifact@v8
+        with:
+          name: upstream-checksums
+          path: new-checksums
+
+      # One marker per recipe that built+verified successfully; the filename is
+      # the recipe name. merge-multiple collapses them into a single directory.
+      # When every leg failed there are no markers, so tolerate no matches.
+      - uses: actions/download-artifact@v8
+        continue-on-error: true
+        with:
+          pattern: built-*
+          path: built
+          merge-multiple: true
+
+      - name: Commit checksums for successfully built recipes
+        run: |
+          git config user.name "cofoundry-registry-writer[bot]"
+          git config user.email "cofoundry-registry-writer[bot]@users.noreply.github.com"
+          # JSON array of recipe names whose build succeeded this run.
+          if [ -d built ] && [ -n "$(ls -A built)" ]; then
+            KEEP=$(ls built | jq -R . | jq -sc .)
+          else
+            echo "no successful builds; nothing to commit"
+            exit 0
+          fi
+          cp new-checksums/upstream-checksums.json "$RUNNER_TEMP/new.json"
+          for attempt in 1 2 3; do
+            git fetch origin main
+            git reset --hard origin/main
+            # Overlay only the successfully-built recipes' new states onto the
+            # store on main. Recipes that failed (or weren't built) keep their
+            # committed checksum and are re-detected as changed next run.
+            jq --slurpfile new "$RUNNER_TEMP/new.json" --argjson keep "$KEEP" '
+              reduce $keep[] as $r (.;
+                if $new[0][$r] != null then .[$r] = $new[0][$r] else . end)
+            ' upstream-checksums.json > "$RUNNER_TEMP/merged.json"
+            mv "$RUNNER_TEMP/merged.json" upstream-checksums.json
+            git add upstream-checksums.json
+            if git diff --cached --quiet; then
+              break
+            fi
+            git commit -m "chore: update upstream checksums"
+            if git push origin HEAD:main; then
+              break
+            fi
+            if [ "$attempt" = 3 ]; then
+              echo "checksum push failed after 3 attempts" >&2
+              exit 1
+            fi
+          done

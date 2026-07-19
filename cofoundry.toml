@@ -1,0 +1,44 @@
+# cofoundry.toml — non-secret deployment config for `cf`.
+# Committed and reviewable. Inspect the resolved result with `cf config`.
+#
+# Three tiers of configuration:
+#   • Secrets      — env only (.env locally, GitHub Secrets in CI). Never here.
+#                    PVE_TOKEN_SECRET, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY.
+#   • This file    — non-secret deployment facts, shared by laptop and CI.
+#   • CLI flags    — per-invocation toggles (--keep-vm, --ci, …).
+#
+# Coordinates that identify this specific node/account use ${VAR} so they are
+# supplied from the environment and never committed to a public repo. A
+# gitignored cofoundry.local.toml can override any value per machine.
+#
+# Resolution order (highest wins):
+#   flag > env > ${VAR} > cofoundry.local.toml > this file > built-in default
+
+[node]
+host     = "${PVE_HOST}"       # sensitive → from env / .env / GH secret
+ssh      = "${SSH_TARGET}"     # sensitive → from env
+node     = "${PVE_NODE}"       # deployment-specific → from env
+token_id = "${PVE_TOKEN_ID}"   # not secret, but deployment-specific → from env
+port     = 8006
+
+[storage]
+disks = "local"   # Proxmox storage pool for VM disks (was CF_STORAGE)
+isos  = "local"   # Proxmox storage pool for ISOs   (was CF_ISO_STORAGE)
+
+[network]
+bridge       = "vmbr0"     # direct-network recipes that do not need a build slot
+build_bridge = "vmbr1"     # ISO-installer + Windows NAT bridge
+build_dns    = "1.1.1.1"   # resolver for ISO-installer build VMs
+
+[upload]
+# The object key is generated from `layout`; both presets are prune-safe (each
+# template gets its own directory). For a custom path set `key` directly:
+#   key = "{{recipe}}/{{recipe}}-{{arch}}-{{sha256}}"
+# Placeholders: {{recipe}} {{arch}} {{group}} {{sha256}}.
+# The upload command, sidecar command, and public URL are all derived from this
+# one key, so they can never drift.
+endpoint   = "${R2_ENDPOINT}"   # sensitive (contains the R2 account id) → from env
+bucket     = "${R2_BUCKET}"     # deployment-specific → from env
+layout     = "grouped"          # templates/{{group}}/{{recipe}}-{{arch}}/{{sha256}}
+public_url = "https://cofoundry.cdn.convoypanel.com"   # public CDN base (change when forking)
+prefix     = "templates/"       # bucket prefix `cf publish --r2` scans

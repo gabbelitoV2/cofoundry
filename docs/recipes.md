@@ -1,83 +1,107 @@
 # Recipes
 
+All current recipes perform an unattended ISO installation on Proxmox and then
+export a vzdump artifact. The `# build_vmid` in each HCL file is a stable recipe
+base ID. During `cf build`, networked installers use
+`base_build_vmid * 100 + slot_index` so parallel builds do not share VM state.
+
 ## Supported recipes
 
-### Linux (cloud image)
+| Family         | Recipe                | Base VMID | Build/final disk |
+| -------------- | --------------------- | --------: | ---------------: |
+| Ubuntu         | `ubuntu-22.04`        |      1002 |               5G |
+| Ubuntu         | `ubuntu-24.04`        |      1003 |               5G |
+| Ubuntu         | `ubuntu-25.10`        |      1004 |               5G |
+| Ubuntu         | `ubuntu-26.04`        |      1005 |               5G |
+| Windows Server | `windows-server-2019` |      2000 |       100G / 30G |
+| Windows Server | `windows-server-2022` |      2001 |       100G / 30G |
+| Windows Server | `windows-server-2025` |      2002 |       100G / 32G |
+| Debian         | `debian-11`           |      4000 |               5G |
+| Debian         | `debian-12`           |      4001 |               5G |
+| Debian         | `debian-13`           |      4002 |               5G |
+| Rocky Linux    | `rocky-linux-8`       |      5000 |               5G |
+| Rocky Linux    | `rocky-linux-9`       |      5001 |               5G |
+| Rocky Linux    | `rocky-linux-10`      |      5002 |               5G |
+| AlmaLinux      | `almalinux-8`         |      6000 |               5G |
+| AlmaLinux      | `almalinux-9`         |      6001 |               5G |
+| AlmaLinux      | `almalinux-10`        |      6002 |               5G |
 
-These boot a cloud image directly — no ISO install. Packer clones a base template, injects SSH keys, runs the bootstrap script, then exports with `vzdump`.
+The Windows build disk is intentionally temporary working space. The guest and
+host shrink steps reduce it to `# final_disk_size` before export.
 
-| Recipe | Build VMID |
-|---|---:|
-| `debian-11` | 9105 |
-| `debian-12` | 9100 |
-| `debian-13` | 9101 |
-| `ubuntu-22.04` | 9106 |
-| `ubuntu-24.04` | 9102 |
-| `ubuntu-25.10` | 9107 |
-| `ubuntu-26.04` | 9108 |
-| `almalinux-8` | 9109 |
-| `almalinux-9` | 9110 |
-| `almalinux-10` | 9103 |
-| `rocky-linux-8` | 9111 |
-| `rocky-linux-9` | 9112 |
-| `rocky-linux-10` | 9104 |
+## Adding or updating a recipe
 
-### Windows Server (ISO install)
+Copy the nearest recipe in the same OS family, then update every piece of
+release identity together:
 
-Unattended install from a Microsoft evaluation ISO. Packer boots the ISO, `autounattend.xml` drives the install silently, then `TemplatePrep.ps1` installs VirtIO guest tools and Cloudbase-Init, cleans the component store, zeros free space, runs sysprep, and exports with `vzdump`.
+- header metadata: `display`, `group`, `build_vmid`, `iso_url`,
+  `iso_target_path`, checksum URL, and filename pattern where present;
+- the `build_vmid` default and recipe locals;
+- source name, ISO filename, checksum, and unattended-install paths;
+- image/edition name and release-specific drivers;
+- CPU and memory if the installer genuinely requires different resources.
 
-| Recipe | Build VMID | Disk |
-|---|---:|---:|
-| `windows-server-2019` | 9201 | 15G |
-| `windows-server-2022` | 9202 | 15G |
-| `windows-server-2025` | 9205 | 15G |
+Choose a unique base VMID in the family's existing range. Do not choose a live
+slot-derived ID directly.
 
----
+Keep disks small. The Linux installers currently fit in 5G. For Windows, retain
+the temporary build/final shrink design and change the final size only after
+checking the installed minimum and the vzdump sparse-data report:
 
-## Adding a recipe
+```text
+INFO: backup is sparse: X GiB (Y%) total zero data
+```
 
-### Linux cloud image
+Run a full build after recipe changes. HCL syntax alone cannot validate an ISO's
+image names, boot sequence, driver directories, or unattended installer schema.
 
-1. Create `builds/<name>.pkr.hcl` — copy an existing one (e.g. `ubuntu-24.04.pkr.hcl`) and update:
-   - `# iso_url:` — direct link to the installer ISO
-   - `# iso_target_path:` — filename the wrapper caches under `${var.iso_cache_dir}`
-   - `boot_iso.iso_file` — Proxmox storage reference to that cached `packer-*` ISO, e.g. `${var.proxmox_iso_storage_pool}:iso/packer-<name>.iso`
-   - `build_vmid` — pick an unused ID in the 91xx range
-   - `display`, `recipe_name` locals
+### Ubuntu autoinstall
 
-2. Run:
-   ```sh
-   cf build <name>
-   ```
+Copy the matching `user-data` and empty `meta-data` files under
+`recipes/<recipe>/http/`. Update release-specific package or boot arguments only
+when required by that installer.
 
-### Debian netinstall (preseed)
+Keep `boot_key_interval = "100ms"`. Proxmox types the boot command through the
+QEMU `sendkey` API; with no interval the guest keyboard buffer intermittently
+drops characters. This was observed corrupting the initramfs `ip=` netmask
+(`…255.255.255.0` arriving as `…255.25.250`), which the installer could not
+parse — networking never came up, the autoinstall user-data was never fetched,
+and the build failed with a 30-minute SSH timeout. The failure was diagnosed
+from a framebuffer screenshot captured by the build diagnostics recorder (see
+[diagnostics.md](diagnostics.md)); spacing the keystrokes
+resolves it.
 
-1. Copy `builds/debian-12.pkr.hcl` and adapt for the new version.
-2. Create `builds/<name>/http/preseed.cfg` — include `__PACKER_SSH_PUBLIC_KEY__` where SSH key injection should go.
-3. Complete the [preseed NAT setup](setup.md#6-nat-for-debian-netinstall-builds) if not done already.
-4. Run:
-   ```sh
-   cf build <name>
-   ```
+### Debian preseed
+
+Copy a nearby `preseed.cfg`. The committed file must contain
+`__PACKER_SSH_PUBLIC_KEY__`, not a real key. `scripts/inject-placeholders.sh`
+generates a fresh ephemeral Ed25519 key for each build and replaces either the
+placeholder or a previously injected `packer-<recipe>-*` key, so reruns remain
+safe even without `git clean`. The hostname line uses
+`__PACKER_RECIPE_NAME__`, which the same script replaces with the recipe name,
+so the preseed files stay identical across Debian releases
+(`tests/recipe-consistency.test.ts` enforces this).
+
+### AlmaLinux and Rocky Linux kickstart
+
+Copy the nearest `ks.cfg` and update repository/release details. These builds
+also use the allocated NAT address and ephemeral SSH credentials.
 
 ### Windows Server
 
-1. Create `builds/windows-server-<version>.pkr.hcl` — copy `windows-server-2022.pkr.hcl` and update:
-   - `# iso_url:` — Microsoft Eval Center link for the version
-   - `# iso_target_path:` — cache filename used by the wrapper
-   - `boot_iso.iso_file` — Proxmox storage reference to that cached ISO
-   - `build_vmid` — pick an unused ID in the 92xx range
-   - `os` — Proxmox OS type: `win10` (2019), `win2k22` (2022), `win11` (2025)
-   - `tpm_config` — required for 2025, remove for 2019
-   - `cpu_type = "host"` — required for 2025 (installer checks SSE4.1/4.2)
+Read [`windows.md`](windows.md) before making any Windows change.
+In particular:
 
-2. Create `builds/windows-server-<version>/autounattend.xml` — copy from an existing version, change the `<Value>` in `<InstallFrom><MetaData>` to match the edition string (e.g. `Windows Server 2022 SERVERDATACENTERCORE`).
+- look up the current Proxmox `ostype` enum instead of guessing a release-named
+  value;
+- copy `autounattend.xml` and update the image name plus all VirtIO driver
+  directories;
+- preserve the shared scripts under `recipes/_shared/windows/`;
+- keep 2025-only requirements, including TPM/CPU/CompactOS behavior, scoped to
+  the versions that need them;
+- record every debugging experiment in [`windows.md`](windows.md).
 
-3. Create `builds/windows-server-<version>/scripts/TemplatePrep.ps1` — identical copy from any existing Windows version.
-
-4. Run:
-   ```sh
-   cf build windows-server-<version>
-   ```
-
-> **Note:** Microsoft eval pages occasionally return a registration HTML page instead of ISO bytes. If the build fails with a bad ISO checksum, get the direct fwlink URL from the Microsoft Eval Center and set it as `iso_url`.
+Microsoft evaluation links sometimes resolve to a registration page instead of
+an ISO. If validation reports an HTML download, obtain the current direct link
+from the Microsoft Evaluation Center and update the recipe metadata and cached
+ISO filename together.

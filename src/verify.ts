@@ -1,12 +1,22 @@
 import { execa } from 'execa'
+import { randomUUID } from 'node:crypto'
+import { spawnSync } from 'node:child_process'
 import { basename, join } from 'node:path'
 import { createRenderer, title, accent, dim } from '@cofoundry/ui'
-import type { Env } from './env.ts'
-import type { RecipeInfo } from './config.ts'
-import { shellQuote } from './util.ts'
-import { buildRemoteOutDir } from './build/packer.ts'
+import type { Env } from '@/env.ts'
+import type { RecipeInfo } from '@/config.ts'
+import { shellQuote } from '@/util.ts'
+import { buildRemoteOutDir } from '@/build/paths.ts'
+import { acquireRunLease } from '@/build/lease.ts'
+import { registerCleanup } from '@/build/remote.ts'
+import { destroyVmCommand } from '@/build/vm.ts'
+import { acquireRemoteMaintenanceLock } from '@/build/maintenance.ts'
 
 const SCRATCH_VMID_BASE = 9500
+const SCRATCH_VMID_COUNT = 500
+const VERIFY_STATE_DIR = '/var/lib/cofoundry/verify-reservations'
+const VERIFY_LOCK = '/var/lib/cofoundry/verify.lock'
+const VERIFY_RESERVATION_STALE_SECS = 60 * 60
 const GUEST_PING_TIMEOUT_S = 180
 const GUEST_PING_INTERVAL_S = 5
 
@@ -27,25 +37,62 @@ const sshOk = async (target: string, cmd: string): Promise<boolean> => {
     return res.exitCode === 0
 }
 
-const pickScratchVmid = async (target: string): Promise<number> => {
-    const inUse = new Set(
-        (await ssh(target, `qm list 2>/dev/null | awk 'NR>1 {print $1}'`))
-            .split('\n')
-            .map(s => parseInt(s.trim(), 10))
-            .filter(n => Number.isFinite(n))
+export const reserveScratchVmidScript = (
+    owner: string
+): string => `set -euo pipefail
+mkdir -p ${shellQuote(VERIFY_STATE_DIR)}
+exec 9>${shellQuote(VERIFY_LOCK)}
+flock -x 9
+now=$(date +%s)
+for reservation in ${shellQuote(VERIFY_STATE_DIR)}/*; do
+    [ -f "$reservation" ] || continue
+    modified=$(stat -c %Y "$reservation" 2>/dev/null || echo "$now")
+    [ "$((now - modified))" -gt ${VERIFY_RESERVATION_STALE_SECS} ] || continue
+    stale_vmid=$(cat "$reservation" 2>/dev/null || true)
+    case "$stale_vmid" in
+        ''|*[!0-9]*) ;;
+        *)
+            qm stop "$stale_vmid" --skiplock 1 >/dev/null 2>&1 || true
+            qm unlock "$stale_vmid" >/dev/null 2>&1 || true
+            qm destroy "$stale_vmid" --purge 1 --destroy-unreferenced-disks 1 --skiplock 1 >/dev/null 2>&1 || true
+            ;;
+    esac
+    rm -f "$reservation"
+done
+used=" $(qm list 2>/dev/null | awk 'NR>1 {printf "%s ", $1}')"
+for reservation in ${shellQuote(VERIFY_STATE_DIR)}/*; do
+    [ -f "$reservation" ] || continue
+    used="$used$(cat "$reservation" 2>/dev/null) "
+done
+pick=""
+for id in $(seq ${SCRATCH_VMID_BASE} ${SCRATCH_VMID_BASE + SCRATCH_VMID_COUNT - 1}); do
+    case "$used" in *" $id "*) ;; *) pick=$id; break ;; esac
+done
+[ -n "$pick" ] || { echo 'no free scratch VMID found in 9500-9999' >&2; exit 1; }
+printf '%s\n' "$pick" > ${shellQuote(`${VERIFY_STATE_DIR}/${owner}`)}
+echo "$pick"
+`
+
+const reserveScratchVmid = async (
+    target: string,
+    owner: string
+): Promise<number> => {
+    const raw = await ssh(
+        target,
+        `bash -s <<'__CF_VERIFY_VMID__'\n${reserveScratchVmidScript(owner)}\n__CF_VERIFY_VMID__`
     )
-    for (let id = SCRATCH_VMID_BASE; id < SCRATCH_VMID_BASE + 500; id++) {
-        if (!inUse.has(id)) return id
-    }
-    throw new Error('no free scratch VMID found in 9500-9999')
+    const vmid = Number.parseInt(raw.trim(), 10)
+    if (!Number.isInteger(vmid))
+        throw new Error(`invalid scratch VMID reservation: ${raw}`)
+    return vmid
 }
 
-const destroyVm = async (target: string, vmid: number): Promise<void> => {
-    await sshOk(
-        target,
-        `qm stop ${vmid} --skiplock 1 2>/dev/null || true; ` +
-            `qm destroy ${vmid} --purge 1 --destroy-unreferenced-disks 1 2>/dev/null || true`
-    )
+const destroyVm = async (
+    target: string,
+    vmid: number,
+    storage: string
+): Promise<void> => {
+    await sshOk(target, destroyVmCommand(vmid, storage))
 }
 
 const pingGuest = async (
@@ -75,16 +122,30 @@ export const runVerify = async (
     env: Env,
     recipe: RecipeInfo
 ): Promise<void> => {
+    const maintenance = await acquireRemoteMaintenanceLock(
+        env.SSH_TARGET,
+        'shared'
+    )
+    try {
+        await Promise.race([runVerifyLocked(env, recipe), maintenance.lost])
+    } finally {
+        await maintenance.release()
+    }
+}
+
+const runVerifyLocked = async (env: Env, recipe: RecipeInfo): Promise<void> => {
     const artifactName = `${recipe.name}-${recipe.arch}.vma.zst`
     const local = join(env.CF_OUT_DIR, artifactName)
     const remoteBuildFile = `${buildRemoteOutDir(env)}/${artifactName}`
     // Scratch dir lives under PVE_DUMP_DIR so hard-linking the artifact into
     // it always works (same filesystem). /var/tmp on the node may be on a
     // different mount.
-    const remoteTmp = `${env.PVE_DUMP_DIR}/cofoundry-verify-${process.pid}`
+    const owner = randomUUID()
+    const remoteTmp = `${env.PVE_DUMP_DIR}/cofoundry-verify-${owner}`
+    const reservation = `${VERIFY_STATE_DIR}/${owner}`
 
     // Prefer the artifact already on the PVE node from the build step
-    // (CI sets CF_SKIP_SYNC_BACK=1, so it never lands locally). Fall back to
+    // (CI sets CF_SKIP_ARTIFACT_SYNC=1, so it never lands locally). Fall back to
     // uploading the local file when running outside CI.
     const remoteHasBuildArtifact = await sshOk(
         env.SSH_TARGET,
@@ -113,6 +174,7 @@ export const runVerify = async (
         `${d.getUTCFullYear()}_${pad(d.getUTCMonth() + 1)}_${pad(d.getUTCDate())}` +
         `-${pad(d.getUTCHours())}_${pad(d.getUTCMinutes())}_${pad(d.getUTCSeconds())}`
 
+    const lease = await acquireRunLease(env, 'verify', recipe, remoteTmp)
     const renderer = createRenderer({
         title: title(
             `Verifying ${accent(recipe.name)} ${dim('on')} ${accent(env.SSH_TARGET)}`
@@ -120,8 +182,20 @@ export const runVerify = async (
         outputLines: 1,
     })
     const task = renderer.task(recipe.name)
-    let restored = false
     let vmid = 0
+    const unregisterCleanup = registerCleanup(() => {
+        const destroy =
+            vmid > 0 ? `${destroyVmCommand(vmid, env.CF_STORAGE)}; ` : ''
+        spawnSync(
+            'ssh',
+            [
+                env.SSH_TARGET,
+                destroy +
+                    `rm -rf ${shellQuote(remoteTmp)}; rm -f ${shellQuote(reservation)}`,
+            ],
+            { stdio: 'ignore' }
+        )
+    })
 
     try {
         if (remoteHasBuildArtifact) {
@@ -137,7 +211,8 @@ export const runVerify = async (
         }
 
         task.setPhase('allocating VMID')
-        vmid = await pickScratchVmid(env.SSH_TARGET)
+        vmid = await reserveScratchVmid(env.SSH_TARGET, owner)
+        await lease.setVmid(vmid)
 
         const restoreFile = `${remoteTmp}/vzdump-qemu-${vmid}-${ts}.vma.zst`
         await ssh(
@@ -150,8 +225,6 @@ export const runVerify = async (
             env.SSH_TARGET,
             `qmrestore ${shellQuote(restoreFile)} ${vmid} --storage ${shellQuote(env.CF_STORAGE)} --unique 1`
         )
-        restored = true
-
         // vzdump-of-a-template restores as a template: (1) the config has
         // `template: 1`, blocking `qm start`; and (2) on dir/file storage,
         // each disk has the immutable attr (chattr +i) set and a base-<vmid>
@@ -195,8 +268,11 @@ export const runVerify = async (
         task.fail(err instanceof Error ? err.message : String(err))
         throw err
     } finally {
-        if (restored) await destroyVm(env.SSH_TARGET, vmid)
+        unregisterCleanup()
+        if (vmid > 0) await destroyVm(env.SSH_TARGET, vmid, env.CF_STORAGE)
         await sshOk(env.SSH_TARGET, `rm -rf ${shellQuote(remoteTmp)}`)
+        await sshOk(env.SSH_TARGET, `rm -f ${shellQuote(reservation)}`)
+        await lease.release()
         renderer.finish()
     }
 }

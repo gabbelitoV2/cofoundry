@@ -4,7 +4,7 @@ import { assetFetchCommand } from '@/build/prefetch.ts'
 import { isPermanentWgetExit } from '@/build/remote.ts'
 
 describe('assetFetchCommand', () => {
-    test('locks, validates, and atomically publishes a unique temp file', () => {
+    test('locks, validates, and atomically publishes to a stable temp file', () => {
         const command = assetFetchCommand(
             '/var/lib/vz/template/iso/packer-debian.iso',
             'https://example.com/debian.iso',
@@ -19,16 +19,24 @@ describe('assetFetchCommand', () => {
         })
         expect(result.status, result.stderr).toBe(0)
         expect(command).toContain('flock -x 9')
-        expect(command).toContain(".tmp'.$$")
+        // Stable temp path (no $$ PID) so pRetry re-runs resume the same
+        // partial rather than starting a fresh download each attempt.
+        expect(command).toContain(".tmp'; ")
+        expect(command).not.toContain('.$$')
         expect(command).toContain('sha256sum "$tmp"')
         expect(command).toContain('mv -f "$tmp"')
     })
 
-    test('lets wget resume a stalled or refused transfer before giving up', () => {
+    test('resumes an interrupted transfer instead of restarting from zero', () => {
         const command = assetFetchCommand(
             '/var/lib/vz/template/iso/packer-debian.iso',
             'https://example.com/debian.iso'
         )
+        // -c resumes the partial .tmp; without it wget re-pulls from byte 0.
+        expect(command).toContain(' -c ')
+        // No EXIT trap, or a failed attempt would delete the partial it must
+        // leave behind for the next attempt to resume.
+        expect(command).not.toContain('trap')
         expect(command).toContain('--tries=3')
         expect(command).toContain('--retry-connrefused')
         expect(command).toContain('--waitretry=5')

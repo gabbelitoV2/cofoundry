@@ -42,12 +42,18 @@ export const assetFetchCommand = (
         `set -e; mkdir -p ${shellQuote(ASSET_LOCK_DIR)}; exec 9>${shellQuote(assetLockPath(destination))}; flock -x 9; ` +
         `if ${valid}; then touch ${shellQuote(destination)}; exit 0; fi; ` +
         `rm -f ${shellQuote(destination)}; ` +
-        `tmp=${shellQuote(`${destination}.tmp`)}.$$; trap 'rm -f "$tmp"' EXIT; ` +
-        // wget's own retries resume a stalled/refused transfer mid-stream before
-        // the process ever exits; the pRetry wrapper in fetchAsset then re-runs
-        // the whole command only if wget still gives up.
-        `wget -q --show-progress --progress=bar:force:noscroll --tries=3 --retry-connrefused --waitretry=5 -O "$tmp" ${shellQuote(url)}; ` +
-        `${downloadedValid}; mv -f "$tmp" ${shellQuote(destination)}`
+        // Stable temp path (no $$ PID) so a partial transfer survives to be
+        // resumed. wget -c continues the same .tmp across both its own --tries
+        // and the pRetry re-runs in fetchAsset, instead of re-pulling the whole
+        // file from byte 0 and dying at the same point every time. Deliberately
+        // no EXIT trap for the same reason: a failed attempt must leave the
+        // partial in place for the next attempt to resume. On success mv
+        // consumes the temp file; a completed-but-corrupt download (checksum
+        // mismatch) is removed so the next attempt restarts clean rather than
+        // resuming garbage that wget would consider already complete.
+        `tmp=${shellQuote(`${destination}.tmp`)}; ` +
+        `wget -q --show-progress --progress=bar:force:noscroll -c --tries=3 --retry-connrefused --waitretry=5 -O "$tmp" ${shellQuote(url)}; ` +
+        `if ${downloadedValid}; then mv -f "$tmp" ${shellQuote(destination)}; else rm -f "$tmp"; exit 1; fi`
     )
 }
 

@@ -79,6 +79,29 @@ export const captureRemote = async (
 }
 
 /**
+ * Run a remote command and resolve with its exit status instead of throwing.
+ * ssh(1) reserves 255 for transport failures (unreachable host, dropped
+ * connection), so remote commands can signal through any other code; a failed
+ * local spawn also resolves as 255. stderr is discarded — this is for pollers
+ * whose expected failures must not spam the terminal.
+ */
+export const remoteExitCode = async (
+    target: string,
+    cmd: string
+): Promise<number> => {
+    try {
+        const { exitCode } = await execa('ssh', [...SSH_OPTS, target, cmd], {
+            stdin: 'ignore',
+            stderr: 'ignore',
+            reject: false,
+        })
+        return exitCode ?? 255
+    } catch {
+        return 255
+    }
+}
+
+/**
  * Stream a gzip tarball of a remote directory back as a Buffer. Uses `spawn`
  * with manual chunk collection rather than execa's `encoding: 'buffer'`, which
  * Bun's child_process shim rejects. Binary-safe, unlike captureRemote (utf8). A

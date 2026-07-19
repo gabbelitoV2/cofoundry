@@ -105,7 +105,7 @@ export const buildPhase = async (
     let startedAt = 0
     let effectiveBuildVmid: number | undefined
 
-    try {
+    const runLeased = async (): Promise<void> => {
         if (layout.needsBuildNetwork) {
             slot = await allocateBuildSlot(env)
             log.info(
@@ -310,6 +310,19 @@ export const buildPhase = async (
         } finally {
             unregisterVmCleanup?.()
         }
+    }
+
+    try {
+        // `lease.lost` rejects once the heartbeat confirms the lease was
+        // reaped (or the node stayed unreachable past the stale window) — at
+        // that point another admission has destroyed this run's VM and temp
+        // directories, so abort instead of waiting out packer's communicator
+        // timeout. The losing runLeased() promise is not cancelled (full
+        // AbortSignal plumbing is follow-up work); keep a handler attached so
+        // its late rejection cannot become an unhandled rejection.
+        const work = runLeased()
+        void work.catch(() => undefined)
+        await Promise.race([work, lease.lost])
     } finally {
         // The injector modifies only this build's writable snapshot copy. The
         // private temp tree also contains vars files, private keys, and
@@ -322,7 +335,8 @@ export const buildPhase = async (
             ).catch(() => {})
         }
         await captureRemote(env.SSH_TARGET, secretCleanupCmd).catch(() => {})
-        await slot?.release()
+        // Widened: assigned inside runLeased, which flow analysis cannot see.
+        await (slot as BuildSlot | null)?.release()
         await lease.release()
     }
 

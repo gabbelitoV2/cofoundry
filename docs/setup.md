@@ -438,7 +438,23 @@ Only needed if you want to run `cf` commands manually from your machine.
 ### 1. Install dependencies
 
 - [Bun](https://bun.sh) 1.x
-- `rsync` and `ssh` (pre-installed on macOS/Linux)
+- The OpenSSH `ssh` client on your `PATH` (pre-installed on macOS/Linux)
+
+That is the whole list — no local `rsync` or `tar`. Cofoundry intentionally
+avoids both: the repository is archived in-process and uploaded to the node
+over SFTP, so the CLI works the same on every platform. See
+[Architecture → Repository snapshots](architecture.md#repository-snapshots-and-platform-support).
+
+**Windows workstations.** `cf` runs natively on Windows via Bun — no WSL or
+Cygwin required. Any `ssh.exe` on `PATH` works: the one bundled with
+[Git for Windows](https://gitforwindows.org/) or Windows' built-in OpenSSH
+client. SFTP transfers authenticate through your SSH agent when
+`SSH_AUTH_SOCK` is set and otherwise fall back to the default key files
+(`~/.ssh/id_ed25519`, `~/.ssh/id_rsa`, `~/.ssh/id_ecdsa`), so keep the node
+key at one of those paths or load it into an agent that exports
+`SSH_AUTH_SOCK` (e.g. `ssh-agent` in Git Bash). One caveat: `cf upload`
+without `--remote` runs the upload command through `bash -c`, so it needs a
+`bash` on `PATH` (Git for Windows provides one).
 
 ### 2. Clone and install
 
@@ -453,6 +469,12 @@ bun install
 ```sh
 ssh-copy-id root@<pve-host>
 ssh root@<pve-host> hostname   # verify: no password prompt
+```
+
+On Windows, run `ssh-copy-id` from Git Bash, or append the key manually:
+
+```sh
+cat ~/.ssh/id_ed25519.pub | ssh root@<pve-host> "cat >> ~/.ssh/authorized_keys"
 ```
 
 ### 4. Configure

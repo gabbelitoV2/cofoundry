@@ -91,7 +91,7 @@ Commit `upstream-checksums.json` so CI can track changes across runs.
 
 ## Publish a manifest
 
-Aggregates `./dist/*.json` sidecars into `./registry.json` at the repo root, for consumption by [downloader](https://github.com/ConvoyPanel/downloader). In CI, use `cf publish --r2` to source sidecars from R2 instead (artifacts are never synced back to the runner).
+Aggregates `./dist/*.json` sidecars into `./registry.json` at the repo root, for consumption by [downloader](https://github.com/ConvoyPanel/downloader) or [coport](coport.md), the node-side template installer. In CI, use `cf publish --r2` to source sidecars from R2 instead (artifacts are never synced back to the runner).
 
 ```sh
 cf publish        # local: dist/*.json → registry.json
@@ -179,6 +179,90 @@ Placeholders: `{{recipe}}` (recipe name), `{{arch}}`, `{{group}}` (OS family),
 `{{sha256}}`. For a fully hand-written command, set `command` /
 `sidecar_command` under `[upload]` (they accept the same placeholders plus
 `{{file}}`, the local path). `cf publish --r2` scans `prefix`.
+
+### The upload hook (`CF_UPLOAD_CMD`)
+
+The `[upload]` block materializes as three derived values —
+`CF_UPLOAD_CMD`, `CF_SIDECAR_UPLOAD_CMD`, and `CF_PUBLIC_URL_TMPL` — that
+`cf` exports into the build environment (run `cf config` to see them).
+Setting any of them directly in the environment or `.env` overrides the
+derived value; that is the escape hatch used to wire in a fully custom hook
+such as the [cluster distribution script](#cluster-template-distribution).
+
+Packer runs on the Proxmox node, so its shell-local post-processor
+(`recipes/_shared/post/vzdump-and-cleanup.sh`) executes `CF_UPLOAD_CMD` **on
+the node** with `bash -c`, right after the artifact is exported and hashed —
+any binary the command calls (such as `aws`) must exist there. These
+placeholders are substituted first:
+
+| Placeholder               | Value                                                                                        |
+| ------------------------- | -------------------------------------------------------------------------------------------- |
+| `{{file}}`                | path of the file being uploaded (the artifact; the sidecar JSON for `CF_SIDECAR_UPLOAD_CMD`) |
+| `{{recipe}}` / `{{name}}` | recipe name, e.g. `debian-12` (`{{name}}` is a legacy alias)                                 |
+| `{{arch}}`                | architecture, e.g. `amd64`                                                                   |
+| `{{group}}`               | OS family                                                                                    |
+| `{{sha256}}`              | artifact SHA-256                                                                             |
+| `{{filename}}`            | `<recipe>-<arch>-<sha256>.vma.zst` (`.json` for the sidecar command)                         |
+
+`CF_PUBLIC_URL_TMPL` accepts the same placeholders except `{{file}}`; the
+rendered URL is written into the sidecar's `url` field.
+
+The command also inherits useful build environment: `R2_ENDPOINT`,
+`R2_BUCKET`, `R2_PREFIX`, and the `AWS_*` credentials (so the generated
+`aws s3 cp` can authenticate on the node), plus `CF_RECIPE_NAME`, `CF_ARCH`,
+`CF_GROUP`, `CF_BUILT_VMID` (the built VM's id — slot-derived for networked
+installers), and `CF_RECIPE_BASE_VMID` (the recipe's stable base VMID).
+`cf build --skip-upload` withholds all upload variables for that invocation,
+and `cf upload [names...]` re-runs the same commands later for already-built
+artifacts (with `--remote` they execute on the node against its
+`cofoundry-out` directory).
+
+## Cluster template distribution
+
+`scripts/cf-cluster-templates.sh` is a local/cluster convenience — not part of
+the upstream recipes — that turns each freshly built artifact into a clonable
+template on **every online node** of a Proxmox cluster. Cluster VMIDs are
+globally unique, so each node gets its own copy under its own VMID.
+
+Wire it in as the build node's upload hook in `.env`:
+
+```sh
+CF_UPLOAD_CMD=bash $PVE_DUMP_DIR/cofoundry-work/scripts/cf-cluster-templates.sh {{file}}
+```
+
+For every online node listed in `/etc/pve/.members`, the script:
+
+1. computes the target VMID as `node_id * OFFSET + BASE_VMID`. `OFFSET` is
+   `CF_TEMPLATE_VMID_OFFSET` (default `10000`) and `BASE_VMID` is
+   `CF_RECIPE_BASE_VMID`, falling back to `CF_BUILT_VMID`. With base `4001`:
+   node 1 → `14001`, node 2 → `24001`, node 3 → `34001`. The script refuses
+   to run when the base VMID is not below the offset, since adjacent nodes
+   would collide;
+2. copies the artifact into the node's dump dir over `scp` (a plain `cp` when
+   the target is the build node itself);
+3. picks that node's disk storage, in order: `CF_TEMPLATE_STORAGE` (default
+   `local-lvm`) if active, then `local-lvm`, then `local-zfs`, and as a last
+   resort the best active images-capable storage — local over shared,
+   VM-native types (lvmthin/zfspool/btrfs/rbd/lvm) over directory storage,
+   most free space first;
+4. restores with `qmrestore --unique 1` and marks the result as a template.
+
+A VMID holding a real (non-template) VM is never touched — that node is
+skipped with a log line. An existing template at the VMID is stopped,
+destroyed, and replaced. A failure on one node is logged (`[fail] <ip>`) and
+the loop continues with the remaining nodes.
+
+The two knobs are read from the post-processor's environment on the node;
+`cf` does not forward them from your workstation. To change one, set it
+inside the command itself:
+
+```sh
+CF_UPLOAD_CMD=CF_TEMPLATE_STORAGE=local-zfs bash $PVE_DUMP_DIR/cofoundry-work/scripts/cf-cluster-templates.sh {{file}}
+```
+
+This flow pushes templates to the nodes of your own cluster at build time.
+For installing templates from a published registry onto any Proxmox node, see
+[Coport](coport.md).
 
 ## GitHub Actions
 

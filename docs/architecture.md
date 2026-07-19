@@ -48,6 +48,9 @@ Admission is serialized on the node, accounts for RAM and CPU across independent
 Cleanup handlers release secrets, reservations, watchdogs, leases, and transient
 VM state on normal completion and supported signals. A stale lease names exactly
 the VM and scratch tree that reconciliation may reap after an untrappable exit.
+Each build or verification command also holds a shared node-maintenance flock
+for its full lifetime. Destructive `clean` holds the exclusive side, preserving
+parallel builds while preventing teardown from racing any active pipeline stage.
 
 ### Failure diagnostics
 

@@ -1,6 +1,12 @@
 import { describe, expect, test } from 'bun:test'
 import { spawnSync } from 'node:child_process'
-import { ephemeralPackerIsoFind, orphanDiskFind } from '@/prune/node.ts'
+import {
+    canonicalPackerIsoPath,
+    ephemeralPackerIsoFind,
+    orphanDiskFind,
+    ownedTelemetryCleanupCommand,
+    ownedTelemetryFindCommand,
+} from '@/prune/node.ts'
 
 const ISO_STORE = '/var/lib/vz/template/iso'
 
@@ -10,6 +16,7 @@ describe('ephemeralPackerIsoFind', () => {
         expect(cmd).toContain(`find ${ISO_STORE} -maxdepth 1`)
         expect(cmd).toContain("-name 'packer*.iso'")
         expect(cmd).toContain("-name 'packer*.iso.tmp'")
+        expect(cmd).toContain("-name 'packer*.iso.tmp.*'")
         expect(cmd).toContain('[0-9a-f]{40}')
     })
 
@@ -43,12 +50,28 @@ describe('ephemeralPackerIsoFind', () => {
     })
 })
 
+describe('canonicalPackerIsoPath', () => {
+    test('maps interrupted prefetch names back to their locked destination', () => {
+        expect(canonicalPackerIsoPath('/iso/packer-debian.iso')).toBe(
+            '/iso/packer-debian.iso'
+        )
+        expect(canonicalPackerIsoPath('/iso/packer-debian.iso.tmp')).toBe(
+            '/iso/packer-debian.iso'
+        )
+        expect(canonicalPackerIsoPath('/iso/packer-debian.iso.tmp.1234')).toBe(
+            '/iso/packer-debian.iso'
+        )
+        expect(canonicalPackerIsoPath('/iso/packer-debian.iso.tmp.run-a')).toBe(
+            '/iso/packer-debian.iso'
+        )
+    })
+})
+
 describe('orphanDiskFind', () => {
     test('scopes the volume scan to the given storage pool', () => {
         const cmd = orphanDiskFind('local-zfs')
-        expect(cmd).toContain(
-            "pvesm list 'local-zfs' --content images 2>/dev/null"
-        )
+        expect(cmd).toContain("pvesm list 'local-zfs' --content images")
+        expect(cmd).toContain('set -o pipefail')
     })
 
     test('emits only volids whose owning VMID has no VM config', () => {
@@ -63,5 +86,36 @@ describe('orphanDiskFind', () => {
 
     test('shell-quotes the storage pool name', () => {
         expect(orphanDiskFind("a'b")).toContain("'a'\\''b'")
+    })
+})
+
+describe('ownedTelemetryCleanupCommand', () => {
+    test('limits telemetry cleanup to recipe slots and verify VMIDs', () => {
+        const cmd = ownedTelemetryCleanupCommand([
+            { buildVmid: 2002 },
+            { buildVmid: 1001 },
+        ])
+        expect(cmd).toContain('1001|2002|9[5-9][0-9][0-9]')
+        expect(cmd).toContain('recipe_base=$((vmid / 100))')
+        expect(cmd).toContain('[ "$slot" -lt 50 ]')
+        expect(cmd).toContain('FORGET %s')
+        expect(cmd).toContain('set -euo pipefail')
+        expect(cmd).toContain('/var/log/vzdump/qemu-*.log')
+        const result = spawnSync('bash', ['-n'], {
+            input: cmd,
+            encoding: 'utf8',
+        })
+        expect(result.status, result.stderr).toBe(0)
+    })
+
+    test('can verify telemetry absence without deleting it', () => {
+        const cmd = ownedTelemetryFindCommand([{ buildVmid: 1001 }])
+        expect(cmd).not.toContain('rm -f')
+        expect(cmd).not.toContain('FORGET %s')
+        const result = spawnSync('bash', ['-n'], {
+            input: cmd,
+            encoding: 'utf8',
+        })
+        expect(result.status, result.stderr).toBe(0)
     })
 })

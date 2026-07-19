@@ -81,6 +81,12 @@ for line in "${NODES[@]}"; do
   # to skip the ssh roundtrip.
   RESTORE_SCRIPT=$(cat <<EOF
 set -e
+SOURCE="$DUMP_DIR/$BN"
+VZ="$DUMP_DIR/vzdump-qemu-$VMID-$STAMP.vma.zst"
+cleanup() {
+  rm -f "\$SOURCE" "\$VZ"
+}
+trap cleanup EXIT
 # Pick this node's storage, in order: the preferred one, then the standard
 # Proxmox-installer storages (local-lvm, local-zfs), then as a last resort the
 # best active images-capable storage (local over shared, VM-native types over
@@ -113,15 +119,15 @@ if qm status $VMID >/dev/null 2>&1; then
   qm destroy $VMID --purge 1 --destroy-unreferenced-disks 1 >/dev/null 2>&1 || true
 fi
 # qmrestore only accepts vzdump-style filenames, so rename before restoring
-VZ="$DUMP_DIR/vzdump-qemu-$VMID-$STAMP.vma.zst"
-mv "$DUMP_DIR/$BN" "\$VZ"
+mv "\$SOURCE" "\$VZ"
 qmrestore "\$VZ" $VMID --storage "\$STG" --unique 1 >/dev/null
 rm -f "\$VZ"
 # cofoundry artifacts are already templates after restore; only convert if not
 qm config $VMID 2>/dev/null | grep -q '^template:' || qm template $VMID >/dev/null
+trap - EXIT
 echo "    [ok] template $VMID on \$STG"
 EOF
-)
+  )
   if [[ "$LOCAL_IPS" == *" $IP "* ]]; then
     bash -c "$RESTORE_SCRIPT" || echo "    [fail] $IP"
   else

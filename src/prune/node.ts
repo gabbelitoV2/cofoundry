@@ -7,13 +7,17 @@ import { remotePaths } from '@/build/paths.ts'
 import { destroyVmCommand } from '@/build/vm.ts'
 import { assetLockPath } from '@/build/prefetch.ts'
 import { PACKER_TMP_ROOT } from '@/build/packer.ts'
+import { acquireRemoteMaintenanceLock } from '@/build/maintenance.ts'
+import type { RecipeInfo } from '@/config.ts'
 import {
+    OWNED_VMID_DIR,
     RUN_LEASE_DIR,
     RUN_LEASE_LOCK,
     sweepRunLeasesScript,
 } from '@/build/lease.ts'
 
 const LEGACY_WORK_DIR = '/tmp/cofoundry'
+const LEGACY_ISO_CACHE = '/var/lib/cofoundry/iso-cache'
 
 // Persistent cache prefetch re-uses across Windows builds. It lives in the ISO
 // store under a `packer-` prefix, so the ephemeral-ISO sweep matches it by
@@ -94,11 +98,17 @@ export const ephemeralPackerIsoFind = (
 ): string =>
     `find ${isoStore} -maxdepth 1 ` +
     (preserveVirtio ? `! -name ${shellQuote(VIRTIO_WIN_ISO)} ` : '') +
-    `\\( -name 'packer*.iso' -o -name 'packer*.iso.tmp' -o -regextype posix-extended -regex '.*\/[0-9a-f]{40}\\.iso' \\) ` +
+    `\\( -name 'packer*.iso' -o -name 'packer*.iso.tmp' -o -name 'packer*.iso.tmp.*' ` +
+    `-o -regextype posix-extended -regex '.*\/[0-9a-f]{40}\\.iso(\\.tmp(\\.[^/]+)?)?' \\) ` +
     (olderThanDays === undefined ? '' : `-mtime +${olderThanDays} `) +
     (unreferencedOnly
-        ? `-print0 2>/dev/null | while IFS= read -r -d '' iso; do base=\${iso##*/}; grep -RqsF "iso/$base" /etc/pve/qemu-server 2>/dev/null || echo "$iso"; done`
+        ? `-print0 2>/dev/null | while IFS= read -r -d '' iso; do ` +
+          `base=\${iso##*/}; ref=\${base%.tmp}; ref=\${ref%.tmp.*}; ` +
+          `grep -RqsF "iso/$ref" /etc/pve/qemu-server 2>/dev/null || echo "$iso"; done`
         : `-print 2>/dev/null || true`)
+
+export const canonicalPackerIsoPath = (path: string): string =>
+    path.replace(/\.tmp(?:\.[^/]+)?$/, '')
 
 // Build VMs are named `packer-<recipe>` (the vm_name in every recipe), so match
 // by name rather than a VMID range: per-build VMIDs are slot-derived
@@ -151,6 +161,14 @@ const reapBuildVms = async (
                 env.SSH_TARGET,
                 destroyVmCommand(Number(vmid), env.CF_STORAGE)
             )
+            await ssh(
+                env.SSH_TARGET,
+                `set -eo pipefail; if qm config ${vmid} >/dev/null 2>&1; then ` +
+                    `echo ${shellQuote(`VM ${vmid} still exists after destroy`)} >&2; exit 1; fi; ` +
+                    `remaining=$(pvesm list ${shellQuote(env.CF_STORAGE)} --content images 2>/dev/null | ` +
+                    `awk -v id=${vmid} 'NR>1 && $NF==id {print $1}'); ` +
+                    `[ -z "$remaining" ] || { echo "VM ${vmid} volumes still exist: $remaining" >&2; exit 1; }`
+            )
         }
     }
     log.ok(
@@ -165,7 +183,7 @@ const reapBuildVms = async (
 // against is already gone. Emits the volid of every such orphan. Scoped to the
 // cofoundry storage pool (CF_STORAGE) so unrelated VMs' disks are never touched.
 export const orphanDiskFind = (storage: string): string =>
-    `pvesm list ${shellQuote(storage)} --content images 2>/dev/null | ` +
+    `set -o pipefail; pvesm list ${shellQuote(storage)} --content images | ` +
     `awk 'NR>1 {print $NF"\\t"$1}' | ` +
     `while IFS=$'\\t' read -r vmid volid; do ` +
     `qm config "$vmid" >/dev/null 2>&1 || echo "$volid"; ` +
@@ -178,16 +196,125 @@ const freeVolumes = async (
 ): Promise<void> => {
     if (dryRun) return
     for (const v of volids) {
+        await ssh(env.SSH_TARGET, `pvesm free ${shellQuote(v)}`)
         await ssh(
             env.SSH_TARGET,
-            `pvesm free ${shellQuote(v)} 2>/dev/null || true`
+            `set -eo pipefail; remaining=$(pvesm list ${shellQuote(env.CF_STORAGE)} --content images | ` +
+                `awk -v vol=${shellQuote(v)} 'NR>1 && $1==vol {print $1}'); ` +
+                `[ -z "$remaining" ] || { echo ${shellQuote(`volume still exists after free: ${v}`)} >&2; exit 1; }`
         )
     }
 }
 
-export const runClean = async (env: Env): Promise<void> => {
+const ownedTelemetryCommand = (
+    recipes: Pick<RecipeInfo, 'buildVmid'>[],
+    remove: boolean
+): string => {
+    const bases = [
+        ...new Set(
+            recipes
+                .map(recipe => recipe.buildVmid)
+                .filter((vmid): vmid is number => vmid !== undefined)
+        ),
+    ].sort((a, b) => a - b)
+    const ownedBases = bases.join('|') || '__no_recipe_vmids__'
+    const removeRrd = remove
+        ? `
+        if [ -S /var/run/rrdcached.sock ]; then
+            command -v socat >/dev/null 2>&1 || { echo 'socat is required to clean active RRD telemetry' >&2; exit 1; }
+            rel=\${rrd#/var/lib/rrdcached/db/}
+            response=$(printf 'FORGET %s\\n' "$rel" | socat - UNIX-CONNECT:/var/run/rrdcached.sock)
+            case "$response" in 0|0' '*) ;; *) echo "rrdcached failed to forget $rel: $response" >&2; exit 1 ;; esac
+        fi
+        rm -f -- "$rrd"
+        [ ! -e "$rrd" ] || { echo "RRD telemetry still exists: $rrd" >&2; exit 1; }
+`
+        : ''
+    const removeLog = remove
+        ? `
+    rm -f -- "$logfile"
+    [ ! -e "$logfile" ] || { echo "vzdump telemetry still exists: $logfile" >&2; exit 1; }
+`
+        : ''
+    return `
+set -euo pipefail
+is_cofoundry_vmid() {
+    vmid="$1"
+    case "$vmid" in ''|*[!0-9]*) return 1 ;; esac
+    [ -f ${shellQuote(OWNED_VMID_DIR)}/"$vmid" ] && return 0
+    case "$vmid" in
+        ${ownedBases}|9[5-9][0-9][0-9]) return 0 ;;
+    esac
+    recipe_base=$((vmid / 100))
+    slot=$((vmid % 100))
+    case "$recipe_base" in
+        ${ownedBases}) [ "$slot" -lt 50 ] && return 0 ;;
+    esac
+    return 1
+}
+for rrd_dir in /var/lib/rrdcached/db/pve-vm-*; do
+    [ -d "$rrd_dir" ] || continue
+    for rrd in "$rrd_dir"/*; do
+        [ -f "$rrd" ] || continue
+        vmid=\${rrd##*/}
+        is_cofoundry_vmid "$vmid" || continue
+        [ ! -e "/etc/pve/qemu-server/$vmid.conf" ] || continue
+        ${removeRrd}
+        echo "$rrd"
+    done
+done
+for logfile in /var/log/vzdump/qemu-*.log; do
+    [ -f "$logfile" ] || continue
+    vmid=\${logfile##*/qemu-}; vmid=\${vmid%.log}
+    is_cofoundry_vmid "$vmid" || continue
+    [ ! -e "/etc/pve/qemu-server/$vmid.conf" ] || continue
+    ${removeLog}
+    echo "$logfile"
+done
+`
+}
+
+export const ownedTelemetryCleanupCommand = (
+    recipes: Pick<RecipeInfo, 'buildVmid'>[]
+): string => ownedTelemetryCommand(recipes, true)
+
+export const ownedTelemetryFindCommand = (
+    recipes: Pick<RecipeInfo, 'buildVmid'>[]
+): string => ownedTelemetryCommand(recipes, false)
+
+export const runClean = async (
+    env: Env,
+    recipes: Pick<RecipeInfo, 'buildVmid'>[] = []
+): Promise<void> => {
     const paths = remotePaths(env)
     log.section(`Clean ${dim('·')} ${accent(env.SSH_TARGET)}`)
+    log.step('waiting for active builds and verification')
+    const maintenance = await acquireRemoteMaintenanceLock(
+        env.SSH_TARGET,
+        'exclusive'
+    )
+    try {
+        await Promise.race([
+            runCleanLocked(env, paths, recipes),
+            maintenance.lost,
+        ])
+    } finally {
+        await maintenance.release()
+    }
+}
+
+const runCleanLocked = async (
+    env: Env,
+    paths: ReturnType<typeof remotePaths>,
+    recipes: Pick<RecipeInfo, 'buildVmid'>[]
+): Promise<void> => {
+    await ssh(
+        env.SSH_TARGET,
+        `set -eo pipefail; test -d ${shellQuote(paths.dump)}; ` +
+            `test -d ${shellQuote(paths.isoStore)}; ` +
+            `qm list >/dev/null; ` +
+            `pvesm list ${shellQuote(env.CF_STORAGE)} --content images >/dev/null`
+    )
     await ssh(
         env.SSH_TARGET,
         `for lease in ${shellQuote(RUN_LEASE_DIR)}/*; do ` +
@@ -215,14 +342,25 @@ export const runClean = async (env: Env): Promise<void> => {
     if (isos.length === 0) {
         log.info('no uploaded ISOs found')
     } else {
-        const sizes = await ssh(
-            env.SSH_TARGET,
-            `du -sh ${isos.map(shellQuote).join(' ')} | cut -f1`
-        )
-        for (const f of isos)
-            await ssh(env.SSH_TARGET, `rm -f ${shellQuote(f)}`)
+        const removed: string[] = []
+        for (const f of isos) {
+            const destination = canonicalPackerIsoPath(f)
+            const lock = assetLockPath(destination)
+            const result = await ssh(
+                env.SSH_TARGET,
+                `mkdir -p ${shellQuote(lock.replace(/\/[^/]+$/, ''))}; ` +
+                    `exec 9>${shellQuote(lock)}; flock -x 9; ` +
+                    `if [ -e ${shellQuote(f)} ]; then ` +
+                    `size=$(du -sh ${shellQuote(f)} | cut -f1); ` +
+                    `rm -f -- ${shellQuote(f)}; printf '%s\\t%s\\n' "$size" ${shellQuote(f)}; fi`
+            )
+            if (result) removed.push(result)
+        }
         log.info(
-            `removed ${isos.length} ISO(s) — ${sizes.split('\n').join(', ')}`
+            `removed ${removed.length} ISO(s)` +
+                (removed.length > 0
+                    ? ` — ${removed.map(item => item.split('\t')[0]).join(', ')}`
+                    : '')
         )
     }
 
@@ -241,6 +379,16 @@ export const runClean = async (env: Env): Promise<void> => {
         log.info(`removed ${paths.downloadedIsoCache} (${downloadedIsoSize})`)
     }
 
+    log.step(`removing legacy ISO cache from ${LEGACY_ISO_CACHE}`)
+    const legacyIsoSize = await ssh(
+        env.SSH_TARGET,
+        sizeOrAbsent(LEGACY_ISO_CACHE)
+    )
+    if (legacyIsoSize !== '(absent)') {
+        await ssh(env.SSH_TARGET, `rm -rf ${shellQuote(LEGACY_ISO_CACHE)}`)
+        log.info(`removed ${LEGACY_ISO_CACHE} (${legacyIsoSize})`)
+    }
+
     // Match every VMID, not the legacy 91xx/92xx range: modern builds use
     // slot-derived VMIDs (build_vmid * 100 + slot), whose multi-GB dumps the old
     // globs missed entirely. Clean is a full wipe, so no age gate.
@@ -248,7 +396,7 @@ export const runClean = async (env: Env): Promise<void> => {
     const dumps = lines(
         await ssh(
             env.SSH_TARGET,
-            `find ${paths.dump} -maxdepth 1 -name 'vzdump-qemu-*' 2>/dev/null || true`
+            `find ${shellQuote(paths.dump)} -maxdepth 1 -name 'vzdump-qemu-*' 2>/dev/null || true`
         )
     )
 
@@ -291,7 +439,7 @@ export const runClean = async (env: Env): Promise<void> => {
     const workLinks = lines(
         await ssh(
             env.SSH_TARGET,
-            `find ${paths.dump} -maxdepth 1 -name ${shellQuote(`${paths.work.split('/').pop()}.new.*`)} 2>/dev/null || true`
+            `find ${shellQuote(paths.dump)} -maxdepth 1 -name ${shellQuote(`${paths.work.split('/').pop()}.new.*`)} 2>/dev/null || true`
         )
     )
     await removeDirs(env, workLinks, false)
@@ -313,14 +461,90 @@ export const runClean = async (env: Env): Promise<void> => {
     await freeVolumes(env, orphanDisks, false)
     report('orphaned disks', orphanDisks, false)
 
+    log.step('removing Cofoundry VM telemetry')
+    const telemetry = lines(
+        await ssh(env.SSH_TARGET, ownedTelemetryCleanupCommand(recipes))
+    )
+    report('VM telemetry', telemetry, false)
+    const remainingTelemetry = lines(
+        await ssh(env.SSH_TARGET, ownedTelemetryFindCommand(recipes))
+    )
+
     log.step('removing Cofoundry lease and reservation state')
     await ssh(
         env.SSH_TARGET,
-        `rm -rf ${shellQuote(RUN_LEASE_DIR)} ${shellQuote(PACKER_TMP_ROOT)} /var/lib/cofoundry/verify-reservations /var/lib/cofoundry/netslots /var/lib/cofoundry/asset-locks /run/cofoundry-diag; ` +
+        `rm -rf ${shellQuote(RUN_LEASE_DIR)} ${shellQuote(OWNED_VMID_DIR)} ${shellQuote(PACKER_TMP_ROOT)} /var/lib/cofoundry/verify-reservations /var/lib/cofoundry/netslots /var/lib/cofoundry/asset-locks /run/cofoundry-diag; ` +
             `rm -f ${shellQuote(RUN_LEASE_LOCK)} /var/lib/cofoundry/verify.lock /var/lib/cofoundry/netslot.lock /var/lib/cofoundry/packer-init.lock; ` +
             `rm -f /etc/dnsmasq.d/cofoundry-hosts.d/slot-*; ` +
             `(systemctl reload dnsmasq 2>/dev/null || systemctl restart dnsmasq) >/dev/null 2>&1 || true`
     )
+
+    const remainingIsos = lines(
+        await ssh(
+            env.SSH_TARGET,
+            ephemeralPackerIsoFind(paths.isoStore, { preserveVirtio: false })
+        )
+    )
+    const remainingVms = await findBuildVms(env, { includeTemplates: true })
+    const remainingDisks = lines(
+        await ssh(env.SSH_TARGET, orphanDiskFind(env.CF_STORAGE))
+    )
+    const remainingPaths = lines(
+        await ssh(
+            env.SSH_TARGET,
+            `for p in ${[
+                LEGACY_WORK_DIR,
+                LEGACY_ISO_CACHE,
+                paths.out,
+                paths.tmp,
+                paths.work,
+                paths.snapshots,
+                paths.assetCache,
+                paths.downloadedIsoCache,
+                PACKER_TMP_ROOT,
+                RUN_LEASE_DIR,
+                OWNED_VMID_DIR,
+                '/var/lib/cofoundry/verify-reservations',
+                '/var/lib/cofoundry/netslots',
+                '/var/lib/cofoundry/asset-locks',
+                '/run/cofoundry-diag',
+                RUN_LEASE_LOCK,
+                '/var/lib/cofoundry/verify.lock',
+                '/var/lib/cofoundry/netslot.lock',
+                '/var/lib/cofoundry/packer-init.lock',
+            ]
+                .map(shellQuote)
+                .join(' ')}; do [ ! -e "$p" ] || echo "$p"; done`
+        )
+    )
+    const remainingSlots = lines(
+        await ssh(
+            env.SSH_TARGET,
+            `find /etc/dnsmasq.d/cofoundry-hosts.d -maxdepth 1 -name 'slot-*' -print 2>/dev/null || true`
+        )
+    )
+    const remainingDumpResidue = lines(
+        await ssh(
+            env.SSH_TARGET,
+            `find ${shellQuote(paths.dump)} -maxdepth 1 ` +
+                `\\( -name 'vzdump-qemu-*' -o -name 'cofoundry-verify-*' -o ` +
+                `-name ${shellQuote(`${paths.work.split('/').pop()}.new.*`)} \\) -print 2>/dev/null || true`
+        )
+    )
+    const leftovers = [
+        ...remainingIsos,
+        ...remainingVms.map(vmid => `VM ${vmid}`),
+        ...remainingDisks,
+        ...remainingPaths,
+        ...remainingSlots,
+        ...remainingDumpResidue,
+        ...remainingTelemetry,
+    ]
+    if (leftovers.length > 0) {
+        throw new Error(
+            `clean verification failed; resources remain:\n${leftovers.join('\n')}`
+        )
+    }
 
     log.blank()
     log.ok('Clean complete.')
@@ -335,8 +559,26 @@ export const runPrune = async (
     env: Env,
     { days, dryRun }: PruneOptions
 ): Promise<void> => {
-    const paths = remotePaths(env)
     log.section(`Prune ${dim('·')} ${accent(env.SSH_TARGET)}`)
+    const maintenance = await acquireRemoteMaintenanceLock(
+        env.SSH_TARGET,
+        'shared'
+    )
+    try {
+        await Promise.race([
+            runPruneLocked(env, { days, dryRun }),
+            maintenance.lost,
+        ])
+    } finally {
+        await maintenance.release()
+    }
+}
+
+const runPruneLocked = async (
+    env: Env,
+    { days, dryRun }: PruneOptions
+): Promise<void> => {
+    const paths = remotePaths(env)
     if (dryRun) log.warn('dry-run: no files will be deleted')
 
     // A stale heartbeat is the only evidence that authorizes immediate cleanup
@@ -368,8 +610,9 @@ export const runPrune = async (
         packerIsos.push(...isoCandidates)
     } else {
         for (const iso of isoCandidates) {
-            const base = iso.split('/').pop() ?? ''
-            const lock = assetLockPath(iso)
+            const destination = canonicalPackerIsoPath(iso)
+            const base = destination.split('/').pop() ?? ''
+            const lock = assetLockPath(destination)
             const removed = await ssh(
                 env.SSH_TARGET,
                 `mkdir -p ${shellQuote(lock.replace(/\/[^/]+$/, ''))}; exec 9>${shellQuote(lock)}; flock -x 9; ` +

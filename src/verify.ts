@@ -10,6 +10,7 @@ import { buildRemoteOutDir } from '@/build/paths.ts'
 import { acquireRunLease } from '@/build/lease.ts'
 import { registerCleanup } from '@/build/remote.ts'
 import { destroyVmCommand } from '@/build/vm.ts'
+import { acquireRemoteMaintenanceLock } from '@/build/maintenance.ts'
 
 const SCRATCH_VMID_BASE = 9500
 const SCRATCH_VMID_COUNT = 500
@@ -121,6 +122,18 @@ export const runVerify = async (
     env: Env,
     recipe: RecipeInfo
 ): Promise<void> => {
+    const maintenance = await acquireRemoteMaintenanceLock(
+        env.SSH_TARGET,
+        'shared'
+    )
+    try {
+        await Promise.race([runVerifyLocked(env, recipe), maintenance.lost])
+    } finally {
+        await maintenance.release()
+    }
+}
+
+const runVerifyLocked = async (env: Env, recipe: RecipeInfo): Promise<void> => {
     const artifactName = `${recipe.name}-${recipe.arch}.vma.zst`
     const local = join(env.CF_OUT_DIR, artifactName)
     const remoteBuildFile = `${buildRemoteOutDir(env)}/${artifactName}`

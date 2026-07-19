@@ -2,14 +2,14 @@ import type { Command } from 'commander'
 import { runClean, runPrune, runPruneR2 } from '@/prune.ts'
 import { runBootstrap } from '@/bootstrap.ts'
 import { runVerify } from '@/verify.ts'
-import { loadRecipe } from '@/config.ts'
+import { listRecipes, loadRecipe } from '@/config.ts'
 import { loadEnv, loadEnvPartial } from '@/env.ts'
 
 export const registerMaintenanceCommands = (program: Command): void => {
     program
         .command('clean')
         .description('Remove remote build leftovers and uploaded ISOs')
-        .action(async () => runClean(loadEnv()))
+        .action(async () => runClean(loadEnv(), await listRecipes()))
 
     program
         .command('prune')

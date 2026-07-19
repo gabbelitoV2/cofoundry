@@ -71,6 +71,22 @@ jobs:
       - name: Smoke-test artifact
         run: bun run cf verify "$CF_RECIPE"
 
+      # Runs only after build+verify succeed (steps stop on first failure), so
+      # this marker's existence is the per-recipe success signal that
+      # check-upstream's commit-checksums job uses to advance only the checksums
+      # of recipes that actually built. The recipe name is the marker filename.
+      - name: Mark recipe built
+        run: |
+          mkdir -p built
+          touch "built/$CF_RECIPE"
+
+      - name: Record successful build
+        uses: actions/upload-artifact@v7
+        with:
+          name: built-${{ inputs.recipe }}
+          path: built/
+          retention-days: 1
+
       - name: Upload failure diagnostics
         if: failure()
         uses: actions/upload-artifact@v7

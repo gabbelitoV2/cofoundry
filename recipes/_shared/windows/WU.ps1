@@ -25,6 +25,64 @@ Remove-Item $WULog        -Force -ErrorAction SilentlyContinue
 @'
 function Log($msg) { Add-Content "C:\Windows\Temp\tb-wu.log" "[$(Get-Date -Format 'HH:mm:ss')] $msg" }
 
+# Async progress support. The synchronous IUpdateDownloader.Download() and
+# IUpdateInstaller.Install() calls block for the whole batch with no output, so
+# a single large cumulative update looks hung for many minutes. Their async
+# Begin*/End* forms run the identical batch but return a job we can poll for a
+# real percentage. Begin* requires COM progress/completed callback objects; we
+# supply minimal no-op callbacks (we poll the job ourselves) whose interface
+# IIDs must match wuapi.idl exactly or WUA rejects them. If the types fail to
+# compile or Begin* throws for any reason, every caller falls back to the
+# synchronous batch call, so this can never fail the build -- only lose the
+# progress readout for that round.
+$asyncCallbacks = $true
+if (-not ([System.Management.Automation.PSTypeName]'CfWU.DlProgressCb').Type) {
+  try {
+    Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+namespace CfWU {
+  [ComVisible(true), Guid("8c3f1cdd-6173-4591-aebd-a56a53ca77c1"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+  public interface IDownloadProgressChangedCallback { void Invoke([MarshalAs(UnmanagedType.IUnknown)] object job, [MarshalAs(UnmanagedType.IUnknown)] object args); }
+  [ComVisible(true), Guid("77254866-9f5b-4c8e-b9e2-c77a8530d64b"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+  public interface IDownloadCompletedCallback { void Invoke([MarshalAs(UnmanagedType.IUnknown)] object job, [MarshalAs(UnmanagedType.IUnknown)] object args); }
+  [ComVisible(true), Guid("e01402d5-f8da-43ba-a012-38894bd048f1"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+  public interface IInstallationProgressChangedCallback { void Invoke([MarshalAs(UnmanagedType.IUnknown)] object job, [MarshalAs(UnmanagedType.IUnknown)] object args); }
+  [ComVisible(true), Guid("45f4f6f3-d602-4f98-9a8a-3efa152ad2d3"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+  public interface IInstallationCompletedCallback { void Invoke([MarshalAs(UnmanagedType.IUnknown)] object job, [MarshalAs(UnmanagedType.IUnknown)] object args); }
+  [ComVisible(true)] public class DlProgressCb : IDownloadProgressChangedCallback { public void Invoke(object job, object args) {} }
+  [ComVisible(true)] public class DlCompletedCb : IDownloadCompletedCallback { public void Invoke(object job, object args) {} }
+  [ComVisible(true)] public class InProgressCb : IInstallationProgressChangedCallback { public void Invoke(object job, object args) {} }
+  [ComVisible(true)] public class InCompletedCb : IInstallationCompletedCallback { public void Invoke(object job, object args) {} }
+}
+"@
+  } catch {
+    Log "async progress callbacks unavailable: $_"
+    $asyncCallbacks = $false
+  }
+}
+
+# Poll a download or installation job (both expose IsCompleted and
+# GetProgress().PercentComplete) until it finishes, logging the percentage on
+# each 5% step or at least once a minute so the packer-side log tail shows
+# steady movement without flooding.
+function Wait-WUJob($job, $phase) {
+  $lastBucket = -1
+  $lastLog    = Get-Date
+  while (-not $job.IsCompleted) {
+    Start-Sleep -Milliseconds 1500
+    $pct = -1
+    try { $pct = [int]$job.GetProgress().PercentComplete } catch {}
+    if ($pct -lt 0) { continue }
+    $bucket = [math]::Floor($pct / 5)
+    if ($bucket -ne $lastBucket -or ((Get-Date) - $lastLog).TotalSeconds -ge 60) {
+      Log "  $phase $pct%"
+      $lastBucket = $bucket
+      $lastLog    = Get-Date
+    }
+  }
+}
+
 function Test-PendingReboot {
   if (Test-Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending") { return $true }
   if (Test-Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired") { return $true }
@@ -74,7 +132,19 @@ for ($iter = 1; $iter -le $maxIterations; $iter++) {
   $dl = $session.CreateUpdateDownloader()
   $dl.Updates = $found.Updates
   try {
-    $dlResult = $dl.Download()
+    $dlResult = $null
+    if ($asyncCallbacks) {
+      try {
+        $dlJob = $dl.BeginDownload((New-Object CfWU.DlProgressCb), (New-Object CfWU.DlCompletedCb), $null)
+        Wait-WUJob $dlJob "download"
+        $dlResult = $dl.EndDownload($dlJob)
+        try { $dlJob.CleanUp() } catch {}
+      } catch {
+        Log "async download unavailable ($_); using synchronous batch download"
+        $dlResult = $null
+      }
+    }
+    if ($null -eq $dlResult) { $dlResult = $dl.Download() }
     Log "  download result: HResult=$($dlResult.HResult) ResultCode=$($dlResult.ResultCode)"
   } catch {
     Log "download failed: $_"
@@ -95,7 +165,19 @@ for ($iter = 1; $iter -le $maxIterations; $iter++) {
   $inst = $session.CreateUpdateInstaller()
   $inst.Updates = $toInstall
   try {
-    $instResult = $inst.Install()
+    $instResult = $null
+    if ($asyncCallbacks) {
+      try {
+        $instJob = $inst.BeginInstall((New-Object CfWU.InProgressCb), (New-Object CfWU.InCompletedCb), $null)
+        Wait-WUJob $instJob "install"
+        $instResult = $inst.EndInstall($instJob)
+        try { $instJob.CleanUp() } catch {}
+      } catch {
+        Log "async install unavailable ($_); using synchronous batch install"
+        $instResult = $null
+      }
+    }
+    if ($null -eq $instResult) { $instResult = $inst.Install() }
     Log "  install result: HResult=$($instResult.HResult) ResultCode=$($instResult.ResultCode) RebootRequired=$($instResult.RebootRequired)"
   } catch {
     Log "install failed: $_"

@@ -8,6 +8,7 @@ import { shellQuote } from '@/util.ts'
 
 export const RUN_LEASE_DIR = '/var/lib/cofoundry/run-leases'
 export const RUN_LEASE_LOCK = '/var/lib/cofoundry/run-leases.lock'
+export const OWNED_VMID_DIR = '/var/lib/cofoundry/owned-vmids'
 export const RUN_LEASE_STALE_SECS = 10 * 60
 
 const HEARTBEAT_MS = 60_000
@@ -139,7 +140,10 @@ fi
 `
 }
 
-const updateLeaseVmidScript = (request: LeaseRequest, vmid: number): string => {
+export const updateLeaseVmidScript = (
+    request: LeaseRequest,
+    vmid: number
+): string => {
     const file = leasePath(request.id)
     return `set -euo pipefail
 exec 9>${shellQuote(RUN_LEASE_LOCK)}
@@ -150,6 +154,8 @@ trap 'rm -f "$tmp"' EXIT
 printf '%s\\n' ${shellQuote(leaseRecord(request, vmid))} > "$tmp"
 chmod 600 "$tmp"
 mv -f "$tmp" ${shellQuote(file)}
+mkdir -p ${shellQuote(OWNED_VMID_DIR)}
+: > ${shellQuote(`${OWNED_VMID_DIR}/${vmid}`)}
 trap - EXIT
 `
 }

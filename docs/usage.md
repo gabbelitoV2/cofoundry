@@ -116,6 +116,14 @@ Removes from the Proxmox node:
 - Every `packer-*` build VM and its disks, **including templates** left by
   successful builds (`clean` is a full teardown; `prune` spares templates)
 - Disks orphaned in the `CF_STORAGE` pool whose owning VM is already gone
+- Interrupted ISO downloads, including PID-suffixed `*.iso.tmp.<pid>` files
+- RRD and vzdump telemetry belonging to deleted Cofoundry build/verify VMIDs
+
+Builds and verification runs share a node maintenance lock. They can still run
+in parallel with each other, while `clean` takes the exclusive side and waits
+for them to finish before tearing down state. A second `clean` also waits, so
+cleanup cannot race ISO prefetch, repository upload, Packer, or another cleanup.
+Deletion is verified before the command reports success.
 
 ### Weekly maintenance
 
@@ -175,7 +183,9 @@ Placeholders: `{{recipe}}` (recipe name), `{{arch}}`, `{{group}}` (OS family),
 ## GitHub Actions
 
 - **`check-upstream.yml`** — checks weekly, runs changed recipes in a parallel
-  matrix, publishes once after the matrix, then commits the new checksums.
+  matrix, then publishes once. Publishing and the checksum commit tolerate a
+  partial failure: successful recipes are published and get their checksums
+  advanced, while a failed recipe keeps its old checksum and is retried next run.
 - **`build.yml`** — reusable/manual one-recipe entry point.
 - **`build-one.yml`** — parallel-safe build and smoke-test worker.
 - **`publish.yml`** — globally serialized registry writer and R2 finalizer.

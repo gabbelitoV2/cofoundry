@@ -4,8 +4,10 @@ import type { Env } from '@/env.ts'
 import type { RecipeInfo } from '@/config.ts'
 import {
     buildLeaseAdmissionScript,
+    OWNED_VMID_DIR,
     RUN_LEASE_DIR,
     sweepRunLeasesScript,
+    updateLeaseVmidScript,
 } from '@/build/lease.ts'
 import { PACKER_TMP_ROOT } from '@/build/packer.ts'
 
@@ -52,6 +54,27 @@ describe('node-wide run leases', () => {
         expect(script).toContain(`${PACKER_TMP_ROOT}/*`)
         expect(script).toContain('rm -rf -- "$packer_tmpdir"')
         expect(script).not.toContain('qm list')
+        const result = spawnSync('bash', ['-n'], {
+            input: script,
+            encoding: 'utf8',
+        })
+        expect(result.status, result.stderr).toBe(0)
+    })
+
+    test('records VMID ownership for later telemetry cleanup', () => {
+        const script = updateLeaseVmidScript(
+            {
+                id: 'run-id',
+                kind: 'build',
+                recipe,
+                remoteTmpDir: '/dump/cofoundry-tmp/build-debian-12-run-id',
+                packerTmpDir: `${PACKER_TMP_ROOT}/run-id`,
+                preserveVm: false,
+                storage: 'local',
+            },
+            400100
+        )
+        expect(script).toContain(`${OWNED_VMID_DIR}/400100`)
         const result = spawnSync('bash', ['-n'], {
             input: script,
             encoding: 'utf8',

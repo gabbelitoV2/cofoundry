@@ -42,8 +42,10 @@ jobs:
             echo "any_changed=true" >> "$GITHUB_OUTPUT"
           fi
 
-      # Do not commit this yet. If any build fails, leaving the old checksums on
-      # main makes the next scheduled run detect and retry the same update.
+      # The full new-state store for every checked recipe. Do not commit it yet:
+      # commit-checksums overlays only the recipes that actually built onto the
+      # store on main, so a failed recipe keeps its old checksum here and the
+      # next scheduled run detects and retries just that update.
       - uses: actions/upload-artifact@v7
         with:
           name: upstream-checksums
@@ -65,9 +67,16 @@ jobs:
       recipe: ${{ matrix.recipe }}
     secrets: inherit
 
+  # Publish whenever the build job ran and produced at least some artifacts,
+  # even if a leg failed. Each successful build already uploaded its image and
+  # sidecar to R2 during build-one, and `cf publish --r2` aggregates whatever
+  # sidecars are in R2 — so a partial failure still publishes the successes,
+  # while a failed recipe simply keeps its previous R2 image. 'failure' means
+  # some legs failed; 'success' means all passed. Skip only when nothing built
+  # (build skipped) or the run was cancelled.
   publish:
     needs: build
-    if: needs.build.result == 'success'
+    if: always() && (needs.build.result == 'success' || needs.build.result == 'failure')
     uses: ./.github/workflows/publish.yml
     secrets: inherit
 
@@ -77,13 +86,18 @@ jobs:
     uses: ./.github/workflows/prune-node.yml
     secrets: inherit
 
+  # Advance the committed checksums for the recipes that built successfully.
+  # Runs after a partial failure too (build == 'failure'), and the merge step
+  # only carries forward recipes that produced a `built-*` marker, so failed
+  # recipes keep their old checksum and are retried next run. Gated on publish
+  # success: if the registry didn't publish, don't advance any checksums.
   commit-checksums:
     needs: [check, build, publish]
     if: >-
       always() &&
       needs.check.result == 'success' &&
-      (needs.build.result == 'success' || needs.build.result == 'skipped') &&
-      (needs.publish.result == 'success' || needs.publish.result == 'skipped')
+      (needs.build.result == 'success' || needs.build.result == 'failure') &&
+      needs.publish.result == 'success'
     runs-on: ubuntu-latest
     # Serialize every generated-file writer. The retry below also tolerates an
     # unrelated human push landing between fetch and push.
@@ -110,20 +124,45 @@ jobs:
           ref: main
           token: ${{ steps.registry-app-token.outputs.token || github.token }}
 
+      # The full new-state store computed by the check job.
       - uses: actions/download-artifact@v8
         with:
           name: upstream-checksums
-          path: .
+          path: new-checksums
 
-      - name: Commit updated checksums
+      # One marker per recipe that built+verified successfully; the filename is
+      # the recipe name. merge-multiple collapses them into a single directory.
+      # When every leg failed there are no markers, so tolerate no matches.
+      - uses: actions/download-artifact@v8
+        continue-on-error: true
+        with:
+          pattern: built-*
+          path: built
+          merge-multiple: true
+
+      - name: Commit checksums for successfully built recipes
         run: |
           git config user.name "cofoundry-registry-writer[bot]"
           git config user.email "cofoundry-registry-writer[bot]@users.noreply.github.com"
-          cp upstream-checksums.json "$RUNNER_TEMP/upstream-checksums.json"
+          # JSON array of recipe names whose build succeeded this run.
+          if [ -d built ] && [ -n "$(ls -A built)" ]; then
+            KEEP=$(ls built | jq -R . | jq -sc .)
+          else
+            echo "no successful builds; nothing to commit"
+            exit 0
+          fi
+          cp new-checksums/upstream-checksums.json "$RUNNER_TEMP/new.json"
           for attempt in 1 2 3; do
             git fetch origin main
             git reset --hard origin/main
-            cp "$RUNNER_TEMP/upstream-checksums.json" upstream-checksums.json
+            # Overlay only the successfully-built recipes' new states onto the
+            # store on main. Recipes that failed (or weren't built) keep their
+            # committed checksum and are re-detected as changed next run.
+            jq --slurpfile new "$RUNNER_TEMP/new.json" --argjson keep "$KEEP" '
+              reduce $keep[] as $r (.;
+                if $new[0][$r] != null then .[$r] = $new[0][$r] else . end)
+            ' upstream-checksums.json > "$RUNNER_TEMP/merged.json"
+            mv "$RUNNER_TEMP/merged.json" upstream-checksums.json
             git add upstream-checksums.json
             if git diff --cached --quiet; then
               break

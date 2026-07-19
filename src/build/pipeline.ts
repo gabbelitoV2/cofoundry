@@ -17,6 +17,7 @@ import {
     type Renderer,
     type TaskHandle,
 } from '@cofoundry/ui'
+import { acquireRemoteMaintenanceLock } from '@/build/maintenance.ts'
 
 export type PipelineOptions = {
     syncBack: boolean
@@ -43,6 +44,7 @@ export type PipelineDependencies = {
     prefetch: typeof prefetchPhase
     build: typeof buildPhase
     sync: typeof syncPhase
+    acquireMaintenance: typeof acquireRemoteMaintenanceLock
 }
 
 const DEFAULT_DEPENDENCIES: PipelineDependencies = {
@@ -50,6 +52,7 @@ const DEFAULT_DEPENDENCIES: PipelineDependencies = {
     prefetch: prefetchPhase,
     build: buildPhase,
     sync: syncPhase,
+    acquireMaintenance: acquireRemoteMaintenanceLock,
 }
 
 // Submit work to a p-queue and keep `handle`'s phase label accurate while it
@@ -99,6 +102,27 @@ export const runPipeline = async (
     recipes: RecipeInfo[],
     opts: PipelineOptions,
     dependencies: PipelineDependencies = DEFAULT_DEPENDENCIES
+): Promise<PipelineResult> => {
+    validateBuildOptions(recipes, opts)
+    const maintenance = await dependencies.acquireMaintenance(
+        env.SSH_TARGET,
+        'shared'
+    )
+    try {
+        return await Promise.race([
+            runPipelineLocked(env, recipes, opts, dependencies),
+            maintenance.lost,
+        ])
+    } finally {
+        await maintenance.release()
+    }
+}
+
+const runPipelineLocked = async (
+    env: Env,
+    recipes: RecipeInfo[],
+    opts: PipelineOptions,
+    dependencies: PipelineDependencies
 ): Promise<PipelineResult> => {
     const buildOptions = validateBuildOptions(recipes, opts)
     const prefetchQ = new PQueue({ concurrency: opts.prefetchConcurrency ?? 3 })

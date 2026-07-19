@@ -111,6 +111,33 @@ late install guarantees Cloudbase-Init is present immediately before export.
 The observed `Windows.old` directory was empty by finalization, so no cleanup
 step is needed.
 
+### Windows Update progress reporting
+
+The SYSTEM update task in `WU.ps1` downloads and installs each batch through the
+**asynchronous** `IUpdateDownloader.BeginDownload` / `IUpdateInstaller.BeginInstall`
+COM methods and polls the returned job's `GetProgress().PercentComplete`, logging
+each 5% step (or at least once a minute) to `tb-wu.log`. The outer script already
+tails that log to Packer, so a long cumulative update now shows a climbing
+percentage instead of only the elapsed-minute heartbeat. Batching is unchanged —
+`Begin*` runs the same update collection the synchronous calls did.
+
+`Begin*` requires COM progress/completed callback objects. `WU.ps1` supplies
+minimal no-op callbacks defined via `Add-Type`; their interface IIDs are taken
+verbatim from `wuapi.idl` (`IDownloadProgressChangedCallback`
+`8c3f1cdd-6173-4591-aebd-a56a53ca77c1`, `IDownloadCompletedCallback`
+`77254866-9f5b-4c8e-b9e2-c77a8530d64b`, `IInstallationProgressChangedCallback`
+`e01402d5-f8da-43ba-a012-38894bd048f1`, `IInstallationCompletedCallback`
+`45f4f6f3-d602-4f98-9a8a-3efa152ad2d3`). If the types fail to compile or `Begin*`
+throws (e.g. a wrong IID or marshaling mismatch), the code falls back to the
+original synchronous `Download()` / `Install()` batch call, so a callback problem
+can only lose the progress readout for a round — it cannot fail the build.
+
+Status: **unverified on a live build** at time of writing. The async-callback
+path could not be exercised from the dev host; confirm on the next real run that
+the log shows `download`/`install` percentages rather than the
+`async ... unavailable ... using synchronous batch` fallback line, and record the
+outcome here.
+
 ## Debugging workflow
 
 Before changing HCL, an answer file, or a provisioner:

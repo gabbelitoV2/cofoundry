@@ -32,6 +32,10 @@ const dependencies = (
             return { startedAt: 123 }
         },
         sync: async () => run('sync'),
+        acquireMaintenance: async () => ({
+            lost: new Promise<never>(() => undefined),
+            release: async () => {},
+        }),
     }
 }
 
@@ -97,6 +101,27 @@ describe('runPipeline', () => {
         }
 
         await runPipeline(env, [recipe], { syncBack: false, ci: true }, deps)
+    })
+
+    test('holds and releases the shared maintenance lock around every phase', async () => {
+        const events: string[] = []
+        const deps = dependencies(events)
+        deps.acquireMaintenance = async (_target, mode) => {
+            expect(mode).toBe('shared')
+            events.push('lock')
+            return {
+                lost: new Promise<never>(() => undefined),
+                release: async () => void events.push('unlock'),
+            }
+        }
+        await runPipeline(env, [recipe], { syncBack: false, ci: true }, deps)
+        expect(events).toEqual([
+            'lock',
+            'syncRepo',
+            'prefetch',
+            'build',
+            'unlock',
+        ])
     })
 
     test('requires resource budgets when parallel builds are enabled', async () => {

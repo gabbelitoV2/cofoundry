@@ -228,8 +228,31 @@ try {
   }
 
   Log "round complete; installed $totalInstalled update(s) this invocation"
-  if (Test-PendingReboot -and -not (Test-Path "C:\Windows\Temp\tb-wu-reboot.flag")) {
+  # Safety net: some loop exits (search/download failure, max iterations) skip
+  # the in-loop reboot check, so re-check here. Parentheses around the call are
+  # required: without them -and/-not become arguments to Test-PendingReboot and
+  # the Test-Path guard is never evaluated.
+  if ((Test-PendingReboot) -and -not (Test-Path "C:\Windows\Temp\tb-wu-reboot.flag")) {
     Set-Content "C:\Windows\Temp\tb-wu-reboot.flag" "needed"
+  }
+
+  # Final verification. Without the reboot flag the recipe's conditional
+  # windows-restart skips and the build proceeds as if the guest were fully
+  # patched, so re-search once and surface any leftovers in the log. Leftover
+  # updates or a search hiccup only WARN -- matching the loop above, which logs
+  # and breaks on search failure instead of failing the build.
+  if (-not (Test-Path "C:\Windows\Temp\tb-wu-reboot.flag")) {
+    try {
+      $remaining = $session.CreateUpdateSearcher().Search("IsInstalled=0 and Type='Software' and IsHidden=0")
+      if ($remaining.Updates.Count -gt 0) {
+        Log "WARNING: $($remaining.Updates.Count) applicable update(s) still pending after this round:"
+        for ($i = 0; $i -lt $remaining.Updates.Count; $i++) { Log "WARNING:   - $($remaining.Updates.Item($i).Title)" }
+      } else {
+        Log "verified: no applicable updates remain"
+      }
+    } catch {
+      Log "WARNING: could not verify remaining updates: $_"
+    }
   }
 } finally {
   if ($powerSchemeChanged) {

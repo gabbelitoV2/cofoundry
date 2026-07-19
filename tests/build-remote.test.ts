@@ -38,10 +38,15 @@ describe('streaming', () => {
         const started = Date.now()
         // Without cancellation this would block for 30 s and overrun the
         // test timeout; a fired signal must kill the child promptly and
-        // reject.
+        // reject. The sleeper must be a DIRECT child that owns its stdio:
+        // `bash -c 'sleep 30'` leaves an orphaned sleep.exe grandchild on
+        // Windows after bash is killed, and its inherited pipe handles keep
+        // the stream-close (and thus this promise) alive for the full 30 s.
+        // Production spawns ssh directly, so the direct-child form is also
+        // the faithful model.
         const pending = streaming(
-            'bash',
-            ['-c', 'sleep 30'],
+            process.execPath,
+            ['-e', 'await new Promise(resolve => setTimeout(resolve, 30_000))'],
             () => undefined,
             undefined,
             abort.signal

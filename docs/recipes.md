@@ -77,7 +77,10 @@ Copy a nearby `preseed.cfg`. The committed file must contain
 `__PACKER_SSH_PUBLIC_KEY__`, not a real key. `scripts/inject-placeholders.sh`
 generates a fresh ephemeral Ed25519 key for each build and replaces either the
 placeholder or a previously injected `packer-<recipe>-*` key, so reruns remain
-safe even without `git clean`.
+safe even without `git clean`. The hostname line uses
+`__PACKER_RECIPE_NAME__`, which the same script replaces with the recipe name,
+so the preseed files stay identical across Debian releases
+(`tests/recipe-consistency.test.ts` enforces this).
 
 ### AlmaLinux and Rocky Linux kickstart
 

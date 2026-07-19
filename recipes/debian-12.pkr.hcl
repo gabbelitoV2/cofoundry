@@ -144,7 +144,7 @@ source "proxmox-iso" "debian-12" {
     unmount      = true
   }
 
-  http_directory    = "${path.root}/debian-12/http"
+  http_directory    = "${path.root}/${local.recipe_name}/http"
   http_bind_address = var.build_gw
 
   boot_wait = "10s"
@@ -181,7 +181,7 @@ source "proxmox-iso" "debian-12" {
   ssh_private_key_file   = var.packer_ssh_private_key_file
   ssh_handshake_attempts = 10
   ssh_pty                = true
-  ssh_timeout            = "60m"
+  ssh_timeout            = "35m"
 }
 
 build {

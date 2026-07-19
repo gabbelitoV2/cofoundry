@@ -25,6 +25,32 @@ Remove-Item $WULog        -Force -ErrorAction SilentlyContinue
 @'
 function Log($msg) { Add-Content "C:\Windows\Temp\tb-wu.log" "[$(Get-Date -Format 'HH:mm:ss')] $msg" }
 
+# Windows Update is normally interactive background work, and Task Scheduler
+# also defaults tasks to below-normal priority. This VM is dedicated to image
+# construction while this task runs, so favor throughput for the duration of
+# the update round. The task itself is registered at normal priority below;
+# the high-performance power scheme is restored in finally before the task
+# signals completion or Packer reboots the VM.
+$activeSchemeOutput = (& powercfg.exe /getactivescheme 2>$null | Out-String)
+$activeSchemeMatch = [regex]::Match(
+  $activeSchemeOutput,
+  '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'
+)
+$originalPowerScheme = if ($activeSchemeMatch.Success) { $activeSchemeMatch.Value } else { $null }
+$powerSchemeChanged = $false
+
+if ($originalPowerScheme) {
+  & powercfg.exe /setactive SCHEME_MIN 2>$null
+  if ($LASTEXITCODE -eq 0) {
+    $powerSchemeChanged = $true
+    Log "throughput mode enabled (normal task priority, High performance power scheme)"
+  } else {
+    Log "could not activate High performance power scheme; continuing with $originalPowerScheme"
+  }
+} else {
+  Log "could not identify active power scheme; continuing without changing it"
+}
+
 # Async progress support. The synchronous IUpdateDownloader.Download() and
 # IUpdateInstaller.Install() calls block for the whole batch with no output, so
 # a single large cumulative update looks hung for many minutes. Their async
@@ -95,11 +121,12 @@ function Test-PendingReboot {
   return $false
 }
 
-$session = New-Object -ComObject Microsoft.Update.Session
-$totalInstalled = 0
-$maxIterations  = 5
+try {
+  $session = New-Object -ComObject Microsoft.Update.Session
+  $totalInstalled = 0
+  $maxIterations  = 5
 
-for ($iter = 1; $iter -le $maxIterations; $iter++) {
+  for ($iter = 1; $iter -le $maxIterations; $iter++) {
   Log "iteration $iter - searching for updates..."
   $searcher = $session.CreateUpdateSearcher()
   try {
@@ -198,11 +225,21 @@ for ($iter = 1; $iter -le $maxIterations; $iter++) {
   }
 
   Log "no reboot required - looping to check for further updates"
-}
+  }
 
-Log "round complete; installed $totalInstalled update(s) this invocation"
-if (Test-PendingReboot -and -not (Test-Path "C:\Windows\Temp\tb-wu-reboot.flag")) {
-  Set-Content "C:\Windows\Temp\tb-wu-reboot.flag" "needed"
+  Log "round complete; installed $totalInstalled update(s) this invocation"
+  if (Test-PendingReboot -and -not (Test-Path "C:\Windows\Temp\tb-wu-reboot.flag")) {
+    Set-Content "C:\Windows\Temp\tb-wu-reboot.flag" "needed"
+  }
+} finally {
+  if ($powerSchemeChanged) {
+    & powercfg.exe /setactive $originalPowerScheme 2>$null
+    if ($LASTEXITCODE -eq 0) {
+      Log "restored power scheme $originalPowerScheme"
+    } else {
+      Log "warning: could not restore power scheme $originalPowerScheme"
+    }
+  }
 }
 Set-Content "C:\Windows\Temp\tb-wu-done.flag" "done"
 '@ | Set-Content $WUScript -Encoding UTF8
@@ -210,7 +247,9 @@ Set-Content "C:\Windows\Temp\tb-wu-done.flag" "done"
 $action    = New-ScheduledTaskAction -Execute "powershell.exe" `
                -Argument "-ExecutionPolicy Bypass -NonInteractive -File `"$WUScript`""
 $principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
-$settings  = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Hours 3)
+# Task Scheduler's default priority is 7 (below normal). Priority 4 is normal:
+# the build VM has no interactive workload to protect during this task.
+$settings  = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Hours 3) -Priority 4
 Register-ScheduledTask -TaskName $WUTaskName -Action $action `
   -Principal $principal -Settings $settings -Force | Out-Null
 Start-ScheduledTask -TaskName $WUTaskName

@@ -138,6 +138,27 @@ the log shows `download`/`install` percentages rather than the
 `async ... unavailable ... using synchronous batch` fallback line, and record the
 outcome here.
 
+### Windows Update throughput mode
+
+Windows servicing is intentionally conservative on interactive machines, and
+Task Scheduler creates tasks at priority 7 (below normal) by default. The build
+VM has no interactive workload during its update rounds, so `WU.ps1` registers
+the SYSTEM task at priority 4 (normal) and temporarily selects the High
+performance power scheme. It records the prior scheme and restores it in a
+`finally` block before the round completes or Packer reboots the VM.
+
+This removes avoidable scheduler and guest power-policy throttling; it does not
+make servicing fully parallel. Cumulative updates still spend substantial time
+in dependency-ordered component-store operations, decompression, verification,
+and small random disk I/O. Do not set `TiWorker`, `TrustedInstaller`, or the
+update task to High/Realtime priority: that can starve storage, RPC, QEMU-GA,
+and WinRM without accelerating serialized work.
+
+Status: **unverified on a live build** at time of writing. On the next real run,
+compare update-round duration and host/guest CPU and disk utilization with the
+prior build. Confirm the log contains both `throughput mode enabled` and
+`restored power scheme`; record the outcome here even if no speedup is observed.
+
 ## Debugging workflow
 
 Before changing HCL, an answer file, or a provisioner:

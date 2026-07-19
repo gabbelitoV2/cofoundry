@@ -14,4 +14,31 @@ describe('buildVmWatchdog', () => {
             'qm sendkey 1 ret'
         )
     })
+
+    test('kills the whole process group when the restart limit is reached', () => {
+        const script = buildVmWatchdog(600201, '10.0.0.101', 5985, false)
+        const branch = script.slice(
+            script.indexOf('restart limit reached'),
+            script.indexOf('stopped unexpectedly')
+        )
+        // A bare `exit 1` only ends the background subshell — Packer would
+        // wait out its communicator timeout against the dead VM. The group
+        // kill is what fails the attempt fast.
+        expect(branch).toMatch(/kill 0[\s\S]*exit 1\b/)
+    })
+
+    test('healthy exits leave the process group untouched', () => {
+        const script = buildVmWatchdog(600201, '10.0.0.101', 5985, false)
+        const lines = script.split('\n')
+        for (const marker of [
+            'launching shell gone',
+            'stable) — exiting',
+            'is now a template',
+        ]) {
+            const line = lines.find(l => l.includes(marker))
+            expect(line).toBeDefined()
+            expect(line).toContain('exit 0')
+            expect(line).not.toContain('kill')
+        }
+    })
 })

@@ -2,7 +2,9 @@
  * Build a remote Bash watchdog that restarts an installer VM when it powers
  * off before its communicator becomes stable. The script exits once SSH/WinRM
  * is reachable across three consecutive checks and tears itself down with the
- * launching shell.
+ * launching shell. When the restart limit is reached it signals the whole
+ * process group so the running Packer attempt fails immediately instead of
+ * waiting out its communicator timeout against a dead VM.
  */
 export const buildVmWatchdog = (
     vmid: number,
@@ -35,7 +37,15 @@ export const buildVmWatchdog = (
     fi
     _n=$((_n + 1))
     if [ "$_n" -gt "$_max" ]; then
-      echo "[watchdog] VM ${vmid}: restart limit reached, giving up" >&2; exit 1
+      echo "[watchdog] VM ${vmid}: restart limit reached — failing this build attempt" >&2
+      # A bare exit would only end this background subshell while Packer keeps
+      # waiting for SSH/WinRM against the dead VM until its communicator
+      # timeout. sshd starts the launching shell in its own session (setsid),
+      # so signalling process group 0 fells exactly this attempt — packer,
+      # tail, the recorder, and the launching shell, whose TERM trap then
+      # re-raises and exits 143 — mirroring the traps below.
+      kill 0 2>/dev/null || true
+      exit 1
     fi
     echo "[watchdog] VM ${vmid} stopped unexpectedly (attempt $_n/$_max) — restarting"
     qm start ${vmid} 2>&1 || true

@@ -145,6 +145,7 @@ source "proxmox-iso" "rocky-linux-9" {
   http_bind_address = var.build_gw
 
   boot_wait = "15s"
+  boot_key_interval = "100ms"
   boot_command = [
     "<up><wait>",
     "<tab><wait>",

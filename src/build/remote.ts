@@ -125,8 +125,11 @@ export const remoteStreamingPty = (
     cmd: string
 ): Promise<void> => streaming('ssh', [...SSH_OPTS, '-t', '-t', target, cmd])
 
-// Wget exit codes worth surfacing. See man wget(1) EXIT STATUS.
-const WGET_EXIT: Record<number, string> = {
+// Wget exit codes worth surfacing. See man wget(1) EXIT STATUS. Code 9 is
+// ours, not wget's (wget stops at 8): assetFetchCommand's validation step
+// exits 9 when a completed download does not match the published checksum, so
+// the failure reads as what it is instead of a generic wget error.
+export const WGET_EXIT: Record<number, string> = {
     1: 'generic error',
     2: 'parse error (bad command line)',
     3: 'file I/O error (cannot write to destination)',
@@ -135,6 +138,26 @@ const WGET_EXIT: Record<number, string> = {
     6: 'authentication failure',
     7: 'protocol error',
     8: 'server returned an error response (e.g. 404 — URL may be stale)',
+    9: 'downloaded file failed checksum verification — expected hash did not match',
+}
+
+// Turns a non-zero exit code from the fetch pipeline into a human meaning. The
+// command runs as a bash script over `ssh -t -t`, so the code can come from
+// wget (1-8), our own checksum step (9), the shell, a signal, or ssh — not
+// just wget. Decode the common non-wget cases so a dropped ssh connection or
+// an OOM-kill reads as what it is instead of being mislabelled a wget error,
+// and always surface the raw number for anything still unmapped.
+export const describeExit = (code: number): string => {
+    const known = WGET_EXIT[code]
+    if (known) return known
+    if (code === 255) return 'ssh connection or authentication failed'
+    if (code === 127)
+        return 'command not found (is wget installed on the remote node?)'
+    if (code === 126) return 'command found but not executable'
+    // Bash reports a process killed by signal N as 128+N (130=SIGINT/Ctrl-C,
+    // 137=SIGKILL/OOM, 143=SIGTERM).
+    if (code > 128) return `process killed by signal ${code - 128}`
+    return `unmapped exit code ${code}`
 }
 
 // A wget failure that carries its exit code, so callers can distinguish a
@@ -151,7 +174,10 @@ export class WgetError extends Error {
 }
 
 // wget exit codes that will never succeed on retry: a stale/absent URL and a
-// malformed command line. Everything else is treated as potentially transient.
+// malformed command line. Everything else is treated as potentially transient
+// — including checksum failure (9): genuine transport corruption heals on
+// retry, and a deterministic mismatch (wrong published hash selected) is now
+// diagnosable from the logged expected/actual hashes on every attempt.
 export const isPermanentWgetExit = (code: number): boolean =>
     code === 8 || code === 2
 
@@ -197,11 +223,13 @@ export const remoteWgetCapture = async (
             )
         if (err instanceof ExecaError && typeof err.exitCode === 'number') {
             const code = err.exitCode
-            const meaning = WGET_EXIT[code] ?? 'unknown wget error'
+            const meaning = describeExit(code)
             const what = context?.what ?? 'download'
             const url = context?.url ? ` ${context.url}` : ''
+            // "exit N", not "wget exit N": the code can come from the shell,
+            // ssh, or a signal, so don't attribute every failure to wget.
             throw new WgetError(
-                `${what} failed: wget exit ${code} — ${meaning}${url ? ` (${url.trim()})` : ''}`,
+                `${what} failed: exit ${code} — ${meaning}${url ? ` (${url.trim()})` : ''}`,
                 code
             )
         }

@@ -28,14 +28,43 @@ const ASSET_LOCK_DIR = '/var/lib/cofoundry/asset-locks'
 export const assetLockPath = (destination: string): string =>
     `${ASSET_LOCK_DIR}/${createHash('sha256').update(destination).digest('hex').slice(0, 2)}`
 
-const checksumCommand = (pathArg: string, checksum?: Checksum): string => {
+/** Last path segment of a URL, with any query string / fragment stripped. */
+const urlBasename = (url: string): string => {
+    const path = url.replace(/[?#].*$/, '')
+    return path.slice(path.lastIndexOf('/') + 1)
+}
+
+// Selects the expected hash from a SHA256SUMS-style file (lines of
+// "<hash> *<name>" or "<hash>  <name>"). Prefers the line whose filename field
+// EXACTLY matches the URL basename (argv[2]): releases.ubuntu.com lists every
+// point release in one sums file, so a bare first-regex-match can pick a
+// sibling release's hash (24.04.3 when the URL downloads 24.04.4) and doom
+// every download to a deterministic mismatch. Falls back to the recipe's
+// iso_filename_re (argv[1]) for mirrors whose sums-file names differ from the
+// URL basename. Prints "<hash> <matched name>", or nothing on no match.
+export const CHECKSUM_EXTRACT_PY =
+    'import re,sys; ' +
+    "pat=re.compile(sys.argv[1]); base=sys.argv[2] if len(sys.argv)>2 else ''; " +
+    'lines=sys.stdin.read().splitlines(); ' +
+    "name=lambda l: (lambda m: m.group(1) if m else '')(re.match(r'\\s*[0-9a-fA-F]{64}\\s+\\*?(.+?)\\s*$', l)); " +
+    "line=next((l for l in lines if base and name(l)==base), '') or next((l for l in lines if pat.search(l)), ''); " +
+    "h=re.findall(r'(?i)\\b[0-9a-f]{64}\\b', line); " +
+    "print(h[0].lower()+' '+(name(line) or line.strip()) if h else '')"
+
+const checksumCommand = (
+    pathArg: string,
+    checksum?: Checksum,
+    urlBase = ''
+): string => {
     if (!checksum) return `test -s ${pathArg}`
     if ('sha256' in checksum) {
-        return `actual=$(sha256sum ${pathArg} | awk '{print $1}') && [ "$actual" = ${shellQuote(checksum.sha256.toLowerCase())} ]`
+        // expected is also read by the mismatch diagnostics in onInvalid.
+        return `expected=${shellQuote(checksum.sha256.toLowerCase())}; actual=$(sha256sum ${pathArg} | awk '{print $1}') && [ "$actual" = "$expected" ]`
     }
     return (
-        `expected=$(curl -fsSL ${shellQuote(checksum.url)} 2>/dev/null | ` +
-        `python3 -c ${shellQuote("import re,sys; p=re.compile(sys.argv[1]); lines=(line for line in sys.stdin if p.search(line)); line=next(lines, ''); hashes=re.findall(r'(?i)\\b[0-9a-f]{64}\\b', line); print(hashes[0].lower() if hashes else '')")} ${shellQuote(checksum.filenamePattern)} || true); ` +
+        `entry=$(curl -fsSL ${shellQuote(checksum.url)} 2>/dev/null | ` +
+        `python3 -c ${shellQuote(CHECKSUM_EXTRACT_PY)} ${shellQuote(checksum.filenamePattern)} ${shellQuote(urlBase)} || true); ` +
+        'expected="${entry%% *}"; matched="${entry#* }"; ' +
         `if [ -z "$expected" ]; then test -s ${pathArg}; else ` +
         `actual=$(sha256sum ${pathArg} | awk '{print $1}') && [ "$actual" = "$expected" ]; fi`
     )
@@ -47,8 +76,24 @@ export const assetFetchCommand = (
     url: string,
     checksum?: Checksum
 ): string => {
-    const valid = checksumCommand(shellQuote(destination), checksum)
-    const downloadedValid = checksumCommand('"$tmp"', checksum)
+    const base = urlBasename(url)
+    const valid = checksumCommand(shellQuote(destination), checksum, base)
+    const downloadedValid = checksumCommand('"$tmp"', checksum, base)
+    // A completed-but-invalid download is removed (resuming garbage that wget
+    // considers finished is worse than restarting) and reported with our own
+    // exit 9 — outside wget's 0–8 range — alongside the expected/actual hashes
+    // and the sums entry that was consulted. A wrong expected hash (e.g. the
+    // sums file listing several point releases) then shows up in the log as
+    // what it is instead of being masked as "wget exit 1 — generic error".
+    const source =
+        checksum && !('sha256' in checksum)
+            ? `" sums="${shellQuote(checksum.url)}`
+            : `" source="${shellQuote('pinned sha256')}`
+    const onInvalid = checksum
+        ? 'echo "downloaded file failed checksum verification: ' +
+          'expected=${expected:-none} actual=${actual:-none} entry=${matched:-none} file="' +
+          `${shellQuote(base)}${source}; rm -f "$tmp"; exit 9`
+        : 'rm -f "$tmp"; exit 1'
     return (
         `set -e; mkdir -p ${shellQuote(ASSET_LOCK_DIR)}; exec 9>${shellQuote(assetLockPath(destination))}; flock -x 9; ` +
         `if ${valid}; then touch ${shellQuote(destination)}; exit 0; fi; ` +
@@ -76,7 +121,7 @@ export const assetFetchCommand = (
         // within one invocation before the outer pRetry layer takes over.
         `tmp=${shellQuote(`${destination}.tmp`)}; ` +
         `wget -nv --show-progress --progress=bar:force:noscroll -c --tries=5 --timeout=30 --read-timeout=60 --retry-connrefused --waitretry=5 -O "$tmp" ${shellQuote(url)}; ` +
-        `if ${downloadedValid}; then mv -f "$tmp" ${shellQuote(destination)}; else rm -f "$tmp"; exit 1; fi`
+        `if ${downloadedValid}; then mv -f "$tmp" ${shellQuote(destination)}; else ${onInvalid}; fi`
     )
 }
 

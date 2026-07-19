@@ -46,6 +46,7 @@ if [ "$NEEDS_KEY" = "1" ]; then
     sed -E \
       "s|__PACKER_SSH_PUBLIC_KEY__|${PUB_KEY}|g; \
        s|ssh-ed25519 AAAA[^ ]+ packer-${RECIPE}-[^ '\"]*|${PUB_KEY}|g; \
+       s|__PACKER_RECIPE_NAME__|${RECIPE}|g; \
        s|__PACKER_BUILD_IP__|${CF_BUILD_IP:-}|g; \
        s|__PACKER_BUILD_GW__|${CF_BUILD_GW:-}|g; \
        s|__PACKER_BUILD_DNS__|${CF_BUILD_DNS:-1.1.1.1}|g" \

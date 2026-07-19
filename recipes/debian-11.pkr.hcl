@@ -146,6 +146,12 @@ source "proxmox-iso" "debian-11" {
   http_bind_address = var.build_gw
 
   boot_wait = "10s"
+  # Space out simulated keystrokes. Proxmox sends the boot command via the
+  # QEMU `sendkey` API; with no interval the guest keyboard buffer drops
+  # characters, which corrupted a typed netmask on Ubuntu (…255.255.255.0
+  # arriving as …255.25.250) and would break the netcfg/ answers typed here
+  # the same way. See docs/recipes.md#ubuntu-autoinstall.
+  boot_key_interval = "100ms"
   boot_command = [
     "<esc><wait>",
     "install auto=true priority=critical console=tty0 <wait>",

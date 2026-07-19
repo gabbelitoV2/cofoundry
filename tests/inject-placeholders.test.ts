@@ -21,6 +21,54 @@ afterEach(() => {
 })
 
 describe('inject-placeholders.sh', () => {
+    test('substitutes recipe-name, network, and SSH key placeholders in preseed files', () => {
+        const root = mkdtempSync(join(tmpdir(), 'cf-inject-'))
+        tempDirs.push(root)
+        const httpDir = join(root, 'recipes', 'debian-test', 'http')
+        const runnerTemp = join(root, 'runner-temp')
+        mkdirSync(httpDir, { recursive: true })
+        mkdirSync(runnerTemp)
+        const preseed = join(httpDir, 'preseed.cfg')
+        writeFileSync(
+            preseed,
+            [
+                'd-i netcfg/get_hostname string packer-__PACKER_RECIPE_NAME__',
+                'd-i netcfg/get_ipaddress string __PACKER_BUILD_IP__',
+                'd-i netcfg/get_gateway string __PACKER_BUILD_GW__',
+                'd-i netcfg/get_nameservers string __PACKER_BUILD_DNS__',
+                "echo '__PACKER_SSH_PUBLIC_KEY__' > /target/home/packer/.ssh/authorized_keys",
+                '',
+            ].join('\n')
+        )
+
+        const result = Bun.spawnSync(['bash', script, 'debian-test'], {
+            cwd: root,
+            env: {
+                ...process.env,
+                RUNNER_TEMP: runnerTemp,
+                CF_BUILD_IP: '10.99.0.5',
+                CF_BUILD_GW: '10.99.0.1',
+                CF_BUILD_DNS: '9.9.9.9',
+            },
+        })
+        expect(result.exitCode).toBe(0)
+
+        const injected = readFileSync(preseed, 'utf8')
+        expect(injected).toContain(
+            'd-i netcfg/get_hostname string packer-debian-test'
+        )
+        expect(injected).toContain('d-i netcfg/get_ipaddress string 10.99.0.5')
+        expect(injected).toContain('d-i netcfg/get_gateway string 10.99.0.1')
+        expect(injected).toContain('d-i netcfg/get_nameservers string 9.9.9.9')
+        expect(injected).toContain("echo 'ssh-ed25519 ")
+        expect(injected).not.toMatch(/__PACKER_[A-Z_]+__/)
+
+        const varsFile = join(runnerTemp, 'packer-vars-debian-test.pkrvars.hcl')
+        expect(readFileSync(varsFile, 'utf8')).toContain(
+            'packer_ssh_private_key_file = '
+        )
+    })
+
     test('protects generated Windows credentials with mode 0600', () => {
         const root = mkdtempSync(join(tmpdir(), 'cf-inject-'))
         tempDirs.push(root)

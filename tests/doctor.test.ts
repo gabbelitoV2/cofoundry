@@ -6,12 +6,14 @@ import {
     bridgeCheck,
     buildBridgeCheck,
     diskSpaceCheck,
+    dnsmasqCheck,
     doctorSweepScript,
     ISO_MASTERING_TOOLS,
     NODE_TOOLS,
     parseDfAvailKib,
     parsePvesmStatus,
     parseToolSweep,
+    r2Check,
     runDoctorChecks,
     splitSections,
     storageCheck,
@@ -19,7 +21,7 @@ import {
     type DoctorCheck,
     type DoctorDeps,
 } from '@/doctor.ts'
-import { doctorReportJson } from '@/commands/doctor.ts'
+import { doctorReportJson, runDoctorCommand } from '@/commands/doctor.ts'
 
 const PROC_ENV: NodeJS.ProcessEnv = {
     PVE_HOST: '192.0.2.10',
@@ -46,6 +48,10 @@ const SWEEP_OK = [
     '',
     '### cf-doctor:addr:build-bridge',
     '7: vmbr1    inet 10.0.0.1/24 scope global vmbr1\\       valid_lft forever preferred_lft forever',
+    '### cf-doctor:dnsmasq',
+    'active',
+    '### cf-doctor:dnsmasq-hostsdir',
+    'present',
     '### cf-doctor:df:iso',
     '/dev/mapper/pve-root  98559220 12345678  81234567      14% /',
     '### cf-doctor:df:dump',
@@ -59,6 +65,7 @@ const depsFor = (overrides: Partial<DoctorDeps> = {}): DoctorDeps => ({
     probeSsh: async () => {},
     captureScript: async (_target, script) =>
         script.includes('api2/json/version') ? API_OK : SWEEP_OK,
+    probeR2: async () => {},
     ...overrides,
 })
 
@@ -137,8 +144,11 @@ describe('runDoctorChecks', () => {
         const api = byId(report.checks, 'pve-api')
         expect(api.status).toBe('ok')
         expect(api.detail).toContain('8.2.4')
+        expect(byId(report.checks, 'dnsmasq').status).toBe('ok')
         expect(byId(report.checks, 'iso-space').status).toBe('ok')
         expect(byId(report.checks, 'dump-space').status).toBe('ok')
+        // R2 is unset in PROC_ENV: optional config skips, never fails.
+        expect(byId(report.checks, 'r2').status).toBe('skip')
         // Warnings alone must not flip the exit-relevant flag.
         expect(report.ok).toBeTrue()
     })
@@ -311,13 +321,17 @@ describe('disk space checks', () => {
         expect(parseDfAvailKib('')).toBeUndefined()
     })
 
-    test('a missing directory fails, low space warns, plenty is ok', () => {
+    test('a missing directory fails with its own hint, low space warns, plenty is ok', () => {
         const base = { id: 'iso-space', name: 'ISO cache space' }
-        expect(diskSpaceCheck('', base, '/x').status).toBe('fail')
+        const missing = diskSpaceCheck('', base, '/x', 'check CF_ISO_STORAGE')
+        expect(missing.status).toBe('fail')
+        // The hint is per-directory: the ISO dir must not blame PVE_DUMP_DIR.
+        expect(missing.hint).toBe('check CF_ISO_STORAGE')
         const low = diskSpaceCheck(
             '/dev/sda1 10485760 9437184 1048576 90% /',
             base,
-            '/x'
+            '/x',
+            'check CF_ISO_STORAGE'
         )
         expect(low.status).toBe('warn')
         expect(low.hint).toContain('cf prune')
@@ -325,9 +339,135 @@ describe('disk space checks', () => {
             diskSpaceCheck(
                 '/dev/sda1 98559220 12345678 81234567 14% /',
                 base,
-                '/x'
+                '/x',
+                'check CF_ISO_STORAGE'
             ).status
         ).toBe('ok')
+    })
+})
+
+describe('dnsmasqCheck', () => {
+    test('active service with the hostsfile dir is ok', () => {
+        expect(dnsmasqCheck('active', 'present').status).toBe('ok')
+    })
+
+    test('an inactive or absent service fails toward cf bootstrap', () => {
+        const inactive = dnsmasqCheck('inactive', 'present')
+        expect(inactive.status).toBe('fail')
+        expect(inactive.detail).toContain('inactive')
+        expect(inactive.hint).toContain('cf bootstrap')
+        expect(dnsmasqCheck('', 'present').detail).toContain('not found')
+        expect(dnsmasqCheck('unknown', 'present').detail).toContain('not found')
+    })
+
+    test('a missing hostsfile directory fails even when the service runs', () => {
+        const check = dnsmasqCheck('active', '')
+        expect(check.status).toBe('fail')
+        expect(check.detail).toContain('cofoundry-hosts.d')
+        expect(check.hint).toContain('cf bootstrap')
+    })
+})
+
+describe('r2Check', () => {
+    const R2_ENV = {
+        R2_ENDPOINT: 'https://acc.r2.cloudflarestorage.com',
+        R2_BUCKET: 'cofoundry-templates',
+    }
+
+    test('unconfigured R2 skips instead of failing', async () => {
+        const check = await r2Check({}, depsFor())
+        expect(check.status).toBe('skip')
+        expect(check.detail).toContain('cf upload --r2')
+    })
+
+    test('a partial R2 config fails', async () => {
+        const check = await r2Check(
+            { R2_ENDPOINT: R2_ENV.R2_ENDPOINT },
+            depsFor()
+        )
+        expect(check.status).toBe('fail')
+        expect(check.detail).toContain('incomplete')
+    })
+
+    test('a missing aws CLI fails with an install hint', async () => {
+        const check = await r2Check(
+            R2_ENV,
+            depsFor({
+                whichLocal: bin => (bin === 'aws' ? null : '/usr/bin/ssh'),
+            })
+        )
+        expect(check.status).toBe('fail')
+        expect(check.detail).toContain('aws')
+    })
+
+    test('head-bucket success is ok; failure carries the first error line', async () => {
+        const ok = await r2Check(R2_ENV, depsFor())
+        expect(ok.status).toBe('ok')
+        expect(ok.detail).toContain('cofoundry-templates')
+        const failed = await r2Check(
+            R2_ENV,
+            depsFor({
+                probeR2: async () => {
+                    throw new Error('403 Forbidden\nlong aws traceback')
+                },
+            })
+        )
+        expect(failed.status).toBe('fail')
+        expect(failed.detail).toBe('403 Forbidden')
+    })
+})
+
+describe('runDoctorCommand exit mapping', () => {
+    /** Run the command with stdout captured; the collected lines survive a
+     *  rejection so the --json output can be asserted alongside the error. */
+    const captureRun = async (
+        run: () => Promise<void>
+    ): Promise<{ lines: string[]; error: unknown }> => {
+        const saved = console.log
+        const lines: string[] = []
+        let error: unknown
+        console.log = (line: unknown) => void lines.push(String(line))
+        try {
+            await run()
+        } catch (err) {
+            error = err
+        } finally {
+            console.log = saved
+        }
+        return { lines, error }
+    }
+
+    test('a failing report rejects (main maps it to exit 1) and --json still prints', async () => {
+        const { lines, error } = await captureRun(() =>
+            runDoctorCommand(
+                { json: true },
+                depsFor({ whichLocal: () => null })
+            )
+        )
+        expect(String(error)).toMatch(/check\(s\) failed/)
+        const parsed = JSON.parse(lines.join('\n')) as { ok: boolean }
+        expect(parsed.ok).toBeFalse()
+    })
+
+    test('an all-ok report resolves without throwing', async () => {
+        const previous = new Map<string, string | undefined>()
+        for (const [key, value] of Object.entries(PROC_ENV)) {
+            previous.set(key, process.env[key])
+            process.env[key] = value
+        }
+        try {
+            const { lines, error } = await captureRun(() =>
+                runDoctorCommand({ json: true }, depsFor())
+            )
+            expect(error).toBeUndefined()
+            const parsed = JSON.parse(lines.join('\n')) as { ok: boolean }
+            expect(parsed.ok).toBeTrue()
+        } finally {
+            for (const [key, value] of previous) {
+                if (value === undefined) delete process.env[key]
+                else process.env[key] = value
+            }
+        }
     })
 })
 

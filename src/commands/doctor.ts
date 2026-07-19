@@ -44,10 +44,28 @@ const probeSsh = async (target: string): Promise<void> => {
     )
 }
 
+const probeR2 = async (endpoint: string, bucket: string): Promise<void> => {
+    // Same call the upload path makes; credentials come from the aws CLI's own
+    // config, so a failure here reproduces exactly what `cf upload --r2` hits.
+    await execa(
+        'aws',
+        [
+            '--endpoint-url',
+            endpoint,
+            's3api',
+            'head-bucket',
+            '--bucket',
+            bucket,
+        ],
+        { timeout: 15_000, stdin: 'ignore' }
+    )
+}
+
 const defaultDeps: DoctorDeps = {
     whichLocal: bin => Bun.which(bin),
     probeSsh,
     captureScript: captureRemoteScript,
+    probeR2,
 }
 
 /** Machine-readable form for `cf doctor --json` (mirrors `cf config --json`:

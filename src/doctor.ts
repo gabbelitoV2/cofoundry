@@ -38,6 +38,8 @@ export type DoctorDeps = {
     probeSsh: (target: string) => Promise<void>
     /** Run a Bash script on the node via stdin and capture its stdout. */
     captureScript: (target: string, script: string) => Promise<string>
+    /** `aws s3api head-bucket` against the R2 endpoint; throws on failure. */
+    probeR2: (endpoint: string, bucket: string) => Promise<void>
 }
 
 // ── node tooling ──────────────────────────────────────────────────────────────
@@ -107,6 +109,10 @@ const gib = (kib: number): string => `${(kib / 1024 / 1024).toFixed(1)} GiB`
 
 const MARKER = '### cf-doctor:'
 
+/** Where netslot allocation writes per-build DHCP reservations (SNIPPET_DIR in
+ *  src/build/netslot.ts); created and wired to dnsmasq by `cf bootstrap`. */
+const DNSMASQ_HOSTS_DIR = '/etc/dnsmasq.d/cofoundry-hosts.d'
+
 export type SweepTargets = {
     bridge: string
     buildBridge: string
@@ -140,6 +146,13 @@ export const doctorSweepScript = (targets: SweepTargets): string => {
         `ifquery ${shellQuote(targets.buildBridge)} 2>/dev/null || true`,
         `echo ${shellQuote(`${MARKER}addr:build-bridge`)}`,
         `ip -4 -o addr show dev ${shellQuote(targets.buildBridge)} 2>/dev/null || true`,
+        // Netslot allocation registers per-build DHCP reservations with the
+        // system dnsmasq (src/build/netslot.ts) — the service must be active
+        // and the hostsfile directory must exist for slot writes to land.
+        `echo ${shellQuote(`${MARKER}dnsmasq`)}`,
+        `systemctl is-active dnsmasq 2>/dev/null || true`,
+        `echo ${shellQuote(`${MARKER}dnsmasq-hostsdir`)}`,
+        `test -d ${shellQuote(DNSMASQ_HOSTS_DIR)} && echo present || true`,
         `echo ${shellQuote(`${MARKER}df:iso`)}`,
         `df -Pk ${shellQuote(targets.isoCacheDir)} 2>/dev/null | tail -n +2 || true`,
         `echo ${shellQuote(`${MARKER}df:dump`)}`,
@@ -358,6 +371,41 @@ export const buildBridgeCheck = (
     }
 }
 
+/** The netslot allocator (src/build/netslot.ts) registers each build VM's IP
+ *  as a static DHCP reservation with the system dnsmasq and reloads the
+ *  service — every ISO-installer and Windows build depends on it. */
+export const dnsmasqCheck = (
+    activeSection: string,
+    hostsdirSection: string
+): DoctorCheck => {
+    const base = { id: 'dnsmasq', name: 'dnsmasq (build DHCP)' }
+    const state = activeSection.trim()
+    if (state !== 'active') {
+        return {
+            ...base,
+            status: 'fail',
+            detail:
+                state === '' || state === 'unknown'
+                    ? 'dnsmasq service not found on the node'
+                    : `dnsmasq service is ${state}`,
+            hint: 'build VMs get their IPs from per-build dnsmasq reservations — run `cf bootstrap` to install and configure it',
+        }
+    }
+    if (hostsdirSection.trim() !== 'present') {
+        return {
+            ...base,
+            status: 'fail',
+            detail: `${DNSMASQ_HOSTS_DIR} missing — per-build DHCP reservations cannot be written`,
+            hint: 'run `cf bootstrap` to (re)create the dnsmasq hostsfile directory',
+        }
+    }
+    return {
+        ...base,
+        status: 'ok',
+        detail: 'service active, hostsfile directory present',
+    }
+}
+
 /** Available KiB from a header-stripped one-path `df -Pk` section. */
 export const parseDfAvailKib = (section: string): number | undefined => {
     const fields = section.trim().split('\n')[0]?.trim().split(/\s+/)
@@ -369,7 +417,8 @@ export const parseDfAvailKib = (section: string): number | undefined => {
 export const diskSpaceCheck = (
     section: string,
     base: { id: string; name: string },
-    dir: string
+    dir: string,
+    missingHint: string
 ): DoctorCheck => {
     const availKib = parseDfAvailKib(section)
     if (availKib === undefined) {
@@ -377,7 +426,7 @@ export const diskSpaceCheck = (
             ...base,
             status: 'fail',
             detail: `cannot stat ${dir} on the node`,
-            hint: 'directory missing — check PVE_DUMP_DIR and run `cf bootstrap`',
+            hint: missingHint,
         }
     }
     if (availKib < LOW_FREE_KIB) {
@@ -470,11 +519,62 @@ export const apiCheck = (raw: string): DoctorCheck => {
     }
 }
 
-// ── orchestration ─────────────────────────────────────────────────────────────
+// ── R2 check ──────────────────────────────────────────────────────────────────
 
 const firstLine = (err: unknown): string =>
     (err instanceof Error ? err.message : String(err)).split('\n')[0] ??
     'failed'
+
+/**
+ * R2 is optional — only `cf upload --r2` / `cf publish --r2` / `cf prune --r2`
+ * need it — so an unconfigured pair skips rather than fails. The probe is
+ * local (the upload path shells out to the local `aws` CLI), so it runs even
+ * when the node checks were skipped.
+ */
+export const r2Check = async (
+    procEnv: NodeJS.ProcessEnv,
+    deps: DoctorDeps
+): Promise<DoctorCheck> => {
+    const base = { id: 'r2', name: 'R2 credentials' }
+    const endpoint = procEnv.R2_ENDPOINT
+    const bucket = procEnv.R2_BUCKET
+    if (!endpoint && !bucket) {
+        return {
+            ...base,
+            status: 'skip',
+            detail: 'R2 not configured — only needed for `cf upload --r2` / `cf publish --r2` / `cf prune --r2`',
+        }
+    }
+    if (!endpoint || !bucket) {
+        return {
+            ...base,
+            status: 'fail',
+            detail: 'R2_ENDPOINT / R2_BUCKET incomplete — set both or neither',
+            hint: 'compare with the [r2] section in cofoundry.toml',
+        }
+    }
+    if (!deps.whichLocal('aws')) {
+        return {
+            ...base,
+            status: 'fail',
+            detail: 'no `aws` CLI on PATH — R2 uploads shell out to it',
+            hint: 'install the AWS CLI and configure the R2 access key (`aws configure`)',
+        }
+    }
+    try {
+        await deps.probeR2(endpoint, bucket)
+        return { ...base, status: 'ok', detail: `s3://${bucket} reachable` }
+    } catch (err) {
+        return {
+            ...base,
+            status: 'fail',
+            detail: firstLine(err),
+            hint: 'check the R2 access key/secret (`aws configure`) and that R2_ENDPOINT/R2_BUCKET match the Cloudflare dashboard',
+        }
+    }
+}
+
+// ── orchestration ─────────────────────────────────────────────────────────────
 
 /** Ids/names of every node-side check, used to emit skip rows when the checks
  *  cannot run (local preflight failed or the node is unreachable). */
@@ -485,6 +585,7 @@ const REMOTE_CHECKS: ReadonlyArray<{ id: string; name: string }> = [
     { id: 'iso-storage', name: 'ISO storage (CF_ISO_STORAGE)' },
     { id: 'bridge', name: 'Bridge (CF_BRIDGE)' },
     { id: 'build-bridge', name: 'Build bridge (CF_BUILD_BRIDGE)' },
+    { id: 'dnsmasq', name: 'dnsmasq (build DHCP)' },
     { id: 'pve-api', name: 'Proxmox API' },
     { id: 'iso-space', name: 'ISO cache space' },
     { id: 'dump-space', name: 'Dump dir space' },
@@ -554,6 +655,7 @@ export const runDoctorChecks = async (
                 'skipped — fix the local checks first'
             )
         )
+        checks.push(await r2Check(procEnv, deps))
         return finish(checks)
     }
 
@@ -585,6 +687,7 @@ export const runDoctorChecks = async (
                 'skipped — node unreachable over SSH'
             )
         )
+        checks.push(await r2Check(procEnv, deps))
         return finish(checks)
     }
 
@@ -618,6 +721,7 @@ export const runDoctorChecks = async (
                     'iso-storage',
                     'bridge',
                     'build-bridge',
+                    'dnsmasq',
                     'iso-space',
                     'dump-space',
                 ],
@@ -638,6 +742,10 @@ export const runDoctorChecks = async (
                 sections.get('ifquery:build-bridge') ?? '',
                 sections.get('addr:build-bridge') ?? '',
                 env.CF_BUILD_BRIDGE
+            ),
+            dnsmasqCheck(
+                sections.get('dnsmasq') ?? '',
+                sections.get('dnsmasq-hostsdir') ?? ''
             )
         )
     }
@@ -664,15 +772,19 @@ export const runDoctorChecks = async (
             diskSpaceCheck(
                 sections.get('df:iso') ?? '',
                 { id: 'iso-space', name: 'ISO cache space' },
-                paths.isoStore
+                paths.isoStore,
+                'the ISO directory lives on the storage pool — check CF_ISO_STORAGE and that the pool allows ISO content'
             ),
             diskSpaceCheck(
                 sections.get('df:dump') ?? '',
                 { id: 'dump-space', name: 'Dump dir space' },
-                paths.dump
+                paths.dump,
+                'directory missing — check PVE_DUMP_DIR and run `cf bootstrap`'
             )
         )
     }
+
+    checks.push(await r2Check(procEnv, deps))
 
     return finish(checks)
 }

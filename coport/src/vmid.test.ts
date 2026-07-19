@@ -93,8 +93,20 @@ describe('takenVmids', () => {
         expect(await takenVmids(pveDir)).toEqual(new Set([100, 200]))
     })
 
-    test('returns an empty set when the PVE dir has no guest data', async () => {
+    test('returns an empty set for a mounted node with no guests', async () => {
+        // A readable but empty nodes/ tree: genuinely no guests, not an
+        // unreadable /etc/pve.
+        mkdirSync(join(pveDir, 'nodes', 'pve-node01', 'qemu-server'), {
+            recursive: true,
+        })
         expect(await takenVmids(pveDir)).toEqual(new Set())
+    })
+
+    test('throws when the cluster state is entirely unreadable', async () => {
+        // No .vmlist and no readable guest-config dirs — e.g. pmxcfs unmounted
+        // mid pve-cluster restart. Reporting "nothing taken" here would assign
+        // a colliding VMID that only fails after a multi-GB download, so refuse.
+        expect(takenVmids(pveDir)).rejects.toThrow(/cluster state/)
     })
 })
 
@@ -157,6 +169,8 @@ describe('resolveVmids', () => {
     })
 
     test('prefers a cached VMID over the registry suggestion', async () => {
+        // Empty but present .vmlist: a mounted, guest-less cluster.
+        writeVmlist('{\n"version": 1\n}\n')
         const [a] = await resolveVmids(
             [template('debian-13', 9001)],
             9000,

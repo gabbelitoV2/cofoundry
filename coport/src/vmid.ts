@@ -77,9 +77,53 @@ export const scanGuestConfigs = async (
     return taken
 }
 
-/** Every VMID currently in use anywhere in the cluster. */
-export const takenVmids = async (pveDir = PVE_DIR): Promise<Set<number>> =>
-    (await readVmlist(pveDir)) ?? scanGuestConfigs(pveDir)
+/**
+ * True when at least one of the cluster-state directories `scanGuestConfigs`
+ * reads is accessible. Distinguishes a genuinely guest-less node (readable but
+ * empty) from an unreadable `/etc/pve` — e.g. pmxcfs unmounted mid
+ * `pve-cluster` restart — where the scan would silently come back empty and we
+ * would hand out a VMID that is actually taken.
+ */
+const clusterStateReadable = async (pveDir: string): Promise<boolean> => {
+    for (const dir of [
+        `${pveDir}/nodes`,
+        `${pveDir}/qemu-server`,
+        `${pveDir}/lxc`,
+    ]) {
+        try {
+            await readdir(dir)
+            return true
+        } catch {
+            // try the next candidate directory
+        }
+    }
+    return false
+}
+
+/**
+ * Every VMID currently in use anywhere in the cluster.
+ *
+ * A parseable `.vmlist` is authoritative — an empty one means an empty cluster.
+ * When it is missing/malformed we fall back to scanning per-node config dirs,
+ * but only if `/etc/pve` is actually readable: if neither the list nor any
+ * guest-config directory can be read, the cluster state is unknown (pmxcfs
+ * unmounted, say), and reporting "nothing taken" would assign a colliding VMID
+ * that only fails after a multi-GB download. Refuse loudly instead.
+ */
+export const takenVmids = async (pveDir = PVE_DIR): Promise<Set<number>> => {
+    const fromVmlist = await readVmlist(pveDir)
+    if (fromVmlist) return fromVmlist
+    if (!(await clusterStateReadable(pveDir))) {
+        throw new Error(
+            `coport: could not read the Proxmox cluster state under ${pveDir} — ` +
+                `no .vmlist and no readable guest-config directories. Refusing to ` +
+                `assign VMIDs without knowing which are taken (a blind assignment ` +
+                `would fail only after a multi-GB download). Is pve-cluster running ` +
+                `and ${pveDir} mounted? Retry once it is.`
+        )
+    }
+    return scanGuestConfigs(pveDir)
+}
 
 export const vmidTaken = async (
     vmid: number,

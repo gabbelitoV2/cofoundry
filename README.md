@@ -1,8 +1,8 @@
 # Cofoundry
 
 Builds Proxmox VM templates from unattended Linux and Windows Server ISO
-installations, then exports `.vma.zst` artifacts ready to be served by
-[downloader](https://github.com/ConvoyPanel/downloader).
+installations, then exports `.vma.zst` artifacts that [Coport](docs/coport.md)
+restores into clonable templates on a Proxmox node.
 
 ## Documentation
 
@@ -15,8 +15,3 @@ installations, then exports `.vma.zst` artifacts ready to be served by
 | [Architecture](docs/architecture.md) | Source layout and implementation boundaries                           |
 | [Diagnostics](docs/diagnostics.md)   | How build-failure evidence is recorded and collected                  |
 | [Coport](docs/coport.md)             | Node-side installer that restores published templates via `qmrestore` |
-
-## Supported recipes
-
-Ubuntu, Debian, AlmaLinux, Rocky Linux, and Windows Server 2019/2022/2025
-Datacenter. See [Recipes](docs/recipes.md) for the full list.

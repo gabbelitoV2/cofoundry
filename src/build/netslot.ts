@@ -29,10 +29,12 @@ import { BUILD_SLOT_BASE, BUILD_SLOT_COUNT } from '@/build/buildnet.ts'
 // (SIGTERM/SIGKILL, OOM, host reboot, power loss) leaves its snippet behind,
 // silently leaking a slot forever. So allocation first reconciles: any snippet
 // with no live DHCP lease for its IP, whose file is older than
-// STALE_RECLAIM_SECS, belongs to a build that's long gone and is swept. A live
-// build always holds a non-expired lease (12h lease time, far longer than any
-// build), and the age guard keeps us from racing a just-allocated slot whose VM
-// hasn't booted and DHCP'd yet.
+// STALE_RECLAIM_SECS, AND whose slot VM is not still running, belongs to a
+// build that's long gone and is swept. A DHCP build holds a non-expired lease
+// (12h lease time, far longer than any build); a static-IP build (Debian/Ubuntu
+// preseed) never leases at all, so the running-VM check — not the lease probe —
+// is what proves it live. The age guard keeps us from racing a just-allocated
+// slot whose VM hasn't booted yet.
 
 const LOCK_DIR = '/var/lib/cofoundry'
 const LOCK_FILE = `${LOCK_DIR}/netslot.lock`
@@ -132,11 +134,54 @@ fi
 mkdir -p ${shellQuote(LOCK_DIR)} ${shellQuote(SNIPPET_DIR)} ${shellQuote(OWNER_DIR)}
 exec 9>${shellQuote(LOCK_FILE)}
 flock 9
+
+# Canonical local node name (pmxcfs symlinks /etc/pve/local -> nodes/<self>).
+local_node=$(basename "$(readlink /etc/pve/local 2>/dev/null || true)" 2>/dev/null)
+[ -n "$local_node" ] || local_node=$(hostname)
+
+# Run a qm subcommand on the node that owns the VM. \`qm\` only manages the
+# local node, so an orphan on a peer must be reached over the root SSH trust
+# every PVE cluster shares between its nodes.
+qm_on_node() { # node vmid subcommand [flags...]
+    _n=$1; _v=$2; _sub=$3; shift 3
+    if [ "$_n" = "$local_node" ]; then
+        qm "$_sub" "$_v" "$@"
+    else
+        ssh -o BatchMode=yes -o ConnectTimeout=5 "$_n" "qm $_sub $_v $*"
+    fi
+}
+
+# Emit "node vmid" for every VM config across the cluster carrying MAC $1.
+# Cluster configs live under /etc/pve/nodes/<node>/qemu-server; the bare
+# /etc/pve/qemu-server symlink only ever covers the local node, so a peer's
+# orphan is invisible through it. qm config stores MACs upper-cased, so the
+# grep is case-insensitive.
+slot_vms_for_mac() {
+    for _cf in /etc/pve/nodes/*/qemu-server/*.conf; do
+        [ -e "$_cf" ] || continue
+        grep -iqF "$1" "$_cf" || continue
+        _v=\${_cf##*/}; _v=\${_v%.conf}
+        _node=\${_cf#/etc/pve/nodes/}; _node=\${_node%%/*}
+        printf '%s %s\\n' "$_node" "$_v"
+    done
+}
+
+# Succeed if any VM carrying MAC $1 is currently running anywhere in the cluster.
+slot_mac_running() {
+    slot_vms_for_mac "$1" | while read -r _n _v; do
+        _st=$(qm_on_node "$_n" "$_v" status 2>/dev/null | awk '{print $2}')
+        [ "$_st" = "running" ] && exit 0
+    done
+}
+
 now=$(date +%s)
-# Reclaim orphaned snippets: no live (non-expired) lease for the reserved IP and
-# the file is older than the boot/DHCP grace window, so the owning build is gone.
+# Reclaim orphaned snippets: no live (non-expired) lease for the reserved IP,
+# the file is older than the boot/DHCP grace window, and no running VM still
+# holds the slot MAC — so the owning build is gone (see header note on why a
+# static-IP build needs the running-VM check, not just the lease probe).
 for f in ${shellQuote(SNIPPET_DIR)}/${SNIPPET_PREFIX}*; do
     [ -e "$f" ] || continue
+    smac=$(cut -d, -f1 "$f")
     sip=$(cut -d, -f2 "$f")
     active=0
     if [ -f ${shellQuote(LEASES_FILE)} ] && awk -v ip="$sip" -v now="$now" \\
@@ -144,8 +189,8 @@ for f in ${shellQuote(SNIPPET_DIR)}/${SNIPPET_PREFIX}*; do
         active=1
     fi
     mt=$(stat -c %Y "$f" 2>/dev/null || echo "$now")
-    if [ "$active" -eq 0 ] && [ "$(( now - mt ))" -gt ${STALE_RECLAIM_SECS} ]; then
-        echo "reclaiming stale netslot \${f##*/} ($sip): no lease, age $(( now - mt ))s" >&2
+    if [ "$active" -eq 0 ] && [ "$(( now - mt ))" -gt ${STALE_RECLAIM_SECS} ] && ! slot_mac_running "$smac"; then
+        echo "reclaiming stale netslot \${f##*/} ($sip): no lease, no running VM, age $(( now - mt ))s" >&2
         rm -f "$f"
         rm -f ${shellQuote(OWNER_DIR)}/"\${f##*/}"
     fi
@@ -175,20 +220,18 @@ pad=$(printf '%02d' "$pick")
 ip="$prefix.$(( slot_base + pick ))"
 byte=$(printf '%02x' "$(( slot_base + pick ))")
 mac="02:50:4b:00:00:$byte"
-# Evict any VM squatting this slot's MAC. A slot is exclusive, so the only VM
-# that can carry this deterministic MAC is an orphan from a previous build of the
-# same slot whose VM outlived a dirty teardown (SIGKILL/OOM/CI-cancel killed the
-# launcher before its VM-destroy ran, or its snippet was released first leaving
-# the VM unmarked). Left alive, it answers ARP for the slot IP and the new build
-# VM's traffic blackholes — Packer then waits out its full SSH/WinRM timeout.
-# qm config stores the MAC upper-cased, so match case-insensitively.
-for cf in /etc/pve/qemu-server/*.conf; do
-    [ -e "$cf" ] || continue
-    grep -iqF "$mac" "$cf" || continue
-    vid=\${cf##*/}; vid=\${vid%.conf}
-    echo "evicting orphan VM $vid squatting netslot $pad ($ip)" >&2
-    qm stop "$vid" --skiplock 1 >/dev/null 2>&1 || true
-    qm destroy "$vid" --purge 1 --destroy-unreferenced-disks 1 --skiplock 1 >/dev/null 2>&1 || true
+# Evict any VM squatting this slot's MAC, anywhere in the cluster. A slot is
+# exclusive, so the only VM that can carry this deterministic MAC is an orphan
+# from a previous build of the same slot whose VM outlived a dirty teardown
+# (SIGKILL/OOM/CI-cancel killed the launcher before its VM-destroy ran, or its
+# snippet was released first leaving the VM unmarked). Left alive, it answers ARP
+# for the slot IP and the new build VM's traffic blackholes — Packer then waits
+# out its full SSH/WinRM timeout. The orphan can be on any node, so scan the
+# cluster-wide config tree and destroy it on the node that owns it.
+slot_vms_for_mac "$mac" | while read -r node vid; do
+    echo "evicting orphan VM $vid on node $node squatting netslot $pad ($ip)" >&2
+    qm_on_node "$node" "$vid" stop --skiplock 1 >/dev/null 2>&1 || true
+    qm_on_node "$node" "$vid" destroy --purge 1 --destroy-unreferenced-disks 1 --skiplock 1 >/dev/null 2>&1 || true
 done
 printf '%s,%s\\n' "$mac" "$ip" > ${shellQuote(SNIPPET_DIR)}/${SNIPPET_PREFIX}"$pad"
 printf '%s\\n' ${shellQuote(owner)} > ${shellQuote(OWNER_DIR)}/${SNIPPET_PREFIX}"$pad"

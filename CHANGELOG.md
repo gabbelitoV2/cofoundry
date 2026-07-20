@@ -7,24 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [1.4.0] - 2026-07-17
-
-### Added
-
-- Read consumer defaults from `~/.config/coport/config.toml`, including
-  `${VAR}` interpolation, while retaining `~/.coport/config.json` support for
-  existing installations.
-- Add `coport --config` to show the resolved registry, storage, source, and
-  config file without starting an installation.
-
-### Fixed
-
-- Continue using the storage default from the config file when the registry is
-  supplied as a command-line argument, environment variable, or stdin stream.
-- Report malformed config and unresolved `${VAR}` references explicitly instead
-  of silently treating them as empty settings.
-
-## [1.3.0] - 2026-06-28
+## [1.3.0] - 2026-07-20
 
 ### Added
 
@@ -46,9 +29,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   directly, and `coport -` (or any non-TTY stdin) reads it from stdin
   (`cat registry.json | coport -a -`). Interactive prompts reopen `/dev/tty` so the
   TUI still works when stdin carries the registry.
+- Read consumer defaults from `~/.config/coport/config.toml`, including
+  `${VAR}` interpolation, while retaining `~/.coport/config.json` support for
+  existing installations.
+- Add `coport --config` to show the resolved registry, storage, source, and
+  config file without starting an installation.
 
 ### Fixed
 
+- Detect VMID collisions cluster-wide. `/etc/pve/qemu-server` and `/etc/pve/lxc`
+  are symlinks to the local node, so a VMID already in use by a guest on another
+  node looked free and the install only failed at `qmrestore` — after
+  downloading the multi-GB artifact. The cluster-wide `/etc/pve/.vmlist` is now
+  the primary source, falling back to scanning
+  `/etc/pve/nodes/*/{qemu-server,lxc}/*.conf` when it is missing or malformed.
+- Abort instead of assigning a VMID when cluster state is unreadable. If
+  `/etc/pve` itself could not be read (e.g. pmxcfs unmounted during a
+  `pve-cluster` restart), both the `.vmlist` read and the directory scan came
+  back empty and coport treated that as an empty cluster. A parseable `.vmlist`
+  stays authoritative, but an empty scan is now only trusted when at least one
+  guest-config directory is readable.
+- Continue using the storage default from the config file when the registry is
+  supplied as a command-line argument, environment variable, or stdin stream.
+- Report malformed config and unresolved `${VAR}` references explicitly instead
+  of silently treating them as empty settings.
 - Build the `coport-linux-x64` release binary with Bun's `bun-linux-x64-baseline`
   target so it runs on pre-Haswell CPUs without AVX2 (e.g. Ivy Bridge Xeon E5 v2).
   Previously the default target emitted AVX2 instructions and crashed immediately

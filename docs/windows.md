@@ -264,7 +264,15 @@ assumed away:
   inspected clone predates the change and had no password fields to scrub, so
   there was nothing to observe. Verify on the next build rather than trusting it.
 
-  > **OPEN ITEM — run this on the first clone off the next build:**
+  > **OPEN ITEM — now checked automatically, but still unobserved.**
+  >
+  > `cf verify` runs a `no-plaintext-build-password` check on every Windows
+  > build (see `src/verify/checks/windows.ts`). When it can recover the build's
+  > `winrm_password` from the node's Packer vars file it greps the answer files
+  > and Panther logs for that exact value; otherwise it falls back to asserting
+  > no answer file carries a non-empty password element. A failing verify is
+  > now the signal — but until a build has actually run through it with a
+  > recoverable password, treat the scrubbing as unconfirmed. The manual probe:
   >
   > ```powershell
   > Select-String -Path C:\Windows\Panther\unattend.xml -Pattern 'SENSITIVE|<Value>'

@@ -11,6 +11,24 @@ import { acquireRunLease } from '@/build/lease.ts'
 import { registerCleanup } from '@/build/remote.ts'
 import { destroyVmCommand } from '@/build/vm.ts'
 import { acquireRemoteMaintenanceLock } from '@/build/maintenance.ts'
+import { diagnosticsRunDirName } from '@/build/diagnostics/paths.ts'
+import { log } from '@/log.ts'
+import { isWindowsRecipe, suiteFor } from '@/verify/checks/index.ts'
+import type { CheckResult } from '@/verify/guest.ts'
+import {
+    guestExec,
+    rebootGuest,
+    runPhase,
+    waitForWindowsInit,
+} from '@/verify/guest.ts'
+import { autologonScript, prepareCloudInit } from '@/verify/clone.ts'
+import { captureFrame, saveFrame } from '@/verify/screenshot.ts'
+import {
+    formatFailures,
+    formatWarnings,
+    frameResult,
+    summarize,
+} from '@/verify/report.ts'
 
 const SCRATCH_VMID_BASE = 9500
 const SCRATCH_VMID_COUNT = 500
@@ -19,6 +37,23 @@ const VERIFY_LOCK = '/var/lib/cofoundry/verify.lock'
 const VERIFY_RESERVATION_STALE_SECS = 60 * 60
 const GUEST_PING_TIMEOUT_S = 180
 const GUEST_PING_INTERVAL_S = 5
+const REBOOT_TIMEOUT_S = 300
+// The shell starts asynchronously after autologon; ShellHost's fault loop in the
+// gray-desktop failure fired roughly every 30s, so sample well past one cycle.
+const SHELL_SETTLE_S = 90
+// Cloudbase-Init runs its plugins and reboots once for the hostname, so this
+// covers two boots plus plugin time.
+const WINDOWS_INIT_TIMEOUT_S = 900
+
+export interface VerifyOptions {
+    /**
+     * `quick` keeps the original behaviour — restore, boot, ping the agent — for
+     * fast local loops. `full` runs the check battery and is the CI default.
+     */
+    level?: 'quick' | 'full'
+    /** In CI the repo is public, so framebuffer captures are never written out. */
+    ciMode?: boolean
+}
 
 const ssh = async (target: string, cmd: string): Promise<string> => {
     const { stdout } = await execa('ssh', [target, cmd], {
@@ -114,26 +149,39 @@ const pingGuest = async (
 }
 
 /**
- * Smoke-test the locally-built artifact by qmrestore-ing it on the PVE node,
- * booting, and waiting for the guest agent. Catches corrupt vzdump output,
- * broken cloud-init, kernel panics, missing qemu-guest-agent.
+ * Smoke-test the locally-built artifact by qmrestore-ing it on the PVE node and
+ * exercising it the way a user's clone is exercised: cloud-init parameters
+ * injected and asserted, a battery of in-guest checks over `qm guest exec`, a
+ * reboot round-trip, and a look at the actual console framebuffer.
+ *
+ * The guest agent answering is the weakest signal in the stack — it starts early
+ * and is independent of nearly everything a template promises — so it is the
+ * entry condition for the real checks rather than the result.
  */
 export const runVerify = async (
     env: Env,
-    recipe: RecipeInfo
+    recipe: RecipeInfo,
+    options: VerifyOptions = {}
 ): Promise<void> => {
     const maintenance = await acquireRemoteMaintenanceLock(
         env.SSH_TARGET,
         'shared'
     )
     try {
-        await Promise.race([runVerifyLocked(env, recipe), maintenance.lost])
+        await Promise.race([
+            runVerifyLocked(env, recipe, options),
+            maintenance.lost,
+        ])
     } finally {
         await maintenance.release()
     }
 }
 
-const runVerifyLocked = async (env: Env, recipe: RecipeInfo): Promise<void> => {
+const runVerifyLocked = async (
+    env: Env,
+    recipe: RecipeInfo,
+    options: VerifyOptions
+): Promise<void> => {
     const artifactName = `${recipe.name}-${recipe.arch}.vma.zst`
     const local = join(env.CF_OUT_DIR, artifactName)
     const remoteBuildFile = `${buildRemoteOutDir(env)}/${artifactName}`
@@ -183,6 +231,9 @@ const runVerifyLocked = async (env: Env, recipe: RecipeInfo): Promise<void> => {
     })
     const task = renderer.task(recipe.name)
     let vmid = 0
+    let lastPhase = 'first-boot'
+    let savedFrame: string | null = null
+    let releaseCloudInit: (() => Promise<void>) | null = null
     const unregisterCleanup = registerCleanup(() => {
         const destroy =
             vmid > 0 ? `${destroyVmCommand(vmid, env.CF_STORAGE)}; ` : ''
@@ -246,6 +297,23 @@ const runVerifyLocked = async (env: Env, recipe: RecipeInfo): Promise<void> => {
                 `done`
         )
 
+        const isWindows = isWindowsRecipe(recipe.name)
+        const full = (options.level ?? 'full') === 'full'
+
+        let cloudInit: Awaited<ReturnType<typeof prepareCloudInit>> | null =
+            null
+        if (full) {
+            task.setPhase('applying cloud-init parameters')
+            cloudInit = await prepareCloudInit(
+                env,
+                recipe.name,
+                vmid,
+                remoteTmp,
+                isWindows
+            )
+            releaseCloudInit = cloudInit.cleanup
+        }
+
         task.setPhase(`qm start ${vmid}`)
         await ssh(env.SSH_TARGET, `qm start ${vmid}`)
 
@@ -263,12 +331,167 @@ const runVerifyLocked = async (env: Env, recipe: RecipeInfo): Promise<void> => {
                 `guest agent did not respond within ${GUEST_PING_TIMEOUT_S}s`
             )
         }
-        task.succeed(`guest agent responded ${dim(`(VMID ${vmid})`)}`)
+
+        if (!cloudInit) {
+            task.succeed(`guest agent responded ${dim(`(VMID ${vmid})`)}`)
+            return
+        }
+
+        const suite = suiteFor(recipe)
+        const ctx = cloudInit.ctx
+        const results: CheckResult[] = []
+        const record = (r: CheckResult): void => {
+            task.setPhase(
+                `${r.status === 'pass' ? '✓' : r.status === 'warn' ? '!' : '✗'} ${r.id}`
+            )
+        }
+
+        if (isWindows) {
+            task.setPhase(
+                `waiting for Cloudbase-Init ${dim(`(≤${WINDOWS_INIT_TIMEOUT_S}s)`)}`
+            )
+            if (
+                !(await waitForWindowsInit(
+                    env.SSH_TARGET,
+                    vmid,
+                    WINDOWS_INIT_TIMEOUT_S
+                ))
+            ) {
+                throw new Error(
+                    `Cloudbase-Init did not settle within ${WINDOWS_INIT_TIMEOUT_S}s — ` +
+                        `the service is stuck (check GeneralizationState) or looping`
+                )
+            }
+        }
+
+        task.setPhase('running first-boot checks')
+        results.push(
+            ...(await runPhase(
+                env.SSH_TARGET,
+                vmid,
+                suite,
+                'first-boot',
+                ctx,
+                record
+            ))
+        )
+        lastPhase = 'first-boot'
+
+        task.setPhase(`rebooting ${dim(`(≤${REBOOT_TIMEOUT_S}s)`)}`)
+        if (
+            !(await rebootGuest(
+                env.SSH_TARGET,
+                vmid,
+                suite.shell,
+                REBOOT_TIMEOUT_S
+            ))
+        ) {
+            throw new Error(
+                `guest did not come back from a reboot within ${REBOOT_TIMEOUT_S}s`
+            )
+        }
+
+        task.setPhase('running post-reboot checks')
+        results.push(
+            ...(await runPhase(
+                env.SSH_TARGET,
+                vmid,
+                suite,
+                'post-reboot',
+                ctx,
+                record
+            ))
+        )
+        lastPhase = 'post-reboot'
+
+        if (isWindows) {
+            // The shell only starts for an interactive logon, so the desktop
+            // has to be brought up deliberately before it can be inspected.
+            task.setPhase('arming autologon')
+            await guestExec(
+                env.SSH_TARGET,
+                vmid,
+                suite.shell,
+                autologonScript(ctx.ciUser, ctx.ciPassword),
+                60
+            )
+            if (
+                !(await rebootGuest(
+                    env.SSH_TARGET,
+                    vmid,
+                    suite.shell,
+                    REBOOT_TIMEOUT_S
+                ))
+            ) {
+                throw new Error('guest did not come back from the logon reboot')
+            }
+            task.setPhase(
+                `letting the shell settle ${dim(`(${SHELL_SETTLE_S}s)`)}`
+            )
+            await new Promise(r => setTimeout(r, SHELL_SETTLE_S * 1000))
+            results.push(
+                ...(await runPhase(
+                    env.SSH_TARGET,
+                    vmid,
+                    suite,
+                    'post-logon',
+                    ctx,
+                    record
+                ))
+            )
+            lastPhase = 'post-logon'
+        }
+
+        // One framebuffer sample at the end: for Windows this is the desktop
+        // that autologon painted, which is the only view that crosses the
+        // session-0 boundary the guest agent is stuck behind.
+        const label = lastPhase
+        task.setPhase('capturing console framebuffer')
+        const frame = await captureFrame(env.SSH_TARGET, vmid, remoteTmp, label)
+        if (frame) {
+            results.push(
+                frameResult(
+                    label,
+                    frame.analysis,
+                    suite.screenUniformThreshold,
+                    suite.screenSeverity
+                )
+            )
+            if (!options.ciMode) {
+                savedFrame = await saveFrame(
+                    join(
+                        './diagnostics',
+                        `verify-${diagnosticsRunDirName(recipe, new Date())}`
+                    ),
+                    label,
+                    frame
+                ).catch(() => null)
+            }
+        }
+
+        const summary = summarize(results)
+        const line =
+            `${summary.passed} passed` +
+            (summary.warned ? `, ${summary.warned} warned` : '') +
+            (summary.failed ? `, ${summary.failed} failed` : '')
+
+        if (summary.failed > 0) {
+            task.fail(line)
+            throw new Error(
+                `${recipe.name}: ${summary.failed} check(s) failed\n${formatFailures(results)}`
+            )
+        }
+        task.succeed(`${line} ${dim(`(VMID ${vmid})`)}`)
+        if (summary.warned > 0) log.warn(formatWarnings(results))
+        if (savedFrame) log.info(`console frame saved to ${savedFrame}`)
     } catch (err) {
         task.fail(err instanceof Error ? err.message : String(err))
         throw err
     } finally {
         unregisterCleanup()
+        // The generated keypair lives in a local temp dir; drop it even when a
+        // check threw partway through the battery.
+        if (releaseCloudInit) await releaseCloudInit().catch(() => {})
         if (vmid > 0) await destroyVm(env.SSH_TARGET, vmid, env.CF_STORAGE)
         await sshOk(env.SSH_TARGET, `rm -rf ${shellQuote(remoteTmp)}`)
         await sshOk(env.SSH_TARGET, `rm -f ${shellQuote(reservation)}`)

@@ -62,8 +62,22 @@ export const registerMaintenanceCommands = (program: Command): void => {
 
     program
         .command('verify <name>')
-        .description('Restore and boot a built artifact as a smoke test')
-        .action(async (name: string) => {
-            await runVerify(loadEnv(), await loadRecipe(name))
+        .description('Restore and smoke-test a built artifact')
+        .option(
+            '--level <level>',
+            'quick (boot + agent ping) or full (check battery)',
+            'full'
+        )
+        .option('--ci', 'CI mode: never write framebuffer captures to disk')
+        .action(async (name: string, opts: { level: string; ci?: boolean }) => {
+            if (opts.level !== 'quick' && opts.level !== 'full') {
+                throw new Error(
+                    `--level must be "quick" or "full", got "${opts.level}"`
+                )
+            }
+            await runVerify(loadEnv(), await loadRecipe(name), {
+                level: opts.level,
+                ciMode: Boolean(opts.ci),
+            })
         })
 }

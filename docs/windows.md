@@ -104,6 +104,39 @@ DISM filesystem-limitation failure against the staged image.
 7. The host truncates the disk, creates the vzdump artifact, and destroys the
    build VM.
 
+### Windows Update automatic reboot suppression
+
+Windows Update's own Update Orchestrator will auto-restart the VM when a
+servicing operation is pending. On Server 2025 the checkpoint cumulative leaves
+such an operation pending after the first WU round, and the orchestrator fires
+the restart a few minutes into the **second** round — while `WU.ps1`'s SYSTEM
+task is still scanning. Because the build is headless (WinRM, no interactive
+user), nothing defers that restart: the VM reboots out from under the running
+powershell provisioner, Packer reports `Script exited with non-zero exit status:
+1`, and `Builds finished but no artifacts were created`. This reproduced on all
+three build attempts, so `CF_BUILD_ATTEMPTS` did not rescue it — every attempt
+died the same way in round two.
+
+`WU.ps1` already installs every update explicitly through the WUA COM API and
+signals `RebootRequired` back to Packer, which owns every restart through
+`windows-restart`. The orchestrator's *automatic* install/reboot is therefore
+pure interference during the build. `Install.ps1` disables it for the build's
+duration by writing the `...\WindowsUpdate\AU` policy (`NoAutoUpdate=1`,
+`NoAutoRebootWithLoggedOnUsers=1`) and disabling the
+`\Microsoft\Windows\UpdateOrchestrator\Reboot*` tasks. `NoAutoUpdate` does not
+affect the explicit COM install path. `Finalize.ps1` removes the policy key and
+re-enables the reboot tasks before sysprep, so the shipped template keeps
+Windows' default update policy rather than inheriting a "never auto-reboot"
+state.
+
+Status: **unverified on a live build** at time of writing. Confirm on the next
+real run that both WU rounds complete without a mid-round reboot and record the
+outcome here. If a mid-round reboot still occurs, the `Reboot*` task disable was
+likely denied (TrustedInstaller-owned) — capture whether `NoAutoUpdate` alone
+held, and whether the reboot came from the orchestrator or from a boot-time
+servicing commit (the latter would need a different approach, e.g. settling the
+servicing stack before each round rather than suppressing auto-reboot).
+
 Cloudbase-Init is deliberately installed after Windows Update. Server 2025
 checkpoint cumulative updates can perform a near-full OS redeploy and create
 `C:\Windows.old`. Installed software survived the observed redeploy, but the
@@ -209,6 +242,7 @@ umount /tmp/vm
 | Setup fails before partitioning                           | Invalid answer/setup input, including invalid CompactOS option syntax                                                                                               | Inspect attached answer files; do not use the removed `setupconfig.ini` experiment                     |
 | Setup fails near 11 GB written with `0x80071160`          | Compact WOF apply cannot be serviced from WinPE                                                                                                                     | Retain `<Compact>false>`                                                                               |
 | Specialize fails with `ERROR_BADDB` / `0x800703f9`        | Intermittent corrupt `COMPONENTS` hive transaction state                                                                                                            | Retain retries; investigate host RAM or storage integrity rather than CompactOS permutations           |
+| WU round-two provisioner exits 1 after ~4 min, no artifact | Update Orchestrator auto-restarts the headless VM mid-scan, killing the powershell provisioner; retries all die the same way                                        | `Install.ps1` disables WU auto-update/auto-reboot for the build; `Finalize.ps1` restores it before sysprep |
 | Two builds interfere or an orphan controls the slot       | Stale remote Packer/watchdog or fixed VMID state                                                                                                                    | Slot-derived VMIDs, stale process cleanup, orphan VM eviction, and name-based pruning                  |
 
 The intermittent `ERROR_BADDB` failure reproduced with verified install media,
@@ -232,3 +266,6 @@ investigation, not a reason to repeat rejected CompactOS changes.
 - Removing `<Compact>false>` produced the deterministic phase 71 failure.
 - Increasing the disk to 64G did not avoid the compact policy.
 - Removing `Windows.old` would reclaim nothing in the observed update flow.
+- Letting Windows Update auto-reboot during the build (no suppression) killed the
+  round-two provisioner on every attempt; the build now disables WU
+  auto-update/auto-reboot for its duration and restores it before sysprep.

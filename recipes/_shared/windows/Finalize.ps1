@@ -184,6 +184,17 @@ Remove-Item -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WinRM\Service" -For
 cmd.exe /c 'winrm set winrm/config/service @{AllowUnencrypted="false"} >nul 2>&1'
 cmd.exe /c 'winrm set winrm/config/service/auth @{Basic="false"} >nul 2>&1'
 
+Write-Step "restore Windows Update automatic-reboot behavior"
+# Install.ps1 disabled WU auto-update/auto-reboot for the build so the Server 2025
+# checkpoint cumulative could not restart the VM mid-provisioner. Undo it so the
+# sysprep'd template ships with Windows' default update policy instead of an
+# inherited "never auto-reboot" state that would silently change behavior on
+# every clone.
+Remove-Item -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU" -Force -Recurse -ErrorAction SilentlyContinue
+foreach ($t in @("Reboot", "Reboot_AC", "Reboot_Battery")) {
+  Enable-ScheduledTask -TaskPath "\Microsoft\Windows\UpdateOrchestrator\" -TaskName $t -ErrorAction SilentlyContinue | Out-Null
+}
+
 Write-Step "sysprep and shutdown"
 # Pass cloudbase-init's bundled Unattend.xml so OOBE on the cloned VM auto-
 # completes (accepts EULA, sets a placeholder Administrator password, skips

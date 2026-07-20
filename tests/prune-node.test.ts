@@ -110,6 +110,27 @@ describe('ownedTelemetryCleanupCommand', () => {
         expect(result.status, result.stderr).toBe(0)
     })
 
+    test('tolerates rrdcached replies that mean nothing is cached', () => {
+        const cmd = ownedTelemetryCleanupCommand([{ buildVmid: 1002 }])
+        const start = cmd.indexOf('case "$response" in')
+        const end = cmd.indexOf('esac', start)
+        expect(start).toBeGreaterThan(-1)
+        const caseBlock = cmd.slice(start, end + 'esac'.length)
+
+        const check = (response: string) =>
+            spawnSync('bash', ['-c', `rel=pve-vm-9.0/100200; ${caseBlock}`], {
+                env: { ...process.env, response },
+                encoding: 'utf8',
+            })
+
+        // An unknown RRD is already in the state FORGET aims for.
+        expect(check('-1 No such file or directory').status).toBe(0)
+        expect(check('0').status).toBe(0)
+        expect(check('0 messages').status).toBe(0)
+        // Real failures must still abort the clean.
+        expect(check('-1 Invalid argument').status).toBe(1)
+    })
+
     test('can verify telemetry absence without deleting it', () => {
         const cmd = ownedTelemetryFindCommand([{ buildVmid: 1001 }])
         expect(cmd).not.toContain('rm -f')

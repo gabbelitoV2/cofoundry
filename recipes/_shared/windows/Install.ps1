@@ -80,6 +80,37 @@ $settings  = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Min
 Register-ScheduledTask -TaskName "PackerWinRMKeepalive" -Action $action `
   -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
 
+Write-Step "suppress Windows Update automatic reboot (build-time only; reverted in Finalize.ps1)"
+# Server 2025's monthly checkpoint cumulative leaves the Update Orchestrator with
+# a pending servicing operation that auto-restarts the VM a few minutes into the
+# *second* WU pass -- right while WU.ps1's SYSTEM task is still scanning. On a
+# headless WinRM build there is no interactive user to defer the reboot, so the
+# machine restarts out from under the running powershell provisioner; Packer
+# reports "Script exited with non-zero exit status: 1" and the build produces no
+# artifact (observed on all three build attempts). WU.ps1 already drives every
+# install explicitly through the WUA COM API and signals reboots back to Packer,
+# which owns every restart via windows-restart -- so the orchestrator's own
+# auto-install/auto-reboot is pure interference during the build.
+#
+# Disable that automatic behavior for the duration of the build. The explicit
+# COM install path is unaffected. Finalize.ps1 removes these keys and re-enables
+# the reboot tasks so the shipped template keeps Windows' default update policy.
+$auPolicyPath = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU"
+New-Item -Path $auPolicyPath -Force | Out-Null
+# Stop the background agent from installing/rebooting on its own; explicit WUA COM
+# calls in WU.ps1 still work. NoAutoRebootWithLoggedOnUsers is cheap insurance in
+# case a user context ever appears; the load-bearing control is NoAutoUpdate plus
+# the disabled reboot tasks below.
+Set-ItemProperty -Path $auPolicyPath -Name "NoAutoUpdate"                 -Value 1 -Type DWord -Force
+Set-ItemProperty -Path $auPolicyPath -Name "NoAutoRebootWithLoggedOnUsers" -Value 1 -Type DWord -Force
+
+# Belt-and-suspenders: disable the Update Orchestrator reboot tasks that actually
+# execute a pending auto-restart. They are owned by TrustedInstaller, so the
+# Disable may be denied -- that is fine, the AU policy above is authoritative.
+foreach ($t in @("Reboot", "Reboot_AC", "Reboot_Battery")) {
+  Disable-ScheduledTask -TaskPath "\Microsoft\Windows\UpdateOrchestrator\" -TaskName $t -ErrorAction SilentlyContinue | Out-Null
+}
+
 Write-Step "clean up UEFI boot order"
 # OVMF re-adds the SATA DVD-ROM (VirtIO ISO) to the front of BootOrder on every
 # boot, causing a ~60s hang per restart (DVD timeout + PXE timeout) before

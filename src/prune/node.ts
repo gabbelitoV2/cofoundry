@@ -226,7 +226,14 @@ const ownedTelemetryCommand = (
             command -v socat >/dev/null 2>&1 || { echo 'socat is required to clean active RRD telemetry' >&2; exit 1; }
             rel=\${rrd#/var/lib/rrdcached/db/}
             response=$(printf 'FORGET %s\\n' "$rel" | socat - UNIX-CONNECT:/var/run/rrdcached.sock)
-            case "$response" in 0|0' '*) ;; *) echo "rrdcached failed to forget $rel: $response" >&2; exit 1 ;; esac
+            # A "-1 No such file or directory" reply means rrdcached holds no
+            # cached writes for this RRD, which is the state FORGET is meant to
+            # reach, so treat it as success alongside a normal "0" ack.
+            case "$response" in
+                0|0' '*) ;;
+                -1' 'No' 'such' 'file*) ;;
+                *) echo "rrdcached failed to forget $rel: $response" >&2; exit 1 ;;
+            esac
         fi
         rm -f -- "$rrd"
         [ ! -e "$rrd" ] || { echo "RRD telemetry still exists: $rrd" >&2; exit 1; }

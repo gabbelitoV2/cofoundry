@@ -238,7 +238,13 @@ build {
   provisioner "powershell" {
     pause_before     = "30s"
     execute_command  = local.ps_execute
-    environment_vars = ["CF_FINAL_DISK_SIZE=${local.final_disk_size}"]
+    environment_vars = [
+      "CF_FINAL_DISK_SIZE=${local.final_disk_size}",
+      # Seeds <AdministratorPassword> in the sysprep answer file so OOBE completes
+      # unattended on a clone. Cloudbase-Init replaces it with the cloud-init
+      # password on first boot; it is the fallback if that injection fails.
+      "CF_ADMIN_PASSWORD=${var.winrm_password}",
+    ]
     script           = "${path.root}/_shared/windows/Finalize.ps1"
   }
 

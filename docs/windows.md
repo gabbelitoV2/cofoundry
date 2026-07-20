@@ -144,6 +144,189 @@ late install guarantees Cloudbase-Init is present immediately before export.
 The observed `Windows.old` directory was empty by finalization, so no cleanup
 step is needed.
 
+### Gray desktop on a clone (stale Administrator profile)
+
+Symptom: a cloned VM reaches the logon screen, accepts the Administrator
+password, and then shows a **gray desktop** — no wallpaper, no icons, no
+taskbar. Ctrl+Alt+Del works and Task Manager opens normally.
+
+Root cause: `sysprep /generalize` does **not** delete existing user profiles.
+Without intervention the template ships `C:\Users\Administrator` exactly as the
+build left it — a profile that lived through autologon, the WinRM sessions, both
+WU rounds, and the checkpoint cumulative. Generalize resets machine identity and
+the shell packages are re-registered at OOBE, but that carried-over profile's
+per-user shell state still refers to the pre-generalize package identities.
+`ShellHost.exe` — which composes the taskbar and desktop surfaces on Server 2025,
+and is a separate process from `explorer.exe` — hits `__fastfail` and crash-loops
+on it, so nothing ever paints.
+
+Diagnostic signature, confirmed on VM 101 (build 26100.33158):
+
+- `explorer.exe` **is running** and persists; it is not the crasher.
+- Application log repeats, roughly every 31 seconds:
+  `Faulting application name: ShellHost.exe ... Faulting module name:
+  ControlCenter.dll ... Exception code: 0xc0000409`
+  (`0xc0000409` is `STATUS_STACK_BUFFER_OVERRUN`, i.e. the `__fastfail` path —
+  a deliberate abort, not file damage).
+- `sfc /verifyonly` reports **no** integrity violations.
+- `ControlCenter.dll` and `ShellHost.exe` carry an identical `LastWriteTime`, so
+  they are from the same servicing transaction.
+- A newly created local account logs straight into a full working desktop.
+- Deleting the profile (`Get-CimInstance Win32_UserProfile | Where LocalPath -eq
+  'C:\Users\Administrator' | Remove-CimInstance`) and logging back in as
+  Administrator produces first-run setup and then a working desktop.
+
+The last two are the decisive ones: the image is fine, only the profile is bad.
+
+Handling: `Finalize.ps1` writes `C:\Windows\Setup\Scripts\remove-build-profile.ps1`
+and injects a `RunSynchronousCommand` calling it into the **specialize** pass of
+the unattend passed to sysprep. Specialize runs as SYSTEM before any logon loads
+the profile, which is the first point it can be deleted — `Finalize.ps1` itself
+cannot, because Packer is logged in as Administrator at that moment. The command
+takes `Order` 1 and the existing cloudbase-init entry is renumbered, because that
+entry declares `WillReboot=OnRequest` and work sequenced after a reboot request is
+not guaranteed to run in the same pass.
+
+Every clone therefore creates a fresh Administrator profile on first logon. That
+would newly expose the per-profile privacy/diagnostic-data prompt, which
+`SkipUserOOBE` does not cover (it is first-run, not OOBE), so `Finalize.ps1` also
+sets `DisablePrivacyExperience=1` under the `...\Policies\Microsoft\Windows\OOBE`
+key to keep first logon non-interactive.
+
+`DisablePrivacyExperience` skips that prompt and accepts Windows' defaults — it
+does **not** reduce collection, despite the name. Telemetry is minimized
+separately via `AllowTelemetry=0` ("Security", the lowest level, honored on
+Enterprise/Server SKUs) under `...\Policies\Microsoft\Windows\DataCollection`.
+
+`ProtectYourPC` in the answer file stays at `1`. It gates Defender, SmartScreen,
+and automatic updates rather than telemetry, so lowering it to `3` would weaken
+the template's security posture without a privacy gain. Do not conflate the two.
+
+Note the Cloudbase-Init `Unattend.xml` sets no Administrator password — it only
+hides the EULA, sets `SkipMachineOOBE`/`SkipUserOOBE`, keeps
+`PersistAllDeviceInstalls`, and runs cloudbase-init at specialize for the
+hostname. An earlier comment in `Finalize.ps1` claiming it sets a placeholder
+password was wrong and has been corrected.
+
+Status: **unverified on a live build** at time of writing. The mechanism is
+confirmed on a clone by hand (deleting the profile fixed that VM); what remains
+unproven is that the injected specialize command runs correctly on a fresh build.
+On the next real run, confirm the clone boots to a working desktop on first
+Administrator logon without an operator click, and that the XML injection did not
+break OOBE auto-completion — a clone hanging at OOBE in noVNC is the regression
+to watch for. Record the outcome here.
+
+### Cloudbase-Init never runs on a clone (OOBE never completes)
+
+Symptom: a clone prompts an operator to set the Administrator password at first
+boot, and the cloud-init password, hostname, and volume extension are never
+applied. `cloudbase-init.log` fills with one line per second, forever:
+
+```text
+INFO cloudbaseinit.osutils.windows [-] Waiting for sysprep completion. GeneralizationState: 3
+```
+
+Root cause: Cloudbase-Init's `wait_for_boot_completion` blocks until
+`HKLM\SYSTEM\Setup\Status\SysprepStatus\GeneralizationState` reaches **7**. The
+shipped Cloudbase-Init `Unattend.xml` drives OOBE with `<SkipMachineOOBE>` and
+`<SkipUserOOBE>`, both deprecated by Microsoft: they suppress the screens without
+running the completion work that advances that value. The clone therefore sits at
+`GeneralizationState 3` permanently and the service never reaches a single plugin.
+
+Confirmed on VM 101 via `qm guest exec`: `GeneralizationState` read 3 with
+`ImageState` empty; setting it to 7 and restarting the service released it, and
+every plugin ran on the next poll (`SetHostNamePlugin`, `ExtendVolumesPlugin`,
+`UserDataPlugin`, `LocalScriptsPlugin`).
+
+Handling: `Finalize.ps1` rewrites the `oobeSystem` block of the unattend copy it
+passes to sysprep — the deprecated skip pair is removed and replaced with the
+explicit `Hide*` screen settings plus a `UserAccounts/AdministratorPassword`,
+which is the combination the per-recipe `autounattend.xml` already uses to clear
+OOBE unattended during the build. `NetworkLocation` and `ProtectYourPC` values
+already present in the shipped file are preserved. The OOBE node is rebuilt in
+schema order rather than appended to, because the unattend schema validates its
+children as an ordered sequence.
+
+The password comes from `CF_ADMIN_PASSWORD`, passed by each Windows recipe as
+`var.winrm_password` — the build's own WinRM password, so nothing is hardcoded in
+the repo. Cloudbase-Init overwrites it with the cloud-init password seconds into
+first boot; it only has to carry the clone from OOBE to that point, and it doubles
+as a known fallback when injection fails.
+
+Handling of that plaintext password, which is a real exposure and should not be
+assumed away:
+
+- `C:\Windows\Temp\cb-sysprep-unattend.xml` — the copy passed to sysprep. Nothing
+  used to clean it up; it was still present on an inspected clone. The specialize
+  script now deletes it.
+- `C:\Windows\Panther\unattend.xml` — Windows is *expected* to scrub password
+  fields to `*SENSITIVE*DATA*DELETED*`. **This is unverified on this image.** The
+  inspected clone predates the change and had no password fields to scrub, so
+  there was nothing to observe. Verify on the next build rather than trusting it.
+
+  > **OPEN ITEM — run this on the first clone off the next build:**
+  >
+  > ```powershell
+  > Select-String -Path C:\Windows\Panther\unattend.xml -Pattern 'SENSITIVE|<Value>'
+  > ```
+  >
+  > `*SENSITIVE*DATA*DELETED*` → Windows scrubs it, and only the `C:\Windows\Temp`
+  > copy leaks. That copy exists in the exported disk until a clone first boots, so
+  > it would then be worth switching `Finalize.ps1` to `sysprep /quit`, deleting the
+  > file, and shutting down explicitly — closing the gap entirely.
+  >
+  > A literal password → the build's WinRM password ships readable in a template
+  > published to a public CDN, and the whole approach needs rethinking (the
+  > `AdministratorPassword` seeding, not just the cleanup). Do not ship builds
+  > publicly until this is answered.
+  >
+  > Record the answer here either way and delete this box.
+- Both files exist in the exported template disk until a clone first boots, so
+  treat the template artifact itself as carrying the build's WinRM password.
+
+Status: **unverified on a live build** at time of writing. The mechanism is proven
+on a clone by hand; the rewritten answer file has not yet driven a real sysprep.
+On the next run confirm the clone reaches the desktop with no operator prompt and
+that `GeneralizationState` reads 7. A clone stalling at an OOBE screen in noVNC is
+the regression to watch.
+
+#### Cloud-init password must satisfy the guest password policy
+
+Once unblocked, `SetUserPasswordPlugin` can still fail:
+
+```text
+ERROR cloudbaseinit.init [-] Set user password failed: The password does not meet
+the password policy requirements.
+```
+
+The template ships Windows' default `PasswordComplexity = 1`, so a Proxmox
+`cipassword` must use three of four character classes (upper, lower, digit,
+symbol) and be at least six characters. This is a caller-side constraint, not a
+recipe defect — do not relax the guest policy to work around it. The
+`AdministratorPassword` seeded above is the fallback that keeps such a clone
+reachable instead of locked out.
+
+#### Falsified: `/ResetBase` before generalize
+
+`Finalize.ps1` runs `dism /Online /Cleanup-Image /StartComponentCleanup
+/ResetBase` immediately before sysprep, which was the first hypothesis for the
+gray desktop — `/ResetBase` discards superseded component payloads, and the 2025
+checkpoint cumulative behaves like a near-full OS redeploy, so a shell-binary
+servicing mismatch looked plausible. **This was tested and disproved**: `sfc`
+found no integrity violations and the shell binaries share one timestamp. Do not
+spend another build cycle removing `/ResetBase` for this symptom. (It does remain
+true that `/ResetBase` leaves `DISM /RestoreHealth` with no local payload, so
+repair attempts on a clone need Windows Update and otherwise fail `0x800f081f`.)
+
+Disk truncation was also considered and ruled out by arithmetic: `qemu-img resize
+--shrink ... 32G` is GiB (34,359,738,368 bytes) and `Shrink-SystemPartition`
+targets 32GiB − 1GiB, leaving a real 1GiB margin.
+
+`C:\Windows.old` exists as a directory on the inspected clone but is **empty**
+(0 files, 0 bytes), which confirms rather than contradicts the "empty by
+finalization" observation recorded under the Cloudbase-Init note above. No
+cleanup step is needed.
+
 ### Windows Update progress reporting
 
 The SYSTEM update task in `WU.ps1` downloads and installs each batch through the
@@ -244,6 +427,9 @@ umount /tmp/vm
 | Specialize fails with `ERROR_BADDB` / `0x800703f9`        | Intermittent corrupt `COMPONENTS` hive transaction state                                                                                                            | Retain retries; investigate host RAM or storage integrity rather than CompactOS permutations           |
 | WU round-two provisioner exits 1 after ~4 min, no artifact | Update Orchestrator auto-restarts the headless VM mid-scan, killing the powershell provisioner; retries all die the same way                                        | `Install.ps1` disables WU auto-update/auto-reboot for the build; `Finalize.ps1` restores it before sysprep |
 | Two builds interfere or an orphan controls the slot       | Stale remote Packer/watchdog or fixed VMID state                                                                                                                    | Slot-derived VMIDs, stale process cleanup, orphan VM eviction, and name-based pruning                  |
+| Clone boots to a gray desktop with no taskbar             | Template shipped the build's `C:\Users\Administrator`; its pre-generalize shell state crash-loops `ShellHost.exe` (`0xc0000409` in `ControlCenter.dll`)              | `Finalize.ps1` deletes that profile from the unattend's specialize pass so each clone builds a fresh one |
+| Clone asks for an Administrator password; cloud-init never applies | Deprecated `SkipMachineOOBE`/`SkipUserOOBE` leave `GeneralizationState` at 3, so Cloudbase-Init loops "Waiting for sysprep completion" and runs no plugins   | `Finalize.ps1` rewrites the unattend's OOBE block to `Hide*` settings + `AdministratorPassword` from `CF_ADMIN_PASSWORD` |
+| `Set user password failed: ... password policy requirements` | Proxmox `cipassword` violates the guest's `PasswordComplexity = 1` policy                                                                                        | Caller must supply a compliant password; the seeded `AdministratorPassword` keeps the clone reachable meanwhile |
 
 The intermittent `ERROR_BADDB` failure reproduced with verified install media,
 adequate free disk space, and no competing build process. Host RAM or the
@@ -269,3 +455,10 @@ investigation, not a reason to repeat rejected CompactOS changes.
 - Letting Windows Update auto-reboot during the build (no suppression) killed the
   round-two provisioner on every attempt; the build now disables WU
   auto-update/auto-reboot for its duration and restores it before sysprep.
+- Removing `/ResetBase` from `Finalize.ps1` was proposed for the gray-desktop
+  symptom and disproved before it cost a build; the cause was a stale
+  Administrator profile surviving generalize. See the gray-desktop section.
+- `SkipMachineOOBE` / `SkipUserOOBE` are deprecated and do not complete OOBE.
+  Relying on them stalls `GeneralizationState` at 3 and hangs Cloudbase-Init
+  indefinitely. Use the explicit `Hide*` screen settings plus an
+  `AdministratorPassword` instead.

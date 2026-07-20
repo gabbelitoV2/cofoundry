@@ -184,6 +184,24 @@ Remove-Item -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WinRM\Service" -For
 cmd.exe /c 'winrm set winrm/config/service @{AllowUnencrypted="false"} >nul 2>&1'
 cmd.exe /c 'winrm set winrm/config/service/auth @{Basic="false"} >nul 2>&1'
 
+Write-Step "restore stock WinRM firewall exposure"
+# WinRM itself is deliberately left running: on Windows Server (unlike client
+# SKUs) the service, the HTTP listener on 5985, and the Domain/Private firewall
+# rules are all enabled out of the box, so disabling them would ship a template
+# that deviates from stock Server behavior.
+#
+# What the build adds on top of that is removed here:
+#   - "WinRM-HTTP", created by autounattend.xml's netsh command, applies to every
+#     profile including Public.
+#   - the stock "Windows Remote Management (HTTP-In)" rule bound to the Public
+#     profile, which winrm quickconfig enables and which is not on by default.
+# Both leave the management port reachable on untrusted networks on every clone.
+Remove-NetFirewallRule -Name "WinRM-HTTP" -ErrorAction SilentlyContinue
+Remove-NetFirewallRule -DisplayName "WinRM-HTTP" -ErrorAction SilentlyContinue
+Get-NetFirewallRule -DisplayName "Windows Remote Management (HTTP-In)" -ErrorAction SilentlyContinue |
+  Where-Object { $_.Profile -match "Public" } |
+  Disable-NetFirewallRule -ErrorAction SilentlyContinue
+
 Write-Step "restore Windows Update automatic-reboot behavior"
 # Install.ps1 disabled WU auto-update/auto-reboot for the build so the Server 2025
 # checkpoint cumulative could not restart the VM mid-provisioner. Undo it so the
@@ -197,9 +215,9 @@ foreach ($t in @("Reboot", "Reboot_AC", "Reboot_Battery")) {
 
 Write-Step "sysprep and shutdown"
 # Pass cloudbase-init's bundled Unattend.xml so OOBE on the cloned VM auto-
-# completes (accepts EULA, sets a placeholder Administrator password, skips
-# all OOBE screens). Without this, first boot blocks in noVNC waiting for an
-# operator to set the Administrator password, and the cloudbase-init service
+# completes (accepts EULA, skips the machine and user OOBE screens) and its
+# specialize pass runs cloudbase-init to set the hostname. Without this, first
+# boot blocks in noVNC waiting for an operator, and the cloudbase-init service
 # can't start until OOBE finishes -- which defeats unattended cloning.
 $sysprepUnattend = "C:\Program Files\Cloudbase Solutions\Cloudbase-Init\conf\Unattend.xml"
 if (-not (Test-Path $sysprepUnattend)) {
@@ -212,6 +230,185 @@ if (-not (Test-Path $sysprepUnattend)) {
 # into C:\Windows\Panther at generalize, so the temp source path is fine.)
 $unattendCopy = "C:\Windows\Temp\cb-sysprep-unattend.xml"
 Copy-Item $sysprepUnattend $unattendCopy -Force
+
+# Drop the build's Administrator profile on the clone's first boot.
+#
+# sysprep /generalize does NOT remove existing user profiles, so without this the
+# template ships C:\Users\Administrator exactly as the build left it. That
+# profile's per-user shell state predates generalize and no longer matches the
+# shell packages re-registered at OOBE, so on the clone ShellHost.exe __fastfails
+# (0xc0000409 in ControlCenter.dll) roughly every 30s: explorer.exe runs, but no
+# desktop, wallpaper, or taskbar ever paints -- just a gray field with a working
+# Ctrl+Alt+Del. A profile created *after* generalize is fine, so the fix is to
+# not ship the stale one and let first logon build a fresh profile.
+#
+# This can't be done from this script: Packer is logged in as Administrator with
+# that profile loaded. The specialize pass runs as SYSTEM on the clone before any
+# logon, which is the first point the profile is deletable. See docs/windows.md.
+$removeProfileScript = "C:\Windows\Setup\Scripts\remove-build-profile.ps1"
+New-Item -ItemType Directory -Force -Path (Split-Path $removeProfileScript) | Out-Null
+@'
+# Runs in the specialize pass on a clone. Best-effort by design: a clone that
+# boots with a stale profile is broken, but one that fails to delete an already
+# absent profile is not, so nothing here should abort specialize.
+$ErrorActionPreference = "SilentlyContinue"
+$target = Join-Path $env:SystemDrive "Users\Administrator"
+# Remove-CimInstance takes the ProfileList registry entry with it; a bare
+# Remove-Item would orphan that key and Windows would refuse to recreate the
+# profile at the same path, silently falling back to Administrator.TEMPLATE.
+Get-CimInstance Win32_UserProfile |
+  Where-Object { $_.LocalPath -eq $target } |
+  Remove-CimInstance
+if (Test-Path $target) { Remove-Item -Recurse -Force $target }
+
+# Shred the answer file handed to sysprep. It carries <AdministratorPassword> in
+# plain text, and unlike C:\Windows\Panther\unattend.xml (which Windows is
+# expected to scrub) nothing cleans up this copy -- it was still sitting in
+# C:\Windows\Temp on an inspected clone. Sysprep cached what it needed at
+# generalize, so it is dead weight by the time specialize runs.
+Remove-Item -Force "C:\Windows\Temp\cb-sysprep-unattend.xml" -ErrorAction SilentlyContinue
+'@ | Set-Content -Path $removeProfileScript -Encoding ASCII
+
+# Inject the deletion into the unattend's existing specialize RunSynchronous
+# block. Built through the XML DOM rather than string edits so .NET handles
+# attribute escaping and the wcm: prefix already declared on the component.
+[xml]$unattendXml = Get-Content $unattendCopy
+$nsUri = $unattendXml.DocumentElement.NamespaceURI
+$wcmUri = "http://schemas.microsoft.com/WMIConfig/2002/State"
+$ns = New-Object System.Xml.XmlNamespaceManager($unattendXml.NameTable)
+$ns.AddNamespace("u", $nsUri)
+$runSync = $unattendXml.SelectSingleNode(
+  "/u:unattend/u:settings[@pass='specialize']/u:component[@name='Microsoft-Windows-Deployment']/u:RunSynchronous", $ns)
+if (-not $runSync) {
+  throw "sysprep unattend has no specialize RunSynchronous node to extend - did the Cloudbase-Init Unattend.xml layout change?"
+}
+
+# Take Order 1 and push the existing commands back. cloudbase-init's entry
+# declares WillReboot=OnRequest, and anything sequenced after a command that
+# requests a reboot is not guaranteed to run in the same pass.
+foreach ($existing in $runSync.SelectNodes("u:RunSynchronousCommand", $ns)) {
+  $orderNode = $existing.SelectSingleNode("u:Order", $ns)
+  $orderNode.InnerText = [string]([int]$orderNode.InnerText + 1)
+}
+
+$cmdNode = $unattendXml.CreateElement("RunSynchronousCommand", $nsUri)
+$cmdNode.SetAttribute("action", $wcmUri, "add") | Out-Null
+# Child order follows the sequence the shipped file already uses (Order, Path,
+# Description); the unattend schema validates RunSynchronousCommand as a sequence.
+foreach ($pair in @(
+    @("Order", "1"),
+    @("Path", "powershell.exe -NoProfile -ExecutionPolicy Bypass -File $removeProfileScript"),
+    @("Description", "Remove the stale build Administrator profile"))) {
+  $child = $unattendXml.CreateElement($pair[0], $nsUri)
+  $child.InnerText = $pair[1]
+  $cmdNode.AppendChild($child) | Out-Null
+}
+$runSync.PrependChild($cmdNode) | Out-Null
+
+# Make OOBE actually complete, so sysprep finishes and Cloudbase-Init can run.
+#
+# Cloudbase-Init's Unattend.xml drives OOBE with <SkipMachineOOBE> and
+# <SkipUserOOBE>. Microsoft deprecated both: they suppress the screens without
+# performing the completion work that advances
+# HKLM\SYSTEM\Setup\Status\SysprepStatus\GeneralizationState to 7. A clone then
+# boots stuck at GeneralizationState 3, and Cloudbase-Init's
+# wait_for_boot_completion loops "Waiting for sysprep completion" forever -- so
+# the cloud-init password, hostname, and volume extension are never applied and
+# an operator is left setting the Administrator password by hand in noVNC.
+# Confirmed on a clone: flipping that value to 7 released the service and every
+# plugin ran on the next poll.
+#
+# The replacement is the explicit Hide* screen set plus an AdministratorPassword
+# -- the same combination the per-recipe autounattend.xml already uses to get
+# through OOBE unattended during the build.
+$oobe = $unattendXml.SelectSingleNode(
+  "/u:unattend/u:settings[@pass='oobeSystem']/u:component[@name='Microsoft-Windows-Shell-Setup']/u:OOBE", $ns)
+if (-not $oobe) {
+  throw "sysprep unattend has no oobeSystem OOBE node - did the Cloudbase-Init Unattend.xml layout change?"
+}
+
+# The unattend schema validates OOBE's children as an ordered sequence, so the
+# node is rebuilt in schema order rather than appended to. Values already present
+# in the shipped file win, so this does not silently override Cloudbase-Init's
+# NetworkLocation/ProtectYourPC choices.
+$oobeSettings = [ordered]@{
+  HideEULAPage              = "true"
+  HideLocalAccountScreen    = "true"
+  HideOEMRegistrationScreen = "true"
+  HideOnlineAccountScreens  = "true"
+  HideWirelessSetupInOOBE   = "true"
+  NetworkLocation           = "Work"
+  ProtectYourPC             = "1"
+}
+foreach ($key in @($oobeSettings.Keys)) {
+  $existingNode = $oobe.SelectSingleNode("u:$key", $ns)
+  if ($existingNode) { $oobeSettings[$key] = $existingNode.InnerText }
+}
+while ($oobe.HasChildNodes) { $oobe.RemoveChild($oobe.FirstChild) | Out-Null }
+foreach ($key in $oobeSettings.Keys) {
+  $el = $unattendXml.CreateElement($key, $nsUri)
+  $el.InnerText = $oobeSettings[$key]
+  $oobe.AppendChild($el) | Out-Null
+}
+
+# Without an Administrator password OOBE stops and asks for one, which is the
+# interactive block this whole answer file exists to avoid. Cloudbase-Init
+# overwrites it with the cloud-init password seconds into first boot; this value
+# only has to carry the clone from OOBE to that point. It is the build's own
+# WinRM password rather than a literal in the repo, so it stays out of version
+# control and remains a known fallback if Cloudbase-Init's password injection
+# fails (e.g. a cloud-init password that violates the guest password policy).
+#
+# Exposure: Windows is expected to scrub password fields to
+# *SENSITIVE*DATA*DELETED* in the copy it caches at C:\Windows\Panther, but that
+# has NOT been verified on this image -- do not rely on it alone. The specialize
+# script above deletes the C:\Windows\Temp copy, which nothing else cleans up.
+# Both still sit in the exported template disk until a clone first boots, so
+# treat the template artifact as holding the build's WinRM password.
+if (-not $env:CF_ADMIN_PASSWORD) {
+  throw "CF_ADMIN_PASSWORD is not set - the recipe must pass it to Finalize.ps1 via environment_vars"
+}
+$shellSetup = $oobe.ParentNode
+$existingAccounts = $shellSetup.SelectSingleNode("u:UserAccounts", $ns)
+if ($existingAccounts) { $shellSetup.RemoveChild($existingAccounts) | Out-Null }
+$userAccounts = $unattendXml.CreateElement("UserAccounts", $nsUri)
+$adminPassword = $unattendXml.CreateElement("AdministratorPassword", $nsUri)
+foreach ($pair in @(@("Value", $env:CF_ADMIN_PASSWORD), @("PlainText", "true"))) {
+  $child = $unattendXml.CreateElement($pair[0], $nsUri)
+  $child.InnerText = $pair[1]
+  $adminPassword.AppendChild($child) | Out-Null
+}
+$userAccounts.AppendChild($adminPassword) | Out-Null
+# UserAccounts follows OOBE in the Shell-Setup sequence, matching autounattend.xml.
+$shellSetup.InsertAfter($userAccounts, $oobe) | Out-Null
+
+$unattendXml.Save($unattendCopy)
+
+# Suppress the privacy/diagnostic-data prompt that Windows shows on a new
+# profile's first logon. SkipUserOOBE in the unattend does not cover it (it is
+# per-profile first-run, not OOBE), and with the stale profile gone every clone
+# now creates a fresh profile and would hit it. Without this the template still
+# works, but first logon stops for an operator click -- the same unattended-clone
+# regression the answer file exists to avoid.
+New-Item -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\OOBE" -Force | Out-Null
+Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\OOBE" `
+  -Name "DisablePrivacyExperience" -Value 1 -Type DWord
+
+# Minimize diagnostic data. Note this is a separate decision from the setting
+# above: DisablePrivacyExperience only skips the *prompt* and accepts Windows'
+# defaults -- it does not reduce collection. Level 0 ("Security") is the lowest
+# value and is honored only on Enterprise/Server SKUs, which Server 2025
+# Datacenter is; on other SKUs it silently behaves as 1 ("Required"). Left
+# deliberately as a policy key so an operator can raise it on a clone.
+New-Item -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection" -Force | Out-Null
+Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection" `
+  -Name "AllowTelemetry" -Value 0 -Type DWord
+
+# ProtectYourPC in the unattend is deliberately left at 1 (recommended settings).
+# It gates Defender, SmartScreen, and automatic updates rather than telemetry, so
+# lowering it to 3 would weaken the shipped template's security posture without
+# meaningfully improving privacy -- AllowTelemetry above is the correct lever.
+
 $p = Start-Process -FilePath "C:\Windows\System32\Sysprep\Sysprep.exe" `
   -ArgumentList "/generalize", "/oobe", "/shutdown", "/quiet", "/unattend:$unattendCopy" `
   -Wait -PassThru

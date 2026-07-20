@@ -22,12 +22,17 @@ export const registerMaintenanceCommands = (program: Command): void => {
             'With --r2: keep newest N per template prefix',
             '5'
         )
+        .option(
+            '--reap-lease <prefix>',
+            'Reap leases under this run-id prefix regardless of age (CI cleanup)'
+        )
         .action(
             async (opts: {
                 days: string
                 dryRun: boolean
                 r2?: boolean
                 keep: string
+                reapLease?: string
             }) => {
                 if (opts.r2) {
                     const env = loadEnvPartial()
@@ -51,6 +56,7 @@ export const registerMaintenanceCommands = (program: Command): void => {
                 await runPrune(loadEnv(), {
                     days: Number.parseInt(opts.days, 10),
                     dryRun: Boolean(opts.dryRun),
+                    reapLeasePrefix: opts.reapLease,
                 })
             }
         )

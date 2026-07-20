@@ -19,6 +19,12 @@ jobs:
       contents: read
     env:
       CF_RECIPE: ${{ inputs.recipe }}
+      # Names this run's node-side leases so the prune-node job can reap them
+      # by identity. A cancelled job is killed with no grace period and loses
+      # its network before it can release anything, so cleanup cannot depend on
+      # the build reporting an id — it has to be derivable from the CI context
+      # alone, which every job in the run shares.
+      CF_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
       PVE_TOKEN_SECRET: ${{ secrets.PVE_TOKEN_SECRET }}
       AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
@@ -88,7 +94,9 @@ jobs:
           retention-days: 1
 
       - name: Upload failure diagnostics
-        if: failure()
+        # failure() alone skips cancellations, which is when the node-side
+        # diagnostics are most worth keeping.
+        if: failure() || cancelled()
         uses: actions/upload-artifact@v7
         with:
           name: diagnostics-${{ inputs.recipe }}

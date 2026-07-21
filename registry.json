@@ -2,7 +2,7 @@
   "schema_version": "1",
   "name": "Cofoundry Templates",
   "description": "Proxmox VM templates built with Cofoundry",
-  "generated_at": "2026-07-21T01:17:18.429Z",
+  "generated_at": "2026-07-21T02:12:05.639Z",
   "groups": [
     {
       "id": "almalinux",
@@ -13,21 +13,31 @@
           "name": "almalinux-10-amd64",
           "display": "AlmaLinux 10",
           "arch": "amd64",
-          "sha256": "164ffeab0835eaf1318294cd549a24dd167989f848e9aeab62a967656e3e2108",
-          "size": 1018024734,
-          "url": "https://cofoundry.cdn.convoypanel.com/templates/almalinux/almalinux-10-amd64/164ffeab0835eaf1318294cd549a24dd167989f848e9aeab62a967656e3e2108.vma.zst",
-          "built_at": "2026-07-20T23:49:01Z",
+          "sha256": "67ab6209d6729e5891c5ed1d90d698fb5dba50bf16176303abddd15dcf21d7b7",
+          "size": 1017119449,
+          "url": "https://cofoundry.cdn.convoypanel.com/templates/almalinux/almalinux-10-amd64/67ab6209d6729e5891c5ed1d90d698fb5dba50bf16176303abddd15dcf21d7b7.vma.zst",
+          "built_at": "2026-07-21T02:02:48Z",
           "suggested_vmid": 6002
         },
         {
           "name": "almalinux-8-amd64",
           "display": "AlmaLinux 8",
           "arch": "amd64",
-          "sha256": "232ff2eea9aecc46322970f8e26b24d013823f6b19c48cee43ea3b554078cd5c",
-          "size": 1356323522,
-          "url": "https://cofoundry.cdn.convoypanel.com/templates/almalinux/almalinux-8-amd64/232ff2eea9aecc46322970f8e26b24d013823f6b19c48cee43ea3b554078cd5c.vma.zst",
-          "built_at": "2026-07-20T23:48:51Z",
+          "sha256": "4788f5bfd5af6501f30b61605ba7a2c4623e2d6982f5f1af9b9839e69737e9e5",
+          "size": 1354649212,
+          "url": "https://cofoundry.cdn.convoypanel.com/templates/almalinux/almalinux-8-amd64/4788f5bfd5af6501f30b61605ba7a2c4623e2d6982f5f1af9b9839e69737e9e5.vma.zst",
+          "built_at": "2026-07-21T02:03:35Z",
           "suggested_vmid": 6000
+        },
+        {
+          "name": "almalinux-9-amd64",
+          "display": "AlmaLinux 9",
+          "arch": "amd64",
+          "sha256": "9a6caf5beb5f16eb32232ec0ea31e6ca4689742742b5cb98acf6500b98e54782",
+          "size": 1225069738,
+          "url": "https://cofoundry.cdn.convoypanel.com/templates/almalinux/almalinux-9-amd64/9a6caf5beb5f16eb32232ec0ea31e6ca4689742742b5cb98acf6500b98e54782.vma.zst",
+          "built_at": "2026-07-21T02:01:28Z",
+          "suggested_vmid": 6001
         }
       ]
     },
@@ -40,85 +50,11 @@
           "name": "debian-11-amd64",
           "display": "Debian 11 (Bullseye)",
           "arch": "amd64",
-          "sha256": "e97f8589aa5f6a751e9a817c7e50603bbf5941cfaba4353a372b0398425ff670",
-          "size": 466778179,
-          "url": "https://cofoundry.cdn.convoypanel.com/templates/debian/debian-11-amd64/e97f8589aa5f6a751e9a817c7e50603bbf5941cfaba4353a372b0398425ff670.vma.zst",
-          "built_at": "2026-07-20T23:46:34Z",
+          "sha256": "36853b4d9ce468c01aed862fa85f58a7da7382db138aa7ae980d9f90f9b92e74",
+          "size": 470036595,
+          "url": "https://cofoundry.cdn.convoypanel.com/templates/debian/debian-11-amd64/36853b4d9ce468c01aed862fa85f58a7da7382db138aa7ae980d9f90f9b92e74.vma.zst",
+          "built_at": "2026-07-21T02:00:23Z",
           "suggested_vmid": 4000
-        },
-        {
-          "name": "debian-12-amd64",
-          "display": "Debian 12 (Bookworm)",
-          "arch": "amd64",
-          "sha256": "bd0e56dacbb02545539b2618bd1fe05774c3bc2da98a11ade2aaa6a5f56c396c",
-          "size": 542288569,
-          "url": "https://cofoundry.cdn.convoypanel.com/templates/debian/debian-12-amd64/bd0e56dacbb02545539b2618bd1fe05774c3bc2da98a11ade2aaa6a5f56c396c.vma.zst",
-          "built_at": "2026-07-20T23:49:43Z",
-          "suggested_vmid": 4001
-        }
-      ]
-    },
-    {
-      "id": "rocky-linux",
-      "display_name": "Rocky Linux",
-      "description": null,
-      "templates": [
-        {
-          "name": "rocky-linux-10-amd64",
-          "display": "Rocky Linux 10",
-          "arch": "amd64",
-          "sha256": "9698c43944f22d2c09b30f8f0dc53d1ec1edeba9d90d1f7507c68b5a4a8d52a7",
-          "size": 1022658086,
-          "url": "https://cofoundry.cdn.convoypanel.com/templates/rocky-linux/rocky-linux-10-amd64/9698c43944f22d2c09b30f8f0dc53d1ec1edeba9d90d1f7507c68b5a4a8d52a7.vma.zst",
-          "built_at": "2026-07-21T00:03:38Z",
-          "suggested_vmid": 5002
-        }
-      ]
-    },
-    {
-      "id": "ubuntu",
-      "display_name": "Ubuntu",
-      "description": null,
-      "templates": [
-        {
-          "name": "ubuntu-22.04-amd64",
-          "display": "Ubuntu 22.04 LTS (Jammy Jellyfish)",
-          "arch": "amd64",
-          "sha256": "f95fd37d8f4bc67d28cb262583211a5f4ff55e0e41e01992bcc9bcdd441f0a7b",
-          "size": 1325870771,
-          "url": "https://cofoundry.cdn.convoypanel.com/templates/ubuntu/ubuntu-22.04-amd64/f95fd37d8f4bc67d28cb262583211a5f4ff55e0e41e01992bcc9bcdd441f0a7b.vma.zst",
-          "built_at": "2026-07-21T00:11:04Z",
-          "suggested_vmid": 1002
-        },
-        {
-          "name": "ubuntu-24.04-amd64",
-          "display": "Ubuntu 24.04 LTS (Noble Numbat)",
-          "arch": "amd64",
-          "sha256": "32156c0e0cec646322c08cab4ddcd058632fe3eac423f2972377d08895a8a5f6",
-          "size": 1408546679,
-          "url": "https://cofoundry.cdn.convoypanel.com/templates/ubuntu/ubuntu-24.04-amd64/32156c0e0cec646322c08cab4ddcd058632fe3eac423f2972377d08895a8a5f6.vma.zst",
-          "built_at": "2026-07-21T00:07:13Z",
-          "suggested_vmid": 1003
-        },
-        {
-          "name": "ubuntu-25.10-amd64",
-          "display": "Ubuntu 25.10 (Questing Quokka)",
-          "arch": "amd64",
-          "sha256": "46fa64680ba3f61470ef49fcc344823dd151d6000208344b777c861f28f6e6e0",
-          "size": 1542276093,
-          "url": "https://cofoundry.cdn.convoypanel.com/templates/ubuntu/ubuntu-25.10-amd64/46fa64680ba3f61470ef49fcc344823dd151d6000208344b777c861f28f6e6e0.vma.zst",
-          "built_at": "2026-07-21T00:09:55Z",
-          "suggested_vmid": 1004
-        },
-        {
-          "name": "ubuntu-26.04-amd64",
-          "display": "Ubuntu 26.04 LTS (Resolute Raccoon)",
-          "arch": "amd64",
-          "sha256": "18a0fe28a6130b4498243a01ea9440ffc4d6c2fc7c68e8dba975521b21eeeaad",
-          "size": 1555437185,
-          "url": "https://cofoundry.cdn.convoypanel.com/templates/ubuntu/ubuntu-26.04-amd64/18a0fe28a6130b4498243a01ea9440ffc4d6c2fc7c68e8dba975521b21eeeaad.vma.zst",
-          "built_at": "2026-07-21T00:22:33Z",
-          "suggested_vmid": 1005
         }
       ]
     }

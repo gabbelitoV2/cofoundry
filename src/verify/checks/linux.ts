@@ -27,7 +27,14 @@ export const linuxSuite: CheckSuite = {
         {
             id: 'cloud-init-done',
             description: 'cloud-init reached the done state',
-            script: 'cloud-init status --wait',
+            // `status --wait` exits 2 for "done with recoverable errors" on
+            // cloud-init >= 23.4 (Debian 13, el10 ship it) — that is still
+            // done; real failures are owned by cloud-init-no-errors below.
+            // Print the long form so any recoverable warnings land in the
+            // verify report instead of being swallowed by the exit code.
+            script: `out=$(cloud-init status --wait --long 2>&1); rc=$?
+printf '%s\\n' "$out"
+[ "$rc" -eq 0 ] || [ "$rc" -eq 2 ] || exit "$rc"`,
             expectStdout: /status:\s*done/,
             severity: 'fail',
             phase: 'first-boot',

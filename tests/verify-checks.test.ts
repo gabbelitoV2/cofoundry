@@ -1,8 +1,8 @@
 import { describe, expect, test } from 'bun:test'
 import { spawnSync } from 'node:child_process'
-import { rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { delimiter, join } from 'node:path'
 import type { CheckContext, GuestCheck } from '@/verify/checks/types.ts'
 import { checksForPhase, renderScript } from '@/verify/checks/types.ts'
 import { linuxSuite, sshKeyBody } from '@/verify/checks/linux.ts'
@@ -32,6 +32,53 @@ const recipe = (name: string): RecipeInfo => ({
 })
 
 const pwsh = spawnSync('sh', ['-c', 'command -v pwsh']).status === 0
+
+describe('cloud-init-done', () => {
+    const check = linuxSuite.checks.find(c => c.id === 'cloud-init-done')!
+
+    // Run the check script with a stubbed `cloud-init` first on PATH.
+    const runWithStub = (stubBody: string) => {
+        const dir = mkdtempSync(join(tmpdir(), 'cf-ci-stub-'))
+        const stub = join(dir, 'cloud-init')
+        writeFileSync(stub, `#!/bin/sh\n${stubBody}\n`)
+        chmodSync(stub, 0o755)
+        try {
+            return spawnSync('sh', ['-c', check.script], {
+                encoding: 'utf8',
+                env: {
+                    ...process.env,
+                    PATH: `${dir}${delimiter}${process.env.PATH}`,
+                },
+            })
+        } finally {
+            rmSync(dir, { recursive: true, force: true })
+        }
+    }
+
+    test('exit 2 (done with recoverable errors) passes, warnings preserved', () => {
+        // cloud-init >= 23.4 (Debian 13, el10) exits 2 when done with
+        // recoverable errors; treating that as failure fails every verify of
+        // those recipes while cloud-init-no-errors owns real failures.
+        const r = runWithStub(
+            `printf 'status: done\\nextended_status: degraded done\\n'; exit 2`
+        )
+        expect(r.status).toBe(0)
+        expect(r.stdout).toMatch(check.expectStdout!)
+        expect(r.stdout).toContain('degraded')
+    })
+
+    test('a real cloud-init failure still fails the check', () => {
+        const r = runWithStub(`printf 'status: error\\n'; exit 1`)
+        expect(r.status).toBe(1)
+    })
+
+    test('exit codes above 2 pass through untouched', () => {
+        // Only 0 and 2 are done states; anything else (including a missing
+        // cloud-init binary's 127) must keep its original exit code.
+        const r = runWithStub(`printf 'status: error\\n'; exit 7`)
+        expect(r.status).toBe(7)
+    })
+})
 
 describe('suite selection', () => {
     test('routes windows recipes to the windows suite', () => {

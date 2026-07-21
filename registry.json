@@ -2,7 +2,7 @@
   "schema_version": "1",
   "name": "Cofoundry Templates",
   "description": "Proxmox VM templates built with Cofoundry",
-  "generated_at": "2026-07-20T10:02:24.005Z",
+  "generated_at": "2026-07-21T01:17:18.429Z",
   "groups": [
     {
       "id": "almalinux",
@@ -13,31 +13,21 @@
           "name": "almalinux-10-amd64",
           "display": "AlmaLinux 10",
           "arch": "amd64",
-          "sha256": "50f9af9a6338919c3f4aa23913cbfc59d873d22771bfe011369f71e0ce298457",
-          "size": 1017383611,
-          "url": "https://cofoundry.cdn.convoypanel.com/templates/almalinux/almalinux-10-amd64/50f9af9a6338919c3f4aa23913cbfc59d873d22771bfe011369f71e0ce298457.vma.zst",
-          "built_at": "2026-07-19T22:12:48Z",
+          "sha256": "164ffeab0835eaf1318294cd549a24dd167989f848e9aeab62a967656e3e2108",
+          "size": 1018024734,
+          "url": "https://cofoundry.cdn.convoypanel.com/templates/almalinux/almalinux-10-amd64/164ffeab0835eaf1318294cd549a24dd167989f848e9aeab62a967656e3e2108.vma.zst",
+          "built_at": "2026-07-20T23:49:01Z",
           "suggested_vmid": 6002
         },
         {
           "name": "almalinux-8-amd64",
           "display": "AlmaLinux 8",
           "arch": "amd64",
-          "sha256": "8339a5f9e4c18abd33b2e8d22d881c848059ad610af354f9c6ee2f3ff6755869",
-          "size": 1357424827,
-          "url": "https://cofoundry.cdn.convoypanel.com/templates/almalinux/almalinux-8-amd64/8339a5f9e4c18abd33b2e8d22d881c848059ad610af354f9c6ee2f3ff6755869.vma.zst",
-          "built_at": "2026-07-19T22:12:22Z",
+          "sha256": "232ff2eea9aecc46322970f8e26b24d013823f6b19c48cee43ea3b554078cd5c",
+          "size": 1356323522,
+          "url": "https://cofoundry.cdn.convoypanel.com/templates/almalinux/almalinux-8-amd64/232ff2eea9aecc46322970f8e26b24d013823f6b19c48cee43ea3b554078cd5c.vma.zst",
+          "built_at": "2026-07-20T23:48:51Z",
           "suggested_vmid": 6000
-        },
-        {
-          "name": "almalinux-9-amd64",
-          "display": "AlmaLinux 9",
-          "arch": "amd64",
-          "sha256": "d36b3c5fc13f35f25ab3150612eb50175f84c855b9225bf1e39b08f06acfefcf",
-          "size": 1224819349,
-          "url": "https://cofoundry.cdn.convoypanel.com/templates/almalinux/almalinux-9-amd64/d36b3c5fc13f35f25ab3150612eb50175f84c855b9225bf1e39b08f06acfefcf.vma.zst",
-          "built_at": "2026-07-19T22:12:41Z",
-          "suggested_vmid": 6001
         }
       ]
     },
@@ -50,31 +40,21 @@
           "name": "debian-11-amd64",
           "display": "Debian 11 (Bullseye)",
           "arch": "amd64",
-          "sha256": "f5935e789c82659fd90b6818d53540dfd705201e381420ce22059196862f3ef8",
-          "size": 476059259,
-          "url": "https://cofoundry.cdn.convoypanel.com/templates/debian/debian-11-amd64/f5935e789c82659fd90b6818d53540dfd705201e381420ce22059196862f3ef8.vma.zst",
-          "built_at": "2026-07-19T22:15:22Z",
+          "sha256": "e97f8589aa5f6a751e9a817c7e50603bbf5941cfaba4353a372b0398425ff670",
+          "size": 466778179,
+          "url": "https://cofoundry.cdn.convoypanel.com/templates/debian/debian-11-amd64/e97f8589aa5f6a751e9a817c7e50603bbf5941cfaba4353a372b0398425ff670.vma.zst",
+          "built_at": "2026-07-20T23:46:34Z",
           "suggested_vmid": 4000
         },
         {
           "name": "debian-12-amd64",
           "display": "Debian 12 (Bookworm)",
           "arch": "amd64",
-          "sha256": "5c7602dbe0f4965088ce0e3de71a5ccb99b5bf1bd1202b7c1ca840209449183e",
-          "size": 544748599,
-          "url": "https://cofoundry.cdn.convoypanel.com/templates/debian/debian-12-amd64/5c7602dbe0f4965088ce0e3de71a5ccb99b5bf1bd1202b7c1ca840209449183e.vma.zst",
-          "built_at": "2026-07-20T08:46:04Z",
+          "sha256": "bd0e56dacbb02545539b2618bd1fe05774c3bc2da98a11ade2aaa6a5f56c396c",
+          "size": 542288569,
+          "url": "https://cofoundry.cdn.convoypanel.com/templates/debian/debian-12-amd64/bd0e56dacbb02545539b2618bd1fe05774c3bc2da98a11ade2aaa6a5f56c396c.vma.zst",
+          "built_at": "2026-07-20T23:49:43Z",
           "suggested_vmid": 4001
-        },
-        {
-          "name": "debian-13-amd64",
-          "display": "Debian 13 (Trixie)",
-          "arch": "amd64",
-          "sha256": "09040157b3f7acd27076a271d1cf176f4b40bbab584c41001cf0754b9cc402d9",
-          "size": 570798265,
-          "url": "https://cofoundry.cdn.convoypanel.com/templates/debian/debian-13-amd64/09040157b3f7acd27076a271d1cf176f4b40bbab584c41001cf0754b9cc402d9.vma.zst",
-          "built_at": "2026-07-20T08:43:23Z",
-          "suggested_vmid": 4002
         }
       ]
     },
@@ -87,31 +67,11 @@
           "name": "rocky-linux-10-amd64",
           "display": "Rocky Linux 10",
           "arch": "amd64",
-          "sha256": "ca28293ea1f0e7764cc4d2240870e176156cfabd692423975e0ea3a5b4753e4e",
-          "size": 1024757615,
-          "url": "https://cofoundry.cdn.convoypanel.com/templates/rocky-linux/rocky-linux-10-amd64/ca28293ea1f0e7764cc4d2240870e176156cfabd692423975e0ea3a5b4753e4e.vma.zst",
-          "built_at": "2026-07-19T22:30:16Z",
+          "sha256": "9698c43944f22d2c09b30f8f0dc53d1ec1edeba9d90d1f7507c68b5a4a8d52a7",
+          "size": 1022658086,
+          "url": "https://cofoundry.cdn.convoypanel.com/templates/rocky-linux/rocky-linux-10-amd64/9698c43944f22d2c09b30f8f0dc53d1ec1edeba9d90d1f7507c68b5a4a8d52a7.vma.zst",
+          "built_at": "2026-07-21T00:03:38Z",
           "suggested_vmid": 5002
-        },
-        {
-          "name": "rocky-linux-8-amd64",
-          "display": "Rocky Linux 8",
-          "arch": "amd64",
-          "sha256": "e4bb9535ec62889028ed23f3885fea2455cc7bbc4cac76aa3cd7952301446fe7",
-          "size": 1354721108,
-          "url": "https://cofoundry.cdn.convoypanel.com/templates/rocky-linux/rocky-linux-8-amd64/e4bb9535ec62889028ed23f3885fea2455cc7bbc4cac76aa3cd7952301446fe7.vma.zst",
-          "built_at": "2026-07-20T08:54:09Z",
-          "suggested_vmid": 5000
-        },
-        {
-          "name": "rocky-linux-9-amd64",
-          "display": "Rocky Linux 9",
-          "arch": "amd64",
-          "sha256": "ac2b7b7884175a20b7b1d68be3243a0628c618abdb07fe3a2c2ad039999e12e5",
-          "size": 1230368546,
-          "url": "https://cofoundry.cdn.convoypanel.com/templates/rocky-linux/rocky-linux-9-amd64/ac2b7b7884175a20b7b1d68be3243a0628c618abdb07fe3a2c2ad039999e12e5.vma.zst",
-          "built_at": "2026-07-19T22:42:32Z",
-          "suggested_vmid": 5001
         }
       ]
     },
@@ -124,78 +84,41 @@
           "name": "ubuntu-22.04-amd64",
           "display": "Ubuntu 22.04 LTS (Jammy Jellyfish)",
           "arch": "amd64",
-          "sha256": "17444a1dcc0cd81bc82d2e20636cef8544868d285c4eb42dbc035db789b21e98",
-          "size": 1319100529,
-          "url": "https://cofoundry.cdn.convoypanel.com/templates/ubuntu/ubuntu-22.04-amd64/17444a1dcc0cd81bc82d2e20636cef8544868d285c4eb42dbc035db789b21e98.vma.zst",
-          "built_at": "2026-07-19T22:44:07Z",
+          "sha256": "f95fd37d8f4bc67d28cb262583211a5f4ff55e0e41e01992bcc9bcdd441f0a7b",
+          "size": 1325870771,
+          "url": "https://cofoundry.cdn.convoypanel.com/templates/ubuntu/ubuntu-22.04-amd64/f95fd37d8f4bc67d28cb262583211a5f4ff55e0e41e01992bcc9bcdd441f0a7b.vma.zst",
+          "built_at": "2026-07-21T00:11:04Z",
           "suggested_vmid": 1002
         },
         {
           "name": "ubuntu-24.04-amd64",
           "display": "Ubuntu 24.04 LTS (Noble Numbat)",
           "arch": "amd64",
-          "sha256": "917a417ee7e50d5a895b20de11d53bdd139ea9d7f4ea82628ab84a68c349b1f9",
-          "size": 1416282253,
-          "url": "https://cofoundry.cdn.convoypanel.com/templates/ubuntu/ubuntu-24.04-amd64/917a417ee7e50d5a895b20de11d53bdd139ea9d7f4ea82628ab84a68c349b1f9.vma.zst",
-          "built_at": "2026-07-19T22:45:36Z",
+          "sha256": "32156c0e0cec646322c08cab4ddcd058632fe3eac423f2972377d08895a8a5f6",
+          "size": 1408546679,
+          "url": "https://cofoundry.cdn.convoypanel.com/templates/ubuntu/ubuntu-24.04-amd64/32156c0e0cec646322c08cab4ddcd058632fe3eac423f2972377d08895a8a5f6.vma.zst",
+          "built_at": "2026-07-21T00:07:13Z",
           "suggested_vmid": 1003
         },
         {
           "name": "ubuntu-25.10-amd64",
           "display": "Ubuntu 25.10 (Questing Quokka)",
           "arch": "amd64",
-          "sha256": "494ac2084a10e74ba2b6829554632fa8a5719beb97dd62aacebb6c2c8de60625",
-          "size": 1545069323,
-          "url": "https://cofoundry.cdn.convoypanel.com/templates/ubuntu/ubuntu-25.10-amd64/494ac2084a10e74ba2b6829554632fa8a5719beb97dd62aacebb6c2c8de60625.vma.zst",
-          "built_at": "2026-07-19T22:54:40Z",
+          "sha256": "46fa64680ba3f61470ef49fcc344823dd151d6000208344b777c861f28f6e6e0",
+          "size": 1542276093,
+          "url": "https://cofoundry.cdn.convoypanel.com/templates/ubuntu/ubuntu-25.10-amd64/46fa64680ba3f61470ef49fcc344823dd151d6000208344b777c861f28f6e6e0.vma.zst",
+          "built_at": "2026-07-21T00:09:55Z",
           "suggested_vmid": 1004
         },
         {
           "name": "ubuntu-26.04-amd64",
           "display": "Ubuntu 26.04 LTS (Resolute Raccoon)",
           "arch": "amd64",
-          "sha256": "b994efd73987cc1f927ba0643b6e6f67a04de22415e266f99515f92ee12cbb8c",
-          "size": 1561062536,
-          "url": "https://cofoundry.cdn.convoypanel.com/templates/ubuntu/ubuntu-26.04-amd64/b994efd73987cc1f927ba0643b6e6f67a04de22415e266f99515f92ee12cbb8c.vma.zst",
-          "built_at": "2026-07-19T22:59:14Z",
+          "sha256": "18a0fe28a6130b4498243a01ea9440ffc4d6c2fc7c68e8dba975521b21eeeaad",
+          "size": 1555437185,
+          "url": "https://cofoundry.cdn.convoypanel.com/templates/ubuntu/ubuntu-26.04-amd64/18a0fe28a6130b4498243a01ea9440ffc4d6c2fc7c68e8dba975521b21eeeaad.vma.zst",
+          "built_at": "2026-07-21T00:22:33Z",
           "suggested_vmid": 1005
-        }
-      ]
-    },
-    {
-      "id": "windows-server",
-      "display_name": "Windows Server",
-      "description": null,
-      "templates": [
-        {
-          "name": "windows-server-2019-amd64",
-          "display": "Windows Server 2019 Datacenter",
-          "arch": "amd64",
-          "sha256": "39aa394c2e47c3a9323c60d2ba8e235660d0528a563fe4ad8c7e772f8784bdf7",
-          "size": 7691870499,
-          "url": "https://cofoundry.cdn.convoypanel.com/templates/windows-server/windows-server-2019-amd64/39aa394c2e47c3a9323c60d2ba8e235660d0528a563fe4ad8c7e772f8784bdf7.vma.zst",
-          "built_at": "2026-07-20T00:29:10Z",
-          "suggested_vmid": 2000
-        },
-        {
-          "name": "windows-server-2022-amd64",
-          "display": "Windows Server 2022 Datacenter",
-          "arch": "amd64",
-          "sha256": "23e714c6e489f734769d91cfbb6e53fab96e5662da5804bf8c190a0cd8a5d161",
-          "size": 6465157456,
-          "url": "https://cofoundry.cdn.convoypanel.com/templates/windows-server/windows-server-2022-amd64/23e714c6e489f734769d91cfbb6e53fab96e5662da5804bf8c190a0cd8a5d161.vma.zst",
-          "built_at": "2026-07-20T02:39:39Z",
-          "suggested_vmid": 2001
-        },
-        {
-          "name": "windows-server-2025-amd64",
-          "display": "Windows Server 2025 Datacenter",
-          "arch": "amd64",
-          "sha256": "ba3f62d129e70248a89f785335c31d368aa9b820fa81d6f0199ea6df1776a8f6",
-          "size": 8454085672,
-          "url": "https://cofoundry.cdn.convoypanel.com/templates/windows-server/windows-server-2025-amd64/ba3f62d129e70248a89f785335c31d368aa9b820fa81d6f0199ea6df1776a8f6.vma.zst",
-          "built_at": "2026-07-20T09:59:35Z",
-          "suggested_vmid": 2002
         }
       ]
     }

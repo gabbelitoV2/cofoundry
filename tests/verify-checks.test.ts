@@ -1,5 +1,8 @@
 import { describe, expect, test } from 'bun:test'
 import { spawnSync } from 'node:child_process'
+import { rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import type { CheckContext, GuestCheck } from '@/verify/checks/types.ts'
 import { checksForPhase, renderScript } from '@/verify/checks/types.ts'
 import { linuxSuite, sshKeyBody } from '@/verify/checks/linux.ts'
@@ -224,17 +227,41 @@ describe('windows checks', () => {
     })
 
     test.skipIf(!pwsh)('every script parses as PowerShell', () => {
-        for (const check of windowsSuite.checks) {
-            const script = renderScript(check, ctx).replace(/'/g, "''")
-            const probe = `$e=$null;[void][System.Management.Automation.Language.Parser]::ParseInput('${script}',[ref]$null,[ref]$e);if($e.Count){$e|%{$_.Message};exit 1}`
+        // One pwsh invocation for the whole suite, not one per check: pwsh
+        // cold-start is ~hundreds of ms, and N of them serially blew bun's 5s
+        // per-test timeout on slower CI runners, failing the step at random.
+        // Each script travels as base64 so no quoting choices are needed, and
+        // the parser id is echoed back on any failure so the offender is named.
+        const items = windowsSuite.checks
+            .map(check => {
+                const b64 = Buffer.from(
+                    renderScript(check, ctx),
+                    'utf8'
+                ).toString('base64')
+                return `@{id='${check.id}';b64='${b64}'}`
+            })
+            .join(',')
+        const program = `$fail=0
+foreach($it in @(${items})){
+  $s=[System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($it.b64))
+  $e=$null
+  [void][System.Management.Automation.Language.Parser]::ParseInput($s,[ref]$null,[ref]$e)
+  if($e.Count){$fail=1;Write-Output ("{0}: {1}" -f $it.id, (($e | ForEach-Object { $_.Message }) -join '; '))}
+}
+exit $fail`
+        const scriptFile = join(tmpdir(), `cf-pwsh-parse-${process.pid}.ps1`)
+        writeFileSync(scriptFile, program)
+        try {
             const result = spawnSync(
                 'pwsh',
-                ['-NoProfile', '-Command', probe],
+                ['-NoProfile', '-File', scriptFile],
                 {
                     encoding: 'utf8',
                 }
             )
-            expect(result.status, `${check.id}: ${result.stdout}`).toBe(0)
+            expect(result.status, result.stdout).toBe(0)
+        } finally {
+            rmSync(scriptFile, { force: true })
         }
     })
 })

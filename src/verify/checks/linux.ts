@@ -192,10 +192,25 @@ exit 1`,
             // First boot does real work (growpart, key regeneration), so a
             // transiently degraded state here is noise. After a clean reboot it
             // is a defect.
+            //
+            // Poll is-system-running rather than trusting `--wait`: that flag
+            // only waits for is-system-running on systemd >= 240, and el8 ships
+            // 239, where it is silently ignored and the command returns
+            // "starting" immediately — failing the post-reboot check on a guest
+            // that was merely still booting.
             id: 'systemd-healthy-first-boot',
             description: 'system reached a running state on first boot',
-            script: `state=$(systemctl is-system-running --wait 2>/dev/null || true)
-case "$state" in running) exit 0 ;; esac
+            script: `i=0
+while :; do
+  state=$(systemctl is-system-running 2>/dev/null || true)
+  case "$state" in
+    running) exit 0 ;;
+    initializing|starting|'') ;;
+    *) break ;;
+  esac
+  i=$((i + 1)); [ "$i" -ge 60 ] && break
+  sleep 3
+done
 echo "system state: $state"
 systemctl --failed --no-pager --no-legend
 exit 1`,
@@ -206,8 +221,17 @@ exit 1`,
         {
             id: 'systemd-healthy',
             description: 'no failed units after a clean reboot',
-            script: `state=$(systemctl is-system-running --wait 2>/dev/null || true)
-case "$state" in running) exit 0 ;; esac
+            script: `i=0
+while :; do
+  state=$(systemctl is-system-running 2>/dev/null || true)
+  case "$state" in
+    running) exit 0 ;;
+    initializing|starting|'') ;;
+    *) break ;;
+  esac
+  i=$((i + 1)); [ "$i" -ge 60 ] && break
+  sleep 3
+done
 echo "system state: $state"
 systemctl --failed --no-pager --no-legend
 exit 1`,

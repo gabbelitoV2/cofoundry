@@ -77,6 +77,42 @@ ceilings if configured higher.
 build invocation. It does not disable the default artifact download to
 `CF_OUT_DIR`.
 
+## Smoke-test a built artifact
+
+```bash
+cf verify ubuntu-24.04
+cf verify windows-server-2025 --level quick   # boot + agent ping only
+```
+
+`cf verify` restores the artifact onto a scratch VMID and exercises it the way a
+user's clone is exercised, rather than merely booting it:
+
+1. **Cloud-init is actually configured.** A sentinel hostname, user, generated
+   password, and generated SSH key are injected, and the disk is grown beyond
+   its shipped size. Booting the template untouched leaves the cloud-init drive
+   empty, so nothing cloud-init is supposed to apply gets exercised at all.
+2. **A battery of in-guest checks runs over `qm guest exec`**, in phases: on the
+   first boot, again after a clean reboot, and — on Windows — after an autologon
+   has painted a desktop. The guest agent answering is the *entry condition* for
+   these checks, not the result: it starts early and is independent of nearly
+   everything a template promises.
+3. **The console framebuffer is sampled.** This needs nothing from the guest, so
+   it is the only check that can see a kernel panic, a GRUB hang, or a desktop
+   that never painted. Outside CI the frame is written to
+   `./diagnostics/verify-<recipe>-<arch>-<timestamp>/` as a gzipped PPM (same
+   format as the build recorder's frames — PVE's qemu is commonly built without
+   libpng).
+
+Checks are declarative data in `src/verify/checks/`, split into a shared Linux
+suite and a Windows suite, with per-recipe overrides keyed by recipe name in
+`src/verify/checks/index.ts`. Adding a regression test for a shipped bug is a
+few lines there and needs no change to the runner. Each check declares a
+severity: `warn` records a finding, `fail` fails the run.
+
+`--level quick` restores, boots, and pings the guest agent — the pre-battery
+behaviour, for fast local loops. `--ci` suppresses framebuffer captures, which
+are unredactable images and must never land in a public repo.
+
 ## Check for upstream ISO changes
 
 Fetches `Last-Modified`/`ETag` headers from each recipe's upstream ISO URL and compares against `upstream-checksums.json`. Prints which recipes have a new upstream image.

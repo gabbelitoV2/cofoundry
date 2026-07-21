@@ -14,6 +14,9 @@ import {
     OWNED_VMID_DIR,
     RUN_LEASE_DIR,
     runLeaseHeartbeatCommand,
+    reapLeasesByPrefixScript,
+    runLeaseId,
+    RUN_LEASE_STALE_SECS,
     sweepRunLeasesScript,
     updateLeaseVmidScript,
 } from '@/build/lease.ts'
@@ -194,5 +197,84 @@ describe('killLeasedRunProcessesCommand', () => {
             { encoding: 'utf8' }
         )
         expect(result.status, result.stderr).toBe(0)
+    })
+})
+
+describe('run-targeted lease reap', () => {
+    test('selects by prefix and, unlike the sweep, applies no age gate', () => {
+        const script = reapLeasesByPrefixScript('12345-1')
+        // The directory is quoted; the prefix and glob deliberately are not, so
+        // the shell still expands the match.
+        expect(script).toContain(`'${RUN_LEASE_DIR}'/12345-1*`)
+        // The whole point: a lease seconds old must still be reaped, because
+        // the run that owned it is known dead.
+        expect(script).not.toContain('stat -c %Y')
+        expect(script).not.toContain(String(RUN_LEASE_STALE_SECS))
+        const result = spawnSync('bash', ['-n'], {
+            input: script,
+            encoding: 'utf8',
+        })
+        expect(result.status, result.stderr).toBe(0)
+    })
+
+    test('frees exactly what the age-gated sweep frees', () => {
+        // Both paths share one reap body, so a resource can never be released
+        // by one and leaked by the other.
+        const targeted = reapLeasesByPrefixScript('12345-1')
+        for (const fragment of [
+            'qm destroy "$vmid"',
+            'pkill -9 -f -- "$tmpdir"',
+            'rm -rf -- "$packer_tmpdir"',
+            'rm -f -- "$lease"',
+            '*/cofoundry-verify-*',
+        ]) {
+            expect(targeted).toContain(fragment)
+            expect(sweepRunLeasesScript()).toContain(fragment)
+        }
+    })
+
+    test('rejects a prefix that would widen the match or escape the directory', () => {
+        // `*` would reap every live build on the node, age gate and all.
+        for (const bad of ['*', '', '../../etc', 'run id', 'a/b', '12345*']) {
+            expect(() => reapLeasesByPrefixScript(bad)).toThrow(
+                /unsafe lease prefix/
+            )
+        }
+    })
+})
+
+describe('runLeaseId', () => {
+    test('is derivable from the CI run alone, without the build reporting it', () => {
+        // A cancelled job is killed with no grace period, so the cleanup job can
+        // only find the lease if it can compute the same id independently.
+        expect(runLeaseId('12345-1', 'build', 'debian-12')).toBe(
+            '12345-1-build-debian-12'
+        )
+        expect(runLeaseId('12345-1', 'verify', 'debian-12')).toBe(
+            '12345-1-verify-debian-12'
+        )
+    })
+
+    test('build and verify of one recipe share the run prefix but not the id', () => {
+        const build = runLeaseId('12345-1', 'build', 'debian-12')
+        const verify = runLeaseId('12345-1', 'verify', 'debian-12')
+        expect(build).not.toBe(verify)
+        expect(build.startsWith('12345-1')).toBe(true)
+        expect(verify.startsWith('12345-1')).toBe(true)
+        // One reap therefore clears both.
+        expect(reapLeasesByPrefixScript('12345-1')).toContain('12345-1*')
+    })
+
+    test('falls back to a random id outside CI', () => {
+        const a = runLeaseId(undefined, 'build', 'debian-12')
+        expect(a).not.toBe(runLeaseId(undefined, 'build', 'debian-12'))
+        expect(a).toMatch(/^[0-9a-f-]{36}$/)
+    })
+
+    test('sanitizes ids so they stay inert as a filename and a glob', () => {
+        const id = runLeaseId('12345/../x *', 'build', 'ubuntu 24.04')
+        expect(id).not.toMatch(/[/*\s]/)
+        // Must survive the prefix validator it will later be matched by.
+        expect(() => reapLeasesByPrefixScript(id)).not.toThrow()
     })
 })

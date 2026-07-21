@@ -87,6 +87,15 @@ so the preseed files stay identical across Debian releases
 Copy the nearest `ks.cfg` and update repository/release details. These builds
 also use the allocated NAT address and ephemeral SSH credentials.
 
+RHEL ships `qemu-guest-agent` with the `guest-exec` RPC denied (Debian and
+Ubuntu permit it), which fails the build smoke test's reboot-and-verify step
+(`src/verify/guest.ts`) with `Command guest-exec has been disabled`. Every
+almalinux/rocky recipe runs `_shared/post/enable-guest-exec.sh` to permit it.
+The deny mechanism differs by release — el8 uses a `BLACKLIST_RPC` block list,
+el9+ a `FILTER_RPC_ARGS="--allow-rpcs=..."` allow list — and the script handles
+both. It must run **after** `dnf update`, because a guest-agent package refresh
+can rewrite `/etc/sysconfig/qemu-ga` back to the shipped defaults.
+
 ### Windows Server
 
 Read [`windows.md`](windows.md) before making any Windows change.

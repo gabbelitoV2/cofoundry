@@ -184,4 +184,39 @@ describe('recipe consistency', () => {
         }
         expect(violations).toEqual([])
     })
+
+    test('RHEL-family recipes enable the guest-exec RPC after updating packages', () => {
+        // RHEL ships qemu-guest-agent with guest-exec denied, which fails the
+        // build smoke test's reboot-and-verify (src/verify/guest.ts). Every
+        // almalinux/rocky recipe must run the shared enabler, and it must run
+        // after `dnf update`, which can otherwise rewrite the config back to
+        // the shipped defaults. Debian/Ubuntu permit guest-exec by default and
+        // are deliberately excluded.
+        const script = join(recipesDir, '_shared/post/enable-guest-exec.sh')
+        expect(existsSync(script)).toBe(true)
+
+        const violations: string[] = []
+        const rhelFamilies = ['almalinux', 'rocky-linux']
+        const members = recipes.filter(recipe =>
+            rhelFamilies.includes(groupOf(recipe) ?? '')
+        )
+        expect(members.length).toBeGreaterThan(0)
+        for (const recipe of members) {
+            const enableAt = recipe.raw.indexOf(
+                '_shared/post/enable-guest-exec.sh'
+            )
+            if (enableAt === -1) {
+                violations.push(
+                    `${recipe.name}: does not run enable-guest-exec.sh`
+                )
+                continue
+            }
+            const updateAt = recipe.raw.indexOf('dnf -y update')
+            if (updateAt === -1 || updateAt > enableAt)
+                violations.push(
+                    `${recipe.name}: enable-guest-exec.sh must run after 'dnf -y update'`
+                )
+        }
+        expect(violations).toEqual([])
+    })
 })

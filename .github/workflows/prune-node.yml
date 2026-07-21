@@ -44,4 +44,8 @@ jobs:
           printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
 
-      - run: bun run cf prune --days 7
+      # Reaps this run's own leases regardless of age, then does the ordinary
+      # age-gated sweep. Without the targeted reap a cancelled build's lease is
+      # only seconds old here and looks healthy, so its VM would survive until
+      # some unrelated later run happened to sweep it.
+      - run: bun run cf prune --days 7 --reap-lease "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"

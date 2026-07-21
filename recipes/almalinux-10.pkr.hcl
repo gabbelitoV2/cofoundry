@@ -181,6 +181,18 @@ build {
     ]
   }
 
+  # RHEL ships qemu-guest-agent with guest-exec denied, which fails the build
+  # smoke test's reboot-and-verify. Enable it here, after 'dnf update', so a
+  # guest-agent package refresh cannot revert the change.
+  provisioner "file" {
+    source      = "${path.root}/_shared/post/enable-guest-exec.sh"
+    destination = "/tmp/enable-guest-exec.sh"
+  }
+
+  provisioner "shell" {
+    inline = ["sudo bash /tmp/enable-guest-exec.sh"]
+  }
+
   provisioner "file" {
     source      = "${path.root}/_shared/cloud-init-cleanup.sh"
     destination = "/tmp/cloud-init-cleanup.sh"

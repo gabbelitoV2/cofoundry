@@ -30,6 +30,11 @@ const EnvSchema = z.object({
     SSH_TARGET: z.string().min(1),
     PVE_DUMP_DIR: z.string().default('/var/lib/vz/dump'),
 
+    // Identifies the CI run owning this invocation's leases, so a cleanup job
+    // can reap them by name after the build process is killed without warning.
+    // Unset outside CI, where lease ids fall back to a random UUID.
+    CF_RUN_ID: z.string().optional(),
+
     CF_OUT_DIR: z.string().default('./dist'),
     CF_SKIP_ARTIFACT_SYNC: z
         .preprocess(v => v === '1' || v === 'true' || v === true, z.boolean())

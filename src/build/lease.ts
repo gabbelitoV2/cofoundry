@@ -52,6 +52,34 @@ type LeaseRequest = {
 
 const leasePath = (id: string): string => `${RUN_LEASE_DIR}/${id}`
 
+/**
+ * The lease id doubles as its filename, so deriving it from a caller-supplied
+ * run id makes a run's leases findable by anything that knows the run — without
+ * the process having to report anything.
+ *
+ * That matters because the case this exists for is the process being killed
+ * outright: a cancelled CI job gets no grace period and loses its network
+ * before it could publish an id anywhere. `CF_RUN_ID` is known to the CI job
+ * that cleans up, independently of whether the build survived long enough to
+ * say anything.
+ *
+ * Kind and recipe keep runs that build several recipes, or build then verify,
+ * from colliding on one id while staying under the run's prefix.
+ */
+export const runLeaseId = (
+    runId: string | undefined,
+    kind: LeaseRequest['kind'],
+    recipeName: string
+): string =>
+    runId
+        ? `${sanitizeIdPart(runId)}-${kind}-${sanitizeIdPart(recipeName)}`
+        : randomUUID()
+
+// The id becomes a filename and a glob operand; keep it to characters that are
+// inert in both.
+const sanitizeIdPart = (value: string): string =>
+    value.replace(/[^A-Za-z0-9._]+/g, '-')
+
 const leaseRecord = (request: LeaseRequest, vmid: number): string =>
     [
         request.kind,
@@ -66,19 +94,15 @@ const leaseRecord = (request: LeaseRequest, vmid: number): string =>
     ].join('\t')
 
 /**
- * Shell shared by admission and prune. A stale lease means its runner stopped
- * heartbeating; reap only resources named by that lease, then remove it.
+ * The destroy half of a reap. Expects `$lease` to name an existing lease file;
+ * frees only the resources that lease records, then unlinks it.
+ *
+ * Shared by the age-gated sweep and the run-targeted reap so there is exactly
+ * one implementation of "what a lease owns".
  */
-export const sweepRunLeasesScript = (
-    staleSeconds = RUN_LEASE_STALE_SECS
-): string => `
-now=$(date +%s)
-for lease in ${shellQuote(RUN_LEASE_DIR)}/*; do
-    [ -f "$lease" ] || continue
-    modified=$(stat -c %Y "$lease" 2>/dev/null || echo "$now")
-    [ "$((now - modified))" -gt ${staleSeconds} ] || continue
+const reapLeaseBody = (reason: string): string => `
     IFS=$'\\t' read -r kind recipe vmid memory cores tmpdir preserve_vm storage packer_tmpdir < "$lease" || true
-    echo "reaping stale cofoundry $kind lease \${lease##*/} ($recipe)" >&2
+    echo "reaping ${reason} cofoundry $kind lease \${lease##*/} ($recipe)" >&2
     if [ "$preserve_vm" != 1 ]; then
         case "$vmid" in
             ''|0|*[!0-9]*) ;;
@@ -110,8 +134,55 @@ for lease in ${shellQuote(RUN_LEASE_DIR)}/*; do
         ${PACKER_TMP_ROOT}/*) rm -rf -- "$packer_tmpdir" ;;
     esac
     rm -f -- "$lease"
+`
+
+/**
+ * Shell shared by admission and prune. A stale lease means its runner stopped
+ * heartbeating; reap only resources named by that lease, then remove it.
+ */
+export const sweepRunLeasesScript = (
+    staleSeconds = RUN_LEASE_STALE_SECS
+): string => `
+now=$(date +%s)
+for lease in ${shellQuote(RUN_LEASE_DIR)}/*; do
+    [ -f "$lease" ] || continue
+    modified=$(stat -c %Y "$lease" 2>/dev/null || echo "$now")
+    [ "$((now - modified))" -gt ${staleSeconds} ] || continue
+${reapLeaseBody('stale')}
 done
 `
+
+/**
+ * A lease id prefix is used to select leases for the run-targeted reap, so it
+ * reaches a glob and a `rm -rf` path. Anything outside this set could escape
+ * the lease directory or widen the match — `*` alone would reap every live
+ * build on the node, age gate and all.
+ */
+const SAFE_LEASE_PREFIX = /^[A-Za-z0-9._-]+$/
+
+/**
+ * Reap every lease whose id starts with `prefix`, **ignoring age**.
+ *
+ * The age gate exists so the generic sweep can never reap a build that is still
+ * heartbeating. That gate is unusable for cleaning up after a run that just
+ * died: CI cleanup fires seconds later, when the lease still looks perfectly
+ * healthy, and no threshold low enough to catch it would be safe for other
+ * builds. Identity replaces age — the caller must name one run, which is why
+ * the prefix carries a run id and attempt rather than something like a recipe
+ * name that a concurrent build could share.
+ */
+export const reapLeasesByPrefixScript = (prefix: string): string => {
+    if (!SAFE_LEASE_PREFIX.test(prefix))
+        throw new Error(
+            `unsafe lease prefix ${JSON.stringify(prefix)}: expected only letters, digits, dot, dash, underscore`
+        )
+    return `
+for lease in ${shellQuote(RUN_LEASE_DIR)}/${prefix}*; do
+    [ -f "$lease" ] || continue
+${reapLeaseBody('orphaned')}
+done
+`
+}
 
 export const buildLeaseAdmissionScript = (
     env: Pick<Env, 'CF_BUILD_MEMORY_BUDGET_MB' | 'CF_BUILD_CPU_BUDGET'>,
@@ -254,7 +325,7 @@ export const acquireRunLease = async (
         )
     }
     const request: LeaseRequest = {
-        id: randomUUID(),
+        id: runLeaseId(env.CF_RUN_ID, kind, recipe.name),
         kind,
         recipe,
         remoteTmpDir,

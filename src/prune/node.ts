@@ -13,6 +13,7 @@ import {
     OWNED_VMID_DIR,
     RUN_LEASE_DIR,
     RUN_LEASE_LOCK,
+    reapLeasesByPrefixScript,
     sweepRunLeasesScript,
 } from '@/build/lease.ts'
 
@@ -30,6 +31,13 @@ const VIRTIO_WIN_ISO_GLOB = 'packer-virtio-win*.iso'
 export interface PruneOptions {
     days: number
     dryRun: boolean
+    /**
+     * Reap every lease under this id prefix regardless of age, before the
+     * age-gated sweep. Set by a CI cleanup job to clear resources left by its
+     * own run after the build process was killed without a chance to release
+     * them. See `reapLeasesByPrefixScript`.
+     */
+    reapLeasePrefix?: string
 }
 
 const ssh = async (target: string, cmd: string): Promise<string> => {
@@ -566,7 +574,7 @@ const runCleanLocked = async (
  */
 export const runPrune = async (
     env: Env,
-    { days, dryRun }: PruneOptions
+    { days, dryRun, reapLeasePrefix }: PruneOptions
 ): Promise<void> => {
     log.section(`Prune ${dim('·')} ${accent(env.SSH_TARGET)}`)
     const maintenance = await acquireRemoteMaintenanceLock(
@@ -575,7 +583,7 @@ export const runPrune = async (
     )
     try {
         await Promise.race([
-            runPruneLocked(env, { days, dryRun }),
+            runPruneLocked(env, { days, dryRun, reapLeasePrefix }),
             maintenance.lost,
         ])
     } finally {
@@ -585,7 +593,7 @@ export const runPrune = async (
 
 const runPruneLocked = async (
     env: Env,
-    { days, dryRun }: PruneOptions
+    { days, dryRun, reapLeasePrefix }: PruneOptions
 ): Promise<void> => {
     const paths = remotePaths(env)
     if (dryRun) log.warn('dry-run: no files will be deleted')
@@ -594,9 +602,16 @@ const runPruneLocked = async (
     // of a run's VM and private scratch. Active lease VMIDs remain protected by
     // the age-gated legacy sweep below.
     if (!dryRun) {
+        // The targeted reap runs first and ignores age: it names one run, whose
+        // orchestrator is known dead, so waiting out the stale window would only
+        // leave its VM burning node capacity.
+        const reap = reapLeasePrefix
+            ? reapLeasesByPrefixScript(reapLeasePrefix)
+            : ''
+        if (reap) log.step(`reaping leases for run ${reapLeasePrefix}`)
         await ssh(
             env.SSH_TARGET,
-            `mkdir -p ${shellQuote(RUN_LEASE_DIR)}; exec 9>${shellQuote(RUN_LEASE_LOCK)}; flock -x 9; ${sweepRunLeasesScript()}`
+            `mkdir -p ${shellQuote(RUN_LEASE_DIR)}; exec 9>${shellQuote(RUN_LEASE_LOCK)}; flock -x 9; ${reap}${sweepRunLeasesScript()}`
         )
     }
 

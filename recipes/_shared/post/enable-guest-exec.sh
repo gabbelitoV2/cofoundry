@@ -45,15 +45,21 @@ if grep -qE '^[[:space:]]*BLACKLIST_RPC=' "$cfg"; then
     fi
     echo "==> removed guest-exec from BLACKLIST_RPC"
 elif grep -qE '^[[:space:]]*FILTER_RPC_ARGS=.*--allow-rpcs=' "$cfg"; then
-    # el9/el10 allow-list: ensure both RPCs are present. The trailing [,"]
-    # bound is what distinguishes an existing guest-exec from guest-exec-status.
+    # el9/el10 allow-list: ensure both RPCs are present. Membership must be
+    # tested against the *active* assignment only, never the whole file: the
+    # shipped file documents guest-exec in a commented-out example --block-rpcs
+    # line, and matching that comment would make us skip the append yet still
+    # "verify" success. The active line is the one starting with the bare key
+    # (a comment starts with '#', so it is excluded). The trailing [,"] bound
+    # distinguishes an existing guest-exec from guest-exec-status.
+    active() { grep -E '^[[:space:]]*FILTER_RPC_ARGS=' "$cfg"; }
     for rpc in guest-exec guest-exec-status; do
-        if ! grep -qE -- "[=,]${rpc}[,\"]" "$cfg"; then
+        if ! active | grep -qE -- "[=,]${rpc}[,\"]"; then
             # Append inside the allow-rpcs value only, stopping at the first
             # space or quote so a second --arg (if any) is untouched.
             sed -i -E "/^[[:space:]]*FILTER_RPC_ARGS=/ s/(--allow-rpcs=[^\" ]*)/\1,${rpc}/" "$cfg"
         fi
-        if ! grep -qE -- "[=,]${rpc}[,\"]" "$cfg"; then
+        if ! active | grep -qE -- "[=,]${rpc}[,\"]"; then
             echo "ERROR: ${rpc} not present in allow-rpcs after edit" >&2
             exit 1
         fi

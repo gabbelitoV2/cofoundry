@@ -23,8 +23,9 @@ const SECRET_BEARING_PATHS = [
     'C:\\Windows\\Temp\\cb-sysprep-unattend.xml',
 ]
 
-const psList = (items: string[]): string =>
-    items.map(i => `'${i.replace(/'/g, "''")}'`).join(',')
+const psQuote = (s: string): string => `'${s.replace(/'/g, "''")}'`
+
+const psList = (items: string[]): string => items.map(psQuote).join(',')
 
 export const windowsSuite: CheckSuite = {
     shell: 'powershell',
@@ -52,16 +53,31 @@ if ($s -ne 7) {
             phase: 'first-boot',
         },
         {
+            // Assert real completion, not the absence of any ERROR line.
+            // Cloudbase-Init logs benign ERRORs on every Proxmox clone that are
+            // not failures: the --ciuser/--cipassword we set render as a
+            // #cloud-config user_data whose modules it does not implement
+            // ("Plugin '...' is currently not supported"), and it tries the Debian
+            // netcfg parser first on Proxmox's network config ("Invalid Debian
+            // config to parse"). A genuine plugin failure is logged as
+            // "plugin '<name>' failed with error"; a CRITICAL is always one. The
+            // original 2019 hang is caught by the completion assertion — it looped
+            // "Waiting for sysprep completion" forever and never reached the end.
             id: 'cloudbase-init-completed',
-            description: 'Cloudbase-Init ran with no plugin failures',
+            description:
+                'Cloudbase-Init ran to completion with no plugin failures',
             script: `$log = 'C:\\Program Files\\Cloudbase Solutions\\Cloudbase-Init\\log\\cloudbase-init.log'
 if (-not (Test-Path $log)) {
   Write-Output 'cloudbase-init.log missing — the service never ran'
   exit 1
 }
-$bad = Select-String -Path $log -Pattern 'ERROR','CRITICAL','Waiting for sysprep completion'
-if ($bad) {
-  $bad | Select-Object -First 20 | ForEach-Object { Write-Output $_.Line }
+$failed = Select-String -Path $log -Pattern "plugin '[^']+' failed with error", 'CRITICAL'
+if ($failed) {
+  $failed | Select-Object -First 20 | ForEach-Object { Write-Output $_.Line }
+  exit 1
+}
+if (-not (Select-String -Path $log -Pattern 'Plugins execution done')) {
+  Write-Output 'Cloudbase-Init did not finish (no "Plugins execution done") — likely still waiting for sysprep completion'
   exit 1
 }`,
             severity: 'fail',
@@ -153,6 +169,95 @@ if ($s.StartType -ne 'Automatic') { exit 1 }`,
             phase: 'first-boot',
         },
         {
+            // The direct regression test for the password-overwrite defect:
+            // when the specialize-pass cloudbase run consumes
+            // SetUserPasswordPlugin's run-once slot, the oobeSystem pass
+            // re-seeds the build's throwaway password afterwards and the
+            // cloud-init password never validates (verified live on 2025,
+            // 2026-07-21). Checked directly so it fails here by name, not ten
+            // minutes later as a mysterious autologon that never appears.
+            // The password itself is never echoed.
+            id: 'cipassword-validates',
+            description: 'the cloud-init password authenticates the ci user',
+            script: ctx => `Add-Type -AssemblyName System.DirectoryServices.AccountManagement
+$ct = [System.DirectoryServices.AccountManagement.ContextType]::Machine
+$pc = New-Object System.DirectoryServices.AccountManagement.PrincipalContext($ct)
+$ok = $pc.ValidateCredentials(${psQuote(ctx.ciUser)}, ${psQuote(ctx.ciPassword)})
+Write-Output "ValidateCredentials(${ctx.ciUser})=$ok"
+if (-not $ok) {
+  Write-Output 'cloud-init password does not validate — oobeSystem likely re-applied the seeded build password after cloudbase set it'
+  exit 1
+}`,
+            severity: 'fail',
+            phase: 'first-boot',
+            timeoutS: 120,
+        },
+        {
+            // Install.ps1 suppresses WU auto-update/auto-reboot for the build;
+            // Finalize.ps1 must restore Windows' defaults before export. A
+            // regression there ships templates that silently never update.
+            id: 'wu-policy-restored',
+            description:
+                'Windows Update automatic-reboot defaults are restored',
+            script: `$bad = @()
+$au = 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate\\AU'
+if (Test-Path $au) {
+  $v = Get-ItemProperty $au -ErrorAction SilentlyContinue
+  if ($v.NoAutoUpdate -eq 1) { $bad += 'AU policy still sets NoAutoUpdate=1' }
+  if ($v.NoAutoRebootWithLoggedOnUsers -eq 1) { $bad += 'AU policy still sets NoAutoRebootWithLoggedOnUsers=1' }
+}
+foreach ($t in @('Reboot', 'Reboot_AC', 'Reboot_Battery')) {
+  $task = Get-ScheduledTask -TaskPath '\\Microsoft\\Windows\\UpdateOrchestrator\\' -TaskName $t -ErrorAction SilentlyContinue
+  if ($task -and $task.State -eq 'Disabled') { $bad += "UpdateOrchestrator\\$t is still disabled" }
+}
+if ($bad) {
+  $bad | ForEach-Object { Write-Output $_ }
+  exit 1
+}
+Write-Output 'WU update/reboot defaults in place'`,
+            severity: 'fail',
+            phase: 'first-boot',
+            timeoutS: 120,
+        },
+        {
+            // PreFinalize.ps1 disables the pagefile so Finalize's zero pass can
+            // compact that space; Finalize re-enables system management before
+            // sysprep. If that restore regresses, clones run with no pagefile.
+            id: 'pagefile-restored',
+            description: 'the system-managed pagefile is back on the clone',
+            script: `$cs = Get-CimInstance Win32_ComputerSystem
+Write-Output "AutomaticManagedPagefile=$($cs.AutomaticManagedPagefile)"
+if (-not $cs.AutomaticManagedPagefile) {
+  Write-Output 'pagefile left disabled by the build'
+  exit 1
+}
+if (-not [System.IO.File]::Exists('C:\\pagefile.sys')) {
+  Write-Output 'pagefile.sys was not recreated at boot'
+  exit 1
+}`,
+            severity: 'warn',
+            phase: 'first-boot',
+        },
+        {
+            // The build may now run sysprep /generalize up to twice (the armed-
+            // reseal gate retries once), and each generalize consumes a
+            // licensing rearm. Headroom left on the shipped template is what a
+            // user's own sysprep of a clone would draw from.
+            id: 'rearm-headroom',
+            description: 'the template ships with licensing rearms remaining',
+            script: `$out = cscript.exe //nologo C:\\Windows\\System32\\slmgr.vbs /dlv 2>&1 | Out-String
+$m = [regex]::Match($out, 'Windows rearm count:\\s*(\\d+)')
+if (-not $m.Success) {
+  Write-Output 'could not read the rearm count from slmgr /dlv'
+  exit 1
+}
+Write-Output "remaining Windows rearm count: $($m.Groups[1].Value)"
+if ([int]$m.Groups[1].Value -lt 1) { exit 1 }`,
+            severity: 'warn',
+            phase: 'first-boot',
+            timeoutS: 120,
+        },
+        {
             // Cloudbase-Init applies the hostname and reboots to make it stick,
             // so this is only meaningful once the guest has come back up.
             // Windows uppercases and truncates to 15 chars — compare loosely.
@@ -184,13 +289,53 @@ if ($c.Size -lt $want) { exit 1 }`,
             phase: 'post-reboot',
         },
         {
+            // "Automatic and not running" is NOT evidence that a service failed
+            // to start, which is what this check claims to assert. Many stock
+            // Windows services are Automatic and either self-stop when idle or
+            // wait on a start trigger, so the old Get-Service query warned on
+            // every run of all three recipes and needed a hand-maintained
+            // denylist to stay even partly quiet. A warning that always fires
+            // trains the reader to ignore the check.
+            //
+            // Measured 2026-08-04 (jobs 91871497339 / 91872787400), the flagged
+            // set was CDPSvc, DPS, MSDTC, StorSvc, UALSVC, UsoSvc and
+            // cloudbase-init — all benign. Reading their config offline from a
+            // clone disk shows no start-type property separates them from a
+            // real failure:
+            //
+            //   service         Start  DelayedAutostart  TriggerInfo
+            //   CDPSvc          Auto   -                 yes
+            //   DPS             Auto   -                 -
+            //   MSDTC           Auto   1                 -
+            //   StorSvc         Auto   1                 yes
+            //   UALSVC          Auto   -                 -
+            //   UsoSvc          Auto   -                 -
+            //   cloudbase-init  Auto   -                 -
+            //
+            // Filtering on DelayedAutoStart silences only MSDTC and StorSvc;
+            // adding trigger-start adds CDPSvc. DPS/UALSVC/UsoSvc are plain
+            // Automatic services that simply are not running, and no amount of
+            // start-type inspection makes them distinguishable from a failure.
+            //
+            // So ask the question directly. Win32_Service.ExitCode is the
+            // service's own last exit status: 0 means it ran and stopped
+            // cleanly, 1077 (ERROR_SERVICE_NEVER_STARTED) means it has not been
+            // started this boot, and anything else is a genuine start failure.
+            // That is the signal the description promises, and it needs no
+            // denylist — every name above reports 0 or 1077.
+            //
+            // NOT yet observed on a live clone: ExitCode is runtime state, so it
+            // cannot be read offline the way the table above was. Severity stays
+            // warn, so the cost of being wrong is noise rather than a failed
+            // build, and any survivor is named with its exit code.
             id: 'no-critical-service-failures',
             description: 'no automatic-start service failed to start',
-            script: `$bad = Get-Service | Where-Object { $_.StartType -eq 'Automatic' -and $_.Status -ne 'Running' }
-# DelayedAutoStart services are legitimately not running yet at this point.
-$bad = $bad | Where-Object { $_.Name -notin @('gpsvc','sppsvc','MapsBroker','WbioSrvc','tiledatamodelsvc','RemoteRegistry','edgeupdate') }
+            script: `$bad = Get-CimInstance Win32_Service | Where-Object {
+  $_.StartMode -eq 'Auto' -and $_.State -ne 'Running' -and
+  $_.ExitCode -ne 0 -and $_.ExitCode -ne 1077
+}
 if ($bad) {
-  $bad | ForEach-Object { Write-Output "not running: $($_.Name) ($($_.DisplayName))" }
+  $bad | ForEach-Object { Write-Output "failed to start: $($_.Name) ($($_.DisplayName)) exitCode=$($_.ExitCode)" }
   exit 1
 }`,
             severity: 'warn',

@@ -1,7 +1,11 @@
 import { describe, expect, test } from 'bun:test'
 import type { RecipeInfo } from '@/config.ts'
 import type { Env } from '@/env.ts'
-import { runPipeline, type PipelineDependencies } from '@/build/pipeline.ts'
+import {
+    runPipeline,
+    stripPackerBuildPrefix,
+    type PipelineDependencies,
+} from '@/build/pipeline.ts'
 
 const env = {} as Env
 const recipe = {
@@ -218,6 +222,80 @@ describe('runPipeline', () => {
         // The banner must be re-logged AFTER the teardown noise so the summary
         // ring buffer ends on the created template, not the benign warning.
         expect(bannerIdx).toBeGreaterThan(noiseIdx)
+    })
+
+    test('strips the redundant packer builder prefix, keeping the step marker', () => {
+        expect(
+            stripPackerBuildPrefix(
+                '==> proxmox-iso.windows-server-2019: downloading 5 update(s)',
+                'windows-server-2019'
+            )
+        ).toBe('==> downloading 5 update(s)')
+        // Indented sub-output arrives without the `==>` marker after trimming.
+        expect(
+            stripPackerBuildPrefix(
+                'proxmox-iso.windows-server-2019:     download 11%',
+                'windows-server-2019'
+            )
+        ).toBe('download 11%')
+    })
+
+    test('sees past packer’s color codes and keeps them', () => {
+        // Packer colors its output even when redirected to a file, so the SGR
+        // escape — not `==>` — starts the line. Bytes copied from CI run
+        // 30868276107, job 91866880126.
+        expect(
+            stripPackerBuildPrefix(
+                '\u001b[1;32m==> proxmox-iso.rocky-linux-10: Waiting 15s for boot\u001b[0m',
+                'rocky-linux-10'
+            )
+        ).toBe('\u001b[1;32m==> Waiting 15s for boot\u001b[0m')
+        // Sub-output: no step marker, and the indent sits inside the escape.
+        expect(
+            stripPackerBuildPrefix(
+                '\u001b[1;32m    proxmox-iso.rocky-linux-10: status: disabled\u001b[0m',
+                'rocky-linux-10'
+            )
+        ).toBe('\u001b[1;32mstatus: disabled\u001b[0m')
+    })
+
+    test('collapses a provisioner step marker onto packer’s', () => {
+        // `recipes/_shared/**` scripts echo their own `==> `; once the builder
+        // prefix between the two markers is gone they would read `==> ==> x`.
+        expect(
+            stripPackerBuildPrefix(
+                '==> proxmox-iso.rocky-linux-10: ==> Updating packages',
+                'rocky-linux-10'
+            )
+        ).toBe('==> Updating packages')
+        // A marker inside the message, not at the front, is left alone.
+        expect(
+            stripPackerBuildPrefix(
+                '==> proxmox-iso.rocky-linux-10: done ==> next',
+                'rocky-linux-10'
+            )
+        ).toBe('==> done ==> next')
+        // Same collapse when the pair is behind a color escape.
+        expect(
+            stripPackerBuildPrefix(
+                '\u001b[1;32m==> proxmox-iso.rocky-linux-10: ==> Updating packages\u001b[0m',
+                'rocky-linux-10'
+            )
+        ).toBe('\u001b[1;32m==> Updating packages\u001b[0m')
+    })
+
+    test('leaves other builder-shaped text untouched', () => {
+        // A different source name must not be stripped.
+        expect(
+            stripPackerBuildPrefix(
+                '==> proxmox-iso.debian-12: booting',
+                'windows-server-2019'
+            )
+        ).toBe('==> proxmox-iso.debian-12: booting')
+        // Genuine `word.word:` content in a message is preserved.
+        expect(
+            stripPackerBuildPrefix('config.yaml: parsed', 'windows-server-2019')
+        ).toBe('config.yaml: parsed')
     })
 
     test('rejects duplicate recipes in a parallel build', async () => {

@@ -75,7 +75,30 @@ locals {
   # local drives the guest-side partition shrink (Finalize.ps1).
   final_disk_size = "32G"
 
-  ps_execute = "powershell -executionpolicy bypass \"& { $ErrorActionPreference='Stop'; $_p='{{.Path}}'; $_v='{{.Vars}}'; $_dl=[DateTime]::Now.AddSeconds(120); while ((-not (Test-Path $_p) -or -not (Test-Path $_v)) -and [DateTime]::Now -lt $_dl) { Start-Sleep 2 }; . $_v; & $_p; exit $LastExitCode }\""
+  ps_execute = "powershell -executionpolicy bypass \"& { $ErrorActionPreference='Stop'; $_p='{{.Path}}'; $_v='{{.Vars}}'; $_dl=[DateTime]::Now.AddSeconds(300); while ((-not (Test-Path $_p) -or -not (Test-Path $_v)) -and [DateTime]::Now -lt $_dl) { Start-Sleep 2 }; if (-not (Test-Path $_p)) { Write-Host ('PROVISIONER ERROR: script never arrived at ' + $_p + ' - the upload did not land within 300s'); exit 1 }; if (-not (Test-Path $_v)) { Write-Host ('PROVISIONER ERROR: env-vars file never arrived at ' + $_v + ' - the upload did not land within 300s'); exit 1 }; try { . $_v; & $_p } catch { Write-Host ('PROVISIONER ERROR: ' + $_.Exception.Message); exit 1 }; if ($LastExitCode) { exit $LastExitCode }; exit 0 }\""
+
+  # Gating on the pending-reboot flags alone is NOT enough. On 2026-08-02 a 2022
+  # build was caught rebooting TWICE after round one, 79 seconds apart, with the
+  # flags already clear the whole time:
+  #
+  #   13:21:15  BOOT TIME CHANGED 11:00:10 -> 13:20:44   (packer's restart)
+  #   13:21:29  cbsPending=False wuPending=False servicingRunning=True
+  #   13:22:27  BOOT TIME CHANGED 13:20:44 -> 13:22:03   (second, unsolicited)
+  #   13:24:48  cbsPending=False wuPending=False servicingRunning=False
+  #
+  # The flags describe work already *queued*; they say nothing about servicing
+  # still executing. TiWorker/TrustedInstaller running is the signal that another
+  # restart may still be coming, so the process check has to stay alongside them.
+  # Without it packer resumed into that window and the uploaded provisioner script
+  # was destroyed by the second reboot ("script never arrived within 300s").
+  # Packer's default restart check reports "restarted" the instant WinRM answers,
+  # which after a cumulative update is while Windows is still committing the
+  # update (TiWorker/TrustedInstaller saturating the disk). Provisioning into
+  # that window is what broke the 2026-08-01 builds: the uploaded script had not
+  # landed in C:\Windows\Temp yet on 2022 ("is not recognized"), and the round-two
+  # update scan was killed mid-flight on 2025. Hold the restart open until
+  # servicing is actually idle. See docs/windows.md#post-update-restart-settling.
+  restart_check = "powershell -Command \"& { if (Test-Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Component Based Servicing\\RebootPending') { exit 1 }; if (Test-Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\WindowsUpdate\\Auto Update\\RebootRequired') { exit 1 }; if (Get-ItemProperty 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Session Manager' -Name PendingFileRenameOperations -ErrorAction SilentlyContinue) { exit 1 }; if (Get-Process -Name TiWorker,TrustedInstaller -ErrorAction SilentlyContinue) { exit 1 }; if (((Get-Date) - (Get-CimInstance Win32_OperatingSystem).LastBootUpTime).TotalSeconds -lt 180) { exit 1 }; Write-Output 'restarted.' }\""
 }
 
 source "proxmox-iso" "windows-server-2025" {
@@ -177,8 +200,20 @@ source "proxmox-iso" "windows-server-2025" {
   # winrm_timeout (45m) expires. Blanket ~60s with a press every 2s so a slow
   # POST can't fall outside the window; stray <enter>s during WinPE load are
   # harmless (autounattend drives Setup non-interactively).
-  boot_wait    = "2s"
-  boot_command = ["<enter><wait2><enter><wait2><enter><wait2><enter><wait2><enter><wait2><enter><wait2><enter><wait2><enter><wait2><enter><wait2><enter><wait2><enter><wait2><enter><wait2><enter><wait2><enter><wait2><enter><wait2><enter><wait2><enter><wait2><enter><wait2><enter><wait2><enter><wait2><enter><wait2><enter><wait2><enter><wait2><enter><wait2><enter><wait2><enter><wait2><enter><wait2><enter><wait2><enter><wait2><enter><wait2>"]
+  boot_wait = "2s"
+  # <up>, not <enter>. OVMF accepts any keystroke at "Press any key to boot from
+  # CD or DVD", but this blanket keeps typing for ~60s -- long after WinPE's GUI
+  # has loaded. The "Installing Windows Server" screen has a single focusable
+  # Cancel button, so a stray <enter> presses it and opens a quit-confirmation
+  # modal; if the modal opens on the burst's last keystroke nothing dismisses it
+  # and Setup sits blocked until winrm_timeout. That is the documented
+  # "Timeout waiting for WinRM" at ~46m14s (docs/windows.md), seen again
+  # 2026-08-03. <up> still satisfies OVMF but only moves focus in the GUI, so it
+  # cannot activate Cancel.
+  #
+  # If OVMF ever stops honouring it the failure is loud and immediate -- "no
+  # bootable device" within a couple of minutes -- not a 46-minute stall.
+  boot_command = ["<up><wait2><up><wait2><up><wait2><up><wait2><up><wait2><up><wait2><up><wait2><up><wait2><up><wait2><up><wait2><up><wait2><up><wait2><up><wait2><up><wait2><up><wait2><up><wait2><up><wait2><up><wait2><up><wait2><up><wait2><up><wait2><up><wait2><up><wait2><up><wait2><up><wait2><up><wait2><up><wait2><up><wait2><up><wait2><up><wait2>"]
 
   communicator   = "winrm"
   winrm_host     = var.build_ip
@@ -200,44 +235,61 @@ build {
 
   provisioner "powershell" {
     execute_command = local.ps_execute
+    max_retries     = 2
     script          = "${path.root}/_shared/windows/Install.ps1"
   }
   provisioner "windows-restart" {
-    restart_timeout = "30m"
+    restart_check_command = local.restart_check
+    restart_timeout       = "30m"
   }
 
   provisioner "powershell" {
     pause_before    = "30s"
     execute_command = local.ps_execute
+    max_retries     = 2
     script          = "${path.root}/_shared/windows/WU.ps1"
   }
   provisioner "windows-restart" {
-    restart_timeout = "90m"
-    restart_command = "powershell -Command \"if (Test-Path 'C:/Windows/Temp/tb-wu-reboot.flag') { Remove-Item 'C:/Windows/Temp/tb-wu-reboot.flag' -Force; shutdown /r /f /t 5 /c 'packer wu reboot' } else { exit 0 }\""
+    restart_check_command = local.restart_check
+    restart_timeout       = "90m"
+    restart_command       = "powershell -Command \"if (Test-Path 'C:/Windows/Temp/tb-wu-reboot.flag') { Remove-Item 'C:/Windows/Temp/tb-wu-reboot.flag' -Force; shutdown /r /f /t 5 /c 'packer wu reboot' } else { exit 0 }\""
   }
 
   provisioner "powershell" {
     pause_before    = "30s"
     execute_command = local.ps_execute
+    max_retries     = 2
     script          = "${path.root}/_shared/windows/WU.ps1"
   }
   provisioner "windows-restart" {
-    restart_timeout = "90m"
-    restart_command = "powershell -Command \"if (Test-Path 'C:/Windows/Temp/tb-wu-reboot.flag') { Remove-Item 'C:/Windows/Temp/tb-wu-reboot.flag' -Force; shutdown /r /f /t 5 /c 'packer wu reboot' } else { exit 0 }\""
+    restart_check_command = local.restart_check
+    restart_timeout       = "90m"
+    restart_command       = "powershell -Command \"if (Test-Path 'C:/Windows/Temp/tb-wu-reboot.flag') { Remove-Item 'C:/Windows/Temp/tb-wu-reboot.flag' -Force; shutdown /r /f /t 5 /c 'packer wu reboot' } else { exit 0 }\""
   }
 
   provisioner "powershell" {
     pause_before    = "30s"
     execute_command = local.ps_execute
+    max_retries     = 2
     script          = "${path.root}/_shared/windows/PreFinalize.ps1"
   }
   provisioner "windows-restart" {
-    restart_timeout = "15m"
+    restart_check_command = local.restart_check
+    restart_timeout       = "30m"
   }
 
+  # Finalize is the one provisioner with NO max_retries, unlike every provisioner
+  # above it. It runs sysprep /generalize, and its own arming gate already
+  # retries that once (maxAttempts=2 in Finalize.ps1). A max_retries here
+  # MULTIPLIES with that loop -- packer's `2` means two *retries*, so three runs
+  # of the script and up to SIX generalizes. Each generalize consumes a licensing
+  # rearm, and cf verify's rearm-headroom check already warns on 2025. A retry
+  # would also re-run `dism /ResetBase` and reinstall the Cloudbase-Init MSI over
+  # an already-generalized image, which nothing here is designed for. Retrying
+  # the whole build is CF_BUILD_ATTEMPTS' job, not this provisioner's.
   provisioner "powershell" {
-    pause_before     = "30s"
-    execute_command  = local.ps_execute
+    pause_before    = "30s"
+    execute_command = local.ps_execute
     environment_vars = [
       "CF_FINAL_DISK_SIZE=${local.final_disk_size}",
       # Seeds <AdministratorPassword> in the sysprep answer file so OOBE completes
@@ -245,7 +297,7 @@ build {
       # password on first boot; it is the fallback if that injection fails.
       "CF_ADMIN_PASSWORD=${var.winrm_password}",
     ]
-    script           = "${path.root}/_shared/windows/Finalize.ps1"
+    script = "${path.root}/_shared/windows/Finalize.ps1"
   }
 
   post-processor "shell-local" {

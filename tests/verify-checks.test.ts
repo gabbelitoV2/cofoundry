@@ -113,6 +113,26 @@ describe('linux checks', () => {
         }
     })
 
+    test('a systemd failure reports the journal, not just the unit name', () => {
+        // "grub2-common.service loaded failed failed Record successful boot for
+        // GRUB" was the entire diagnostic run 30868276107 produced for
+        // ubuntu-26.04; the cause ("grub-editenv: error: invalid environment
+        // block") was one journal line away inside the guest. Both phases must
+        // dump it, and only on the failing path.
+        for (const id of ['systemd-healthy', 'systemd-healthy-first-boot']) {
+            const script = renderScript(
+                linuxSuite.checks.find(c => c.id === id)!,
+                ctx
+            )
+            expect(script, id).toContain('journalctl')
+            // Reached only after the poll loop gives up, so a healthy guest
+            // never pays for it.
+            expect(script.indexOf('journalctl'), id).toBeGreaterThan(
+                script.indexOf('system state:')
+            )
+        }
+    })
+
     test('sentinel values reach the scripts that assert them', () => {
         const byId = (id: string): string =>
             renderScript(linuxSuite.checks.find(c => c.id === id)!, ctx)
@@ -147,6 +167,18 @@ describe('linux checks', () => {
         expect(script).not.toMatch(/END\{print s/)
     })
 
+    test('the packer build-user teardown has a direct regression check', () => {
+        // The recipe teardown is `userdel ... || true`, so a failed removal is
+        // silent at build time; this check is what makes it loud at verify.
+        const script = renderScript(
+            linuxSuite.checks.find(c => c.id === 'no-build-user')!,
+            ctx
+        )
+        expect(script).toContain('getent passwd packer')
+        expect(script).toContain('/home/packer')
+        expect(script).toContain('/etc/sudoers.d/')
+    })
+
     test('first-boot-only checks are not repeated post-reboot', () => {
         // Host-key and machine-id regeneration are observable on the first boot
         // only; asserting them again after a reboot would always fail.
@@ -168,12 +200,17 @@ describe('windows checks', () => {
         expect(ids).toContain('shell-no-crashes')
     })
 
-    test('the sysprep-wait loop is treated as a cloudbase-init failure', () => {
+    test('the sysprep-wait hang is caught by requiring a completion marker', () => {
+        // The stuck-at-sysprep clone loops "Waiting for sysprep completion"
+        // forever and never reaches "Plugins execution done", so asserting the
+        // completion marker catches it without grepping benign ERROR noise.
         const script = renderScript(
             windowsSuite.checks.find(c => c.id === 'cloudbase-init-completed')!,
             ctx
         )
-        expect(script).toContain('Waiting for sysprep completion')
+        expect(script).toContain('Plugins execution done')
+        // A genuine plugin failure is still a failure.
+        expect(script).toContain("plugin '[^']+' failed with error")
     })
 
     test('shell health is judged after a logon, not before', () => {
@@ -212,6 +249,35 @@ describe('windows checks', () => {
         expect(script).not.toContain('Get-Volume')
     })
 
+    test('the cipassword check escapes quoting and never echoes the secret', () => {
+        // ctx.ciPassword deliberately contains a single quote: inside a
+        // PowerShell single-quoted literal it must double, or the script
+        // truncates at the quote and the remainder executes as code.
+        const script = renderScript(
+            windowsSuite.checks.find(c => c.id === 'cipassword-validates')!,
+            ctx
+        )
+        expect(script).toContain("'p''w\"d$x'")
+        expect(script).toContain('ValidateCredentials')
+        // The password may appear only as the quoted argument, never in output.
+        expect(script).not.toMatch(/Write-Output[^\n]*p''w/)
+    })
+
+    test('the WU-restore regression check covers both the policy and the tasks', () => {
+        // Finalize.ps1 restores the AU policy and the UpdateOrchestrator
+        // reboot tasks after generalize; a regression ships templates that
+        // never auto-update.
+        const script = renderScript(
+            windowsSuite.checks.find(c => c.id === 'wu-policy-restored')!,
+            ctx
+        )
+        expect(script).toContain('NoAutoUpdate')
+        expect(script).toContain('UpdateOrchestrator')
+        for (const t of ['Reboot', 'Reboot_AC', 'Reboot_Battery']) {
+            expect(script).toContain(`'${t}'`)
+        }
+    })
+
     test('the password-leak check greps the exact value when it is known', () => {
         const check = windowsSuite.checks.find(
             c => c.id === 'no-plaintext-build-password'
@@ -226,22 +292,27 @@ describe('windows checks', () => {
         expect(structural).not.toContain('ild-pw')
     })
 
-    test.skipIf(!pwsh)('every script parses as PowerShell', () => {
-        // One pwsh invocation for the whole suite, not one per check: pwsh
-        // cold-start is ~hundreds of ms, and N of them serially blew bun's 5s
-        // per-test timeout on slower CI runners, failing the step at random.
-        // Each script travels as base64 so no quoting choices are needed, and
-        // the parser id is echoed back on any failure so the offender is named.
-        const items = windowsSuite.checks
-            .map(check => {
-                const b64 = Buffer.from(
-                    renderScript(check, ctx),
-                    'utf8'
-                ).toString('base64')
-                return `@{id='${check.id}';b64='${b64}'}`
-            })
-            .join(',')
-        const program = `$fail=0
+    // 30s timeout: even a single pwsh cold-start can exceed bun's 5s default on
+    // a loaded CI runner (observed ~7s), which failed this step at random. One
+    // invocation for the whole suite keeps the wall time well under this cap.
+    test.skipIf(!pwsh)(
+        'every script parses as PowerShell',
+        () => {
+            // One pwsh invocation for the whole suite, not one per check: pwsh
+            // cold-start is ~hundreds of ms, and N of them serially blew bun's 5s
+            // per-test timeout on slower CI runners, failing the step at random.
+            // Each script travels as base64 so no quoting choices are needed, and
+            // the parser id is echoed back on any failure so the offender is named.
+            const items = windowsSuite.checks
+                .map(check => {
+                    const b64 = Buffer.from(
+                        renderScript(check, ctx),
+                        'utf8'
+                    ).toString('base64')
+                    return `@{id='${check.id}';b64='${b64}'}`
+                })
+                .join(',')
+            const program = `$fail=0
 foreach($it in @(${items})){
   $s=[System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($it.b64))
   $e=$null
@@ -249,19 +320,24 @@ foreach($it in @(${items})){
   if($e.Count){$fail=1;Write-Output ("{0}: {1}" -f $it.id, (($e | ForEach-Object { $_.Message }) -join '; '))}
 }
 exit $fail`
-        const scriptFile = join(tmpdir(), `cf-pwsh-parse-${process.pid}.ps1`)
-        writeFileSync(scriptFile, program)
-        try {
-            const result = spawnSync(
-                'pwsh',
-                ['-NoProfile', '-File', scriptFile],
-                {
-                    encoding: 'utf8',
-                }
+            const scriptFile = join(
+                tmpdir(),
+                `cf-pwsh-parse-${process.pid}.ps1`
             )
-            expect(result.status, result.stdout).toBe(0)
-        } finally {
-            rmSync(scriptFile, { force: true })
-        }
-    })
+            writeFileSync(scriptFile, program)
+            try {
+                const result = spawnSync(
+                    'pwsh',
+                    ['-NoProfile', '-File', scriptFile],
+                    {
+                        encoding: 'utf8',
+                    }
+                )
+                expect(result.status, result.stdout).toBe(0)
+            } finally {
+                rmSync(scriptFile, { force: true })
+            }
+        },
+        30000
+    )
 })

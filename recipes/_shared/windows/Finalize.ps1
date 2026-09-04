@@ -245,6 +245,21 @@ New-Item -ItemType Directory -Force -Path $cloudbaseConfDir | Out-Null
 # Re-add it only if the template ever installs Win32-OpenSSH.
 @"
 [DEFAULT]
+# MTUPlugin queries the DHCP server for option 26 by binding UDP/68 itself.
+# That port is already owned by the Windows DHCP Client service, and binding a
+# port another process holds exclusively is WSAEACCES -- surfacing as
+# "[WinError 10013] An attempt was made to access a socket in a way forbidden
+# by its access permissions" and failing the plugin.
+#
+# Confirmed on a live 2019 clone (2026-08-27): Get-NetUDPEndpoint -LocalPort 68
+# reports svchost owning it, while the adapter already sits at mtu=1500. So the
+# query never had a chance to apply anything, and switching it off costs no
+# behaviour -- it only stops a guaranteed failure from being reported as one.
+#
+# MTUPlugin stays in the plugin lists: the specialize-pass conf runs it and
+# nothing else precisely because it never requests a reboot, which is what
+# stopped clones looping on "The computer restarted unexpectedly".
+mtu_use_dhcp_config=false
 username=Administrator
 groups=Administrators
 inject_user_password=true
@@ -319,6 +334,21 @@ locations=cdrom,hdd,partition
 # this block must carry them forward.
 @"
 [DEFAULT]
+# MTUPlugin queries the DHCP server for option 26 by binding UDP/68 itself.
+# That port is already owned by the Windows DHCP Client service, and binding a
+# port another process holds exclusively is WSAEACCES -- surfacing as
+# "[WinError 10013] An attempt was made to access a socket in a way forbidden
+# by its access permissions" and failing the plugin.
+#
+# Confirmed on a live 2019 clone (2026-08-27): Get-NetUDPEndpoint -LocalPort 68
+# reports svchost owning it, while the adapter already sits at mtu=1500. So the
+# query never had a chance to apply anything, and switching it off costs no
+# behaviour -- it only stops a guaranteed failure from being reported as one.
+#
+# MTUPlugin stays in the plugin lists: the specialize-pass conf runs it and
+# nothing else precisely because it never requests a reboot, which is what
+# stopped clones looping on "The computer restarted unexpectedly".
+mtu_use_dhcp_config=false
 username=Administrator
 groups=Administrators
 inject_user_password=true
@@ -536,6 +566,74 @@ Write-Step ("  provisioned packages: {0} -> {1}" -f $provisionedPkgs.Count, $pro
 if ($dropped.Count) {
   Write-Step "  WARNING the cleanup dropped provisioning for $($dropped.Count) package(s); these will be ABSENT on every clone:"
   foreach ($d in $dropped) { Write-Step "    $d" }
+}
+
+# Put back what the cleanup took (#32).
+#
+# Reporting the loss was not enough: winget went missing from shipped 2025
+# templates exactly this way. Microsoft.DesktopAppInstaller is inbox on 2025 and
+# ships two coexisting versions; sysprep rejects the per-user-registered one, the
+# deprovision-and-retry fallback above strips the SIBLING version's provisioning
+# to unstick the removal, and provisioning is what registers an app into each new
+# user profile. remove-build-profile.ps1 deletes the build profile, so every
+# clone's first logon builds a fresh one -- with no winget in it.
+#
+# Server keeps the payloads for inbox provisioned apps on disk, so this does not
+# need the network: find the bundle for each dropped family and provision it
+# again. Deliberately generic rather than winget-specific -- anything the
+# cleanup dropped is something a clone was supposed to have.
+#
+# Ordering matters: this runs AFTER the removal loop, so the blocking version is
+# already gone and re-provisioning the sibling cannot resurrect the package
+# sysprep objected to. Failures here are logged, never fatal -- a template
+# missing winget is a defect, but a template that never generalizes is useless,
+# and assert-generalized still gates the export either way.
+if ($dropped.Count) {
+  $bundleRoots = @(
+    'C:\Windows\InboxApps',
+    "$env:ProgramFiles\WindowsApps"
+  ) | Where-Object { Test-Path $_ }
+
+  foreach ($d in $dropped) {
+    # PackageName is <family>_<version>_<arch>__<publisher>; the family alone is
+    # what the on-disk bundle is named after.
+    $family = ($d -split '_')[0]
+    if (-not $family) { continue }
+
+    $bundle = $null
+    foreach ($root in $bundleRoots) {
+      $bundle = Get-ChildItem -Path $root -Recurse -ErrorAction SilentlyContinue `
+        -Include "$family*.appxbundle", "$family*.msixbundle", "$family*.appx", "$family*.msix" |
+        Sort-Object LastWriteTime -Descending | Select-Object -First 1
+      if ($bundle) { break }
+    }
+
+    if (-not $bundle) {
+      Write-Step "  could not re-provision $family : no package payload found under $($bundleRoots -join ', ')"
+      continue
+    }
+
+    try {
+      Add-AppxProvisionedPackage -Online -PackagePath $bundle.FullName -SkipLicense -ErrorAction Stop | Out-Null
+      Write-Step "  re-provisioned $family from $($bundle.Name)"
+    } catch {
+      Write-Step "  re-provision of $family failed: $($_.Exception.Message)"
+    }
+  }
+
+  # Say what actually stuck, so the build log answers "does this template ship
+  # winget" without anyone preserving the VM to find out.
+  try {
+    $finalNames = @(Get-AppxProvisionedPackage -Online -ErrorAction Stop | ForEach-Object { $_.PackageName })
+    $stillMissing = @($dropped | Where-Object { $finalNames -notcontains $_ })
+    Write-Step ("  provisioned packages after recovery: {0}" -f $finalNames.Count)
+    if ($stillMissing.Count) {
+      Write-Step "  WARNING still ABSENT on every clone:"
+      foreach ($m in $stillMissing) { Write-Step "    $m" }
+    }
+  } catch {
+    Write-Step "  (could not confirm re-provisioning: $($_.Exception.Message))"
+  }
 }
 
 Write-Step "sysprep and shutdown"
@@ -882,7 +980,44 @@ while ([DateTime]::Now -lt $servicingDeadline) {
   Start-Sleep 15
 }
 if ((Test-Path "$cbsKey\RebootPending") -or (Test-Path "$cbsKey\PackagesPending")) {
-  throw "servicing still pending before sysprep (CBS RebootPending/PackagesPending) - a generalize over this state ships a template whose clones never specialize"
+  # Name what is actually pending. The bare assertion cost two 4-hour
+  # windows-server-2022 attempts on 2026-08-25/26 that reported only *that* CBS
+  # was pending, never which key or which package -- and a Windows build is the
+  # one place where "reproduce it to find out" costs three hours a go.
+  #
+  # Note the loop above cannot clear either key: RebootPending means exactly
+  # that, and PackagesPending is CBS work that completes during a restart. The
+  # real gate is packer's windows-restart, whose restart_check now tests both
+  # (it used to test RebootPending alone, which is how a build reached this
+  # throw with PackagesPending still set). This stays as a backstop that fails
+  # loudly rather than generalizing over half-applied servicing.
+  $why = @()
+  if (Test-Path "$cbsKey\RebootPending") { $why += 'CBS\RebootPending' }
+  if (Test-Path "$cbsKey\PackagesPending") { $why += 'CBS\PackagesPending' }
+  if (Test-Path "HKLM:\SOFTWARE\Microsoft\Windows\WindowsUpdate\Auto Update\RebootRequired") {
+    $why += 'WU\RebootRequired'
+  }
+  if (Get-ItemProperty $sessionMgr -Name PendingFileRenameOperations -ErrorAction SilentlyContinue) {
+    $why += 'PendingFileRenameOperations'
+  }
+  Write-Step "  pending: $($why -join ', ')"
+
+  foreach ($k in @('PackagesPending', 'RebootPending')) {
+    try {
+      $names = @(Get-ChildItem "$cbsKey\$k" -ErrorAction Stop | ForEach-Object { $_.PSChildName })
+      if ($names.Count) {
+        Write-Step "  $k holds $($names.Count) entr(y/ies):"
+        foreach ($n in ($names | Select-Object -First 20)) { Write-Step "    $n" }
+      }
+    } catch { }
+  }
+  try {
+    $last = Get-WinEvent -FilterHashtable @{ LogName = 'Setup'; Id = 2 } -MaxEvents 5 -ErrorAction Stop
+    Write-Step "  most recent servicing events:"
+    foreach ($e in $last) { Write-Step ("    {0} {1}" -f $e.TimeCreated, ($e.Message -split "`n")[0]) }
+  } catch { }
+
+  throw "servicing still pending before sysprep ($($why -join ', ')) - a generalize over this state ships a template whose clones never specialize"
 }
 
 # 2. WMI must answer. Several generalize providers query it; confirm it responds
@@ -999,6 +1134,36 @@ foreach ($t in @("Reboot", "Reboot_AC", "Reboot_Battery")) {
 # here (instead of only at clone specialize) keeps it out of the exported template
 # disk entirely; the specialize-script deletion stays as a backstop.
 Remove-Item $unattendCopy -Force -ErrorAction SilentlyContinue
+
+Write-Step "enable Remote Desktop on the shipped template"
+# Windows Server ships with RDP off (fDenyTSConnections=1) and nothing else in
+# the build turns it on, so a clone's only first contact was the noVNC console.
+# That path breaks in practice: the console types against the guest's en-US
+# layout, so a --cipassword containing symbols typed on a non-US client
+# keyboard arrives as different characters (observed live 2026-08-18: '=' from
+# a Swedish layout; the Security log filled with 0xC000006A while the same
+# string passed an in-guest LogonUser). Convoy hands out clones with only
+# --cipassword, so RDP is the expected first door in.
+#
+# This sits after generalize with the other shipped-template policy on purpose:
+# registry writes after /quit land in the sealed image (same reason the WU
+# restore above is here), and the Remote Desktop firewall group is disjoint
+# from the WinRM rules the teardown below removes, so packer's session is
+# untouched. The inbox rules cover every profile including Public --
+# deliberate, clones land directly on public networks. NLA stays at its Server
+# default (required), so nothing is reachable pre-auth. Verified live on a 2025
+# clone before being baked in: the listener came up instantly, no TermService
+# restart needed (docs/windows.md).
+Set-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server" -Name fDenyTSConnections -Value 0 -Type DWord
+# The group id, not DisplayGroup "Remote Desktop": the id is locale-independent
+# so this does not quietly no-op on non-en-US media.
+Enable-NetFirewallRule -Group "@FirewallAPI.dll,-28752" -ErrorAction SilentlyContinue
+$rdpRules = @(Get-NetFirewallRule -Group "@FirewallAPI.dll,-28752" -ErrorAction SilentlyContinue |
+  Where-Object { $_.Enabled -eq "True" })
+Write-Step "  $($rdpRules.Count) Remote Desktop firewall rule(s) enabled"
+if (-not $rdpRules.Count) {
+  throw "no Remote Desktop firewall rules could be enabled - every clone would ship unreachable over RDP"
+}
 
 Write-Step "tear down the build's WinRM exposure"
 # EVERYTHING that can cut packer's WinRM session MUST stay here, after generalize

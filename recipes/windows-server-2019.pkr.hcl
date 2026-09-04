@@ -1,6 +1,8 @@
 # display: Windows Server 2019 Datacenter
 # group: windows-server
 # build_vmid: 2000
+# min_cores: 2
+# min_memory: 4096
 # final_disk_size: 30G
 # iso_url: https://software-static.download.prss.microsoft.com/pr/download/17763.737.190906-2324.rs5_release_svc_refresh_SERVER_EVAL_x64FRE_en-us_1.iso
 # iso_target_path: /var/lib/vz/template/iso/packer-windows-server-2019-eval.iso
@@ -98,7 +100,7 @@ locals {
   # landed in C:\Windows\Temp yet on 2022 ("is not recognized"), and the round-two
   # update scan was killed mid-flight on 2025. Hold the restart open until
   # servicing is actually idle. See docs/windows.md#post-update-restart-settling.
-  restart_check = "powershell -Command \"& { if (Test-Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Component Based Servicing\\RebootPending') { exit 1 }; if (Test-Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\WindowsUpdate\\Auto Update\\RebootRequired') { exit 1 }; if (Get-ItemProperty 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Session Manager' -Name PendingFileRenameOperations -ErrorAction SilentlyContinue) { exit 1 }; if (Get-Process -Name TiWorker,TrustedInstaller -ErrorAction SilentlyContinue) { exit 1 }; if (((Get-Date) - (Get-CimInstance Win32_OperatingSystem).LastBootUpTime).TotalSeconds -lt 180) { exit 1 }; Write-Output 'restarted.' }\""
+  restart_check = "powershell -Command \"& { if (Test-Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Component Based Servicing\\RebootPending') { exit 1 }; if (Test-Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Component Based Servicing\\PackagesPending') { exit 1 }; if (Test-Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\WindowsUpdate\\Auto Update\\RebootRequired') { exit 1 }; if (Get-ItemProperty 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Session Manager' -Name PendingFileRenameOperations -ErrorAction SilentlyContinue) { exit 1 }; if (Get-Process -Name TiWorker,TrustedInstaller -ErrorAction SilentlyContinue) { exit 1 }; if (((Get-Date) - (Get-CimInstance Win32_OperatingSystem).LastBootUpTime).TotalSeconds -lt 180) { exit 1 }; Write-Output 'restarted.' }\""
 }
 
 source "proxmox-iso" "windows-server-2019" {
@@ -287,6 +289,6 @@ build {
       "CF_RECIPE_NAME=${local.recipe_name}",
       "CF_RECIPE_DISPLAY=${local.recipe_display}",
     ]
-    script = "${path.root}/_shared/post/vzdump-and-cleanup.sh"
+    script = "${path.root}/_shared/post/export-and-cleanup.sh"
   }
 }

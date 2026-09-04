@@ -1,4 +1,4 @@
-import type { CheckSuite } from '@/verify/checks/types.ts'
+import type { CheckSuite, GuestCheck } from '@/verify/checks/types.ts'
 
 /**
  * Shell surfaces whose crash is the "boots fine, desktop is unusable" signature
@@ -26,6 +26,51 @@ const SECRET_BEARING_PATHS = [
 const psQuote = (s: string): string => `'${s.replace(/'/g, "''")}'`
 
 const psList = (items: string[]): string => items.map(psQuote).join(',')
+
+/**
+ * windows-server-2025 only. Winget is inbox on 2025 (and ships two coexisting
+ * DesktopAppInstaller versions, which is what makes it fragile there); 2019 and
+ * 2022 do not carry it, so asserting its presence on those legs would fail a
+ * template that is behaving correctly.
+ */
+export const wingetPresentCheck: GuestCheck = {
+    // windows-server-2025 only. Winget is inbox on 2025 (and ships two
+    // coexisting DesktopAppInstaller versions, which is what makes it fragile
+    // there); 2019 and 2022 do not carry it, so asserting its presence on those
+    // legs would fail a template that is behaving correctly.
+    //
+    // Deliberately NOT `Get-Command winget.exe`. Guest checks run over
+    // `qm guest exec`, i.e. as SYSTEM, while winget resolves through a per-user
+    // App Execution Alias in %LOCALAPPDATA%\\Microsoft\\WindowsApps. SYSTEM
+    // cannot resolve that on ANY template, so a PATH probe fails universally
+    // and proves nothing — the first cut of this check did exactly that and
+    // failed a good 2025 image.
+    //
+    // What actually matters for #32 is the provisioned entry: provisioning is
+    // what registers the app into each new profile, and remove-build-profile.ps1
+    // deletes the build profile so every clone starts fresh. Losing it is how
+    // winget went missing. The per-profile alias is then reported as
+    // corroboration, since a profile exists by the post-logon phase.
+    id: 'winget-present',
+    description: 'winget is provisioned so new profiles receive it',
+    script: `$prov = @(Get-AppxProvisionedPackage -Online |
+  Where-Object { $_.DisplayName -eq 'Microsoft.DesktopAppInstaller' })
+if (-not $prov) {
+  Write-Output 'Microsoft.DesktopAppInstaller is NOT provisioned - every clone profile will lack winget'
+  exit 1
+}
+Write-Output "provisioned: $($prov[0].PackageName)"
+
+$alias = @(Get-ChildItem 'C:\\Users\\*\\AppData\\Local\\Microsoft\\WindowsApps\\winget.exe' -ErrorAction SilentlyContinue)
+if ($alias) {
+  Write-Output "alias present for $($alias.Count) profile(s): $($alias[0].FullName)"
+} else {
+  Write-Output 'note: no per-profile winget alias yet (provisioning is the gate that matters)'
+}`,
+    severity: 'fail',
+    phase: 'post-logon',
+    timeoutS: 120,
+}
 
 export const windowsSuite: CheckSuite = {
     shell: 'powershell',
@@ -112,6 +157,31 @@ if ($bad) {
   $bad | ForEach-Object { Write-Output "open: $($_.DisplayName) [$($_.Profile)]" }
   exit 1
 }`,
+            severity: 'fail',
+            phase: 'first-boot',
+            timeoutS: 120,
+        },
+        {
+            // Finalize.ps1 enables RDP for the shipped template: Server's
+            // default is off, Convoy hands out clones with only --cipassword,
+            // and the noVNC console garbles symbol passwords typed on non-US
+            // keyboards against the guest's en-US layout. NLA staying at its
+            // required default is asserted alongside — RDP on a public network
+            // without it would expose the logon surface pre-auth.
+            id: 'rdp-enabled',
+            description: 'RDP is enabled, listening on 3389, and requires NLA',
+            script: `$ts = Get-ItemProperty 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Terminal Server'
+Write-Output "fDenyTSConnections=$($ts.fDenyTSConnections)"
+if ($ts.fDenyTSConnections -ne 0) { exit 1 }
+$nla = (Get-ItemProperty 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Terminal Server\\WinStations\\RDP-Tcp').UserAuthentication
+Write-Output "NLA=$nla"
+if ($nla -ne 1) {
+  Write-Output 'NLA is off - the logon surface would be reachable pre-auth'
+  exit 1
+}
+$l = Get-NetTCPConnection -LocalPort 3389 -State Listen -ErrorAction SilentlyContinue
+if (-not $l) { Write-Output 'no listener on 3389'; exit 1 }
+Write-Output 'RDP listening on 3389'`,
             severity: 'fail',
             phase: 'first-boot',
             timeoutS: 120,
